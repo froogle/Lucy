@@ -22,6 +22,19 @@ fn fast() -> Provider {
     Config::default().provider(Tier::Fast).unwrap().clone()
 }
 
+/// The fixture `program` in `work`, with the fake CLI's version already
+/// through the subscription guard (`tests/subscription_guard.rs`) and its
+/// records of that cleared, so a Session spawns just its own process.
+fn verified(work: &Path, program: &str) -> Claude {
+    Claude::new(fixtures().join("fake-claude"), work.to_owned())
+        .check(&fast())
+        .unwrap();
+    for record in ["argv", "pids", "stdin"] {
+        std::fs::remove_file(work.join(record)).unwrap();
+    }
+    Claude::new(fixtures().join(program), work.to_owned())
+}
+
 fn relay() -> Relay {
     Relay {
         program: PathBuf::from("/usr/bin/lucy"),
@@ -85,7 +98,7 @@ fn value_of<'a>(args: &'a [String], flag: &str) -> &'a str {
 #[test]
 fn one_process_is_prespawned_and_serves_every_turn() {
     let work = tempfile::tempdir().unwrap();
-    let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
+    let claude = verified(work.path(), "fake-claude");
     let (tx, mut events) = mpsc::unbounded_channel();
 
     let mut model = claude.open(&fast(), tx, relay());
@@ -133,7 +146,7 @@ fn one_process_is_prespawned_and_serves_every_turn() {
 #[test]
 fn claude_dying_mid_turn_ends_the_turn() {
     let work = tempfile::tempdir().unwrap();
-    let claude = Claude::new(fixtures().join("dying-claude"), work.path().to_owned());
+    let claude = verified(work.path(), "dying-claude");
     let (tx, mut events) = mpsc::unbounded_channel();
     let mut model = claude.open(&fast(), tx, relay());
 
@@ -146,7 +159,7 @@ fn claude_dying_mid_turn_ends_the_turn() {
 #[test]
 fn runs_with_an_isolated_config_naming_only_the_relay() {
     let work = tempfile::tempdir().unwrap();
-    let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
+    let claude = verified(work.path(), "fake-claude");
     let (tx, _events) = mpsc::unbounded_channel();
     let _model = claude.open(&fast(), tx, relay());
     let args = args(work.path());
@@ -189,7 +202,7 @@ fn runs_with_an_isolated_config_naming_only_the_relay() {
 #[test]
 fn any_model_the_cli_accepts_is_passed_through() {
     let work = tempfile::tempdir().unwrap();
-    let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
+    let claude = verified(work.path(), "fake-claude");
     let (tx, _events) = mpsc::unbounded_channel();
     let provider = Provider {
         model: Some("claude-not-yet-released".into()),

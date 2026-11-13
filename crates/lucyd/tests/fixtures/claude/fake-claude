@@ -1,13 +1,34 @@
 #!/bin/sh
-# Stands in for `claude -p` stream-json: records how it was run into its
-# working directory, then answers the Nth stdin line with the recorded real
-# transcript turnN.jsonl beside this script.
+# Stands in for `claude`. Everything it reads and writes is in its working
+# directory, so each test scripts its own:
+# - `--version` prints ./version, or a recorded real version;
+# - `auth status --json` prints ./auth.json, or a recorded subscription login;
+# - anything else is `claude -p` stream-json: it records how it was run, then
+#   answers the Nth stdin line with turnN.jsonl, from here if the test hasn't
+#   put one in the working directory. The recorded turns are real transcripts.
+# Each of the above appends its first argument to ./calls.
 here=$(dirname "$0")
+echo "$1" >> calls
+case "$1" in
+--version)
+    cat version 2>/dev/null || echo "2.1.323 (Claude Code)"
+    exit 0
+    ;;
+auth)
+    cat auth.json 2>/dev/null ||
+        echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"max"}'
+    exit 0
+    ;;
+esac
 echo $$ >> pids
 printf '%s\0' "$@" > argv
 n=0
 while IFS= read -r line; do
     n=$((n + 1))
     printf '%s\n' "$line" >> stdin
-    cat "$here/turn$n.jsonl"
+    if [ -f "turn$n.jsonl" ]; then
+        cat "turn$n.jsonl"
+    else
+        cat "$here/turn$n.jsonl"
+    fi
 done

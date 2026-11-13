@@ -74,13 +74,22 @@ pub trait Thinking: Send + Sync {
     /// Starts the model process for a new Session with the settings in
     /// `provider`, configured with `relay` as its MCP server. The process
     /// streams its replies into `events`. Dropping the SessionModel ends the
-    /// process.
+    /// process. If the Provider can't be used, it sends `Unavailable`.
     fn open(
         &self,
         provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
     ) -> Box<dyn SessionModel>;
+
+    /// Checks without a model call that the CLI is installed and signed in
+    /// as `provider` requires. Blocking. The error is a reason ready to
+    /// speak, with the fix.
+    fn health(&self, provider: &Provider) -> Result<(), String>;
+
+    /// A real "Reply OK" round trip, with the subscription guard's checks
+    /// on it. Blocking. The error is a reason ready to speak, with the fix.
+    fn check(&self, provider: &Provider) -> Result<(), String>;
 }
 
 /// The model process of one Session.
@@ -140,7 +149,17 @@ impl Thinking for Inert {
     ) -> Box<dyn SessionModel> {
         Box::new(InertSessionModel { _events: events })
     }
+
+    fn health(&self, _provider: &Provider) -> Result<(), String> {
+        Err(INERT_THINKING.to_owned())
+    }
+
+    fn check(&self, _provider: &Provider) -> Result<(), String> {
+        Err(INERT_THINKING.to_owned())
+    }
 }
+
+const INERT_THINKING: &str = "This lucyd has no Thinking Provider.";
 
 struct InertSessionModel {
     _events: mpsc::UnboundedSender<ThinkingEvent>,

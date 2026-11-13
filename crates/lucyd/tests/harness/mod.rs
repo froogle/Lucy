@@ -416,6 +416,14 @@ impl Thinking for FakeThinking {
             turns: self.turns_tx.clone(),
         })
     }
+
+    fn health(&self, _provider: &Provider) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn check(&self, _provider: &Provider) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 struct FakeSessionModel {
