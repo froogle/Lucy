@@ -24,10 +24,8 @@ fn the_mic_level_is_how_loud_the_microphone_has_been_since_last_asked() {
     let mut client = lucyd.client();
 
     lucyd.mic.feed(MURMUR, Duration::from_millis(100));
-    let rms = wait_until("the murmur's level", || {
-        let rms = client.mic_level().unwrap().rms;
-        (rms > 0.0).then_some(rms)
-    });
+    lucyd.mic.wait_until_heard();
+    let rms = client.mic_level().unwrap().rms;
 
     assert!((rms - MURMUR).abs() < 0.01, "{rms}");
     assert_eq!(client.mic_level().unwrap().rms, 0.0);
