@@ -11,8 +11,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::{
-    Event, Hello, HelloResult, ProviderCheck, ProviderCheckResult, ProvidersStatus, Role,
-    SessionStarted, Status, Subscribe, Topic, PROTOCOL,
+    ApprovalsList, Event, Hello, HelloResult, PluginsList, ProviderCheck, ProviderCheckResult,
+    ProvidersStatus, RevokeApproval, Role, SessionStarted, SetPluginEnabled, Status, Subscribe,
+    Topic, PROTOCOL,
 };
 
 pub struct Client {
@@ -85,6 +86,35 @@ impl Client {
             name: name.to_owned(),
         };
         self.call("provider.check", json!(params))
+    }
+
+    /// Every installed Plugin.
+    pub fn plugins(&mut self) -> Result<PluginsList, Error> {
+        self.call("plugins.list", Value::Null)
+    }
+
+    /// Enables or disables the Plugin `name`, straight away.
+    pub fn set_plugin_enabled(&mut self, name: &str, enabled: bool) -> Result<(), Error> {
+        let params = SetPluginEnabled {
+            name: name.to_owned(),
+            enabled,
+        };
+        let _: Value = self.call("plugins.set_enabled", json!(params))?;
+        Ok(())
+    }
+
+    /// Every Approval Lucy holds.
+    pub fn approvals(&mut self) -> Result<ApprovalsList, Error> {
+        self.call("approvals.list", Value::Null)
+    }
+
+    /// Revokes the Approval of the Plugin `plugin`.
+    pub fn revoke_approval(&mut self, plugin: &str) -> Result<(), Error> {
+        let params = RevokeApproval {
+            plugin: plugin.to_owned(),
+        };
+        let _: Value = self.call("approvals.revoke", json!(params))?;
+        Ok(())
     }
 
     /// The next event, exactly as lucyd sent it (one NDJSON line, no newline).
