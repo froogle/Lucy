@@ -10,7 +10,7 @@ Spec: Confirmation and Approval are runtime-owned; Plugins (Approval). ADR 0005.
 
 **Seams:** owns the Confirming step in `session::Session` (`State::Confirming`) (also used by 09, 15); owns the spoken Approval flow and `plugins::Host`'s writes to `approvals.toml` (also used by 15, 20, 22, 23); owns `tools/list_changed` from the MCP tool server (also used by 15, 22); extends `NotificationKind` (owned by 08, resolved)
 
-**Status:** ready-for-agent
+**Status:** claimed
 
 - [ ] A yes during the prompt counts; anything else, or 8 s of silence, means no, and Lucy says "Okay, I won't"
 - [ ] Indicator click while Confirming declines and ends the Session
