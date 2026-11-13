@@ -14,6 +14,7 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
@@ -207,36 +208,30 @@ impl Tools {
         let (reply, ended) = oneshot::channel();
         let _ = self.commands.send(Command::EndAfterSpeech(reply));
         match ended.await {
-            Ok(Ok(())) => CallToolResult::success(vec![ContentBlock::text(
-                "The Session will end once your reply has been spoken.",
-            )]),
-            _ => CallToolResult::error(vec![ContentBlock::text("No Session is open.")]),
+            Ok(Ok(())) => text("The Session will end once your reply has been spoken."),
+            _ => error("No Session is open."),
         }
     }
 
     /// Needs no Approval: the Persona is the user's to shape by voice.
     fn update_persona(&self, request: &CallToolRequestParams) -> CallToolResult {
-        let text = request
+        let persona = request
             .arguments
             .as_ref()
             .and_then(|arguments| arguments.get("persona"))
             .and_then(|persona| persona.as_str())
             .filter(|persona| !persona.trim().is_empty());
-        let Some(text) = text else {
-            return CallToolResult::error(vec![ContentBlock::text(
-                "persona must be the whole new Persona text.",
-            )]);
+        let Some(persona) = persona else {
+            return error("persona must be the whole new Persona text.");
         };
-        match self.persona.save(text) {
-            Ok(()) => CallToolResult::success(vec![ContentBlock::text(format!(
-                "Saved. Your Persona now reads:\n\n{text}\n\nTell the user what changed, in \
+        match self.persona.save(persona) {
+            Ok(()) => text(format!(
+                "Saved. Your Persona now reads:\n\n{persona}\n\nTell the user what changed, in \
                  one short sentence."
-            ))]),
+            )),
             Err(e) => {
                 eprintln!("lucyd: can't save {}: {e}", self.persona.path().display());
-                CallToolResult::error(vec![ContentBlock::text(
-                    "The Persona couldn't be saved. Tell the user it didn't change.",
-                )])
+                error("The Persona couldn't be saved. Tell the user it didn't change.")
             }
         }
     }
@@ -247,39 +242,49 @@ fn no_tool(name: &str) -> ErrorData {
 }
 
 fn end_session_tool() -> Tool {
-    let schema = serde_json::json!({"type": "object", "properties": {}});
-    let serde_json::Value::Object(schema) = schema else {
-        unreachable!()
-    };
-    Tool::new(
+    tool(
         "end_session",
         "End the Session once your reply has been spoken. Call it when the user says goodbye \
          or that they're done.",
-        Arc::new(schema),
+        serde_json::json!({"type": "object", "properties": {}}),
     )
 }
 
 fn update_persona_tool() -> Tool {
-    let schema = serde_json::json!({
-        "type": "object",
-        "properties": {"persona": {
-            "type": "string",
-            "description": "The whole new Persona text, keeping everything the user didn't \
-                            ask to change.",
-        }},
-        "required": ["persona"],
-    });
-    let serde_json::Value::Object(schema) = schema else {
-        unreachable!()
-    };
-    Tool::new(
+    tool(
         "update_persona",
         "Rewrite your Persona: the instructions you were given about who you are, how you \
          speak and what to call the user. Call it when the user asks you to change your manner \
          (\"be a bit more sarcastic\") or tells you what to call them. It applies fully from \
          the next Session.",
-        Arc::new(schema),
+        serde_json::json!({
+            "type": "object",
+            "properties": {"persona": {
+                "type": "string",
+                "description": "The whole new Persona text, keeping everything the user didn't \
+                                ask to change.",
+            }},
+            "required": ["persona"],
+        }),
     )
+}
+
+/// A tool whose input schema is `schema`, a JSON object.
+pub fn tool(name: &'static str, description: &'static str, schema: Value) -> Tool {
+    let Value::Object(schema) = schema else {
+        unreachable!("a tool's input schema is an object")
+    };
+    Tool::new(name, description, Arc::new(schema))
+}
+
+/// A tool result: `text` for the model.
+pub fn text(text: impl Into<String>) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(text.into())])
+}
+
+/// A failed tool result: `text` tells the model why.
+pub fn error(text: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(text.into())])
 }
 
 impl ServerHandler for Tools {

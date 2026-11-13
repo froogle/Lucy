@@ -4,11 +4,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool};
+use rmcp::model::{CallToolResult, JsonObject, Tool};
 use serde_json::json;
 
 use crate::adapters::Launcher;
 use crate::desktop_entries::{self, Found};
+use crate::mcp::{error, text, tool};
 use crate::system_status;
 
 /// What the desktop tools act on in one Session.
@@ -128,13 +129,6 @@ fn is_web_url(url: &str) -> bool {
     web && !host.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-fn tool(name: &'static str, description: &'static str, schema: serde_json::Value) -> Tool {
-    let serde_json::Value::Object(schema) = schema else {
-        unreachable!("a tool's input schema is an object")
-    };
-    Tool::new(name, description, Arc::new(schema))
-}
-
 /// The string argument `key`, or an empty string.
 fn string(arguments: &JsonObject, key: &str) -> String {
     arguments
@@ -142,12 +136,4 @@ fn string(arguments: &JsonObject, key: &str) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_owned()
-}
-
-fn text(text: impl Into<String>) -> CallToolResult {
-    CallToolResult::success(vec![ContentBlock::text(text.into())])
-}
-
-fn error(text: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(text.into())])
 }

@@ -11,13 +11,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock, JsonObject, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool};
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::mcp;
 use manifest::Manifest;
 
 /// How long a Plugin gets to start and answer `tools/list`.
@@ -351,11 +352,7 @@ impl SessionTools {
             match peer.call_tool(request).await {
                 Ok(result) => Ok(result),
                 // The Plugin answered, refusing the call: it still works.
-                Err(rmcp::ServiceError::McpError(e)) => {
-                    Ok(CallToolResult::error(vec![ContentBlock::text(
-                        e.message.into_owned(),
-                    )]))
-                }
+                Err(rmcp::ServiceError::McpError(e)) => Ok(mcp::error(e.message.into_owned())),
                 Err(e) => Err(format!("its call failed: {e}")),
             }
         }
@@ -367,10 +364,7 @@ impl SessionTools {
                     let _ = client.cancel().await;
                 }
                 self.host.mark_broken(&plugin.hash, reason.clone());
-                CallToolResult::error(vec![ContentBlock::text(broken_message(
-                    plugin_name,
-                    &reason,
-                ))])
+                mcp::error(broken_message(plugin_name, &reason))
             }
         })
     }
