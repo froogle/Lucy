@@ -142,7 +142,9 @@ impl Connection {
                 Ok(json!({}))
             }
             "session.start" => match self.ask(Command::Start).await? {
-                Ok(session_id) => Ok(json!(SessionStarted { session_id })),
+                Ok(session_id) => Ok(json!(SessionStarted {
+                    session_id: session_id.to_string()
+                })),
                 Err(_) => Err(RpcError::new(
                     error_code::SESSION_OPEN,
                     "a Session is already open",

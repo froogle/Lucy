@@ -1,6 +1,7 @@
 //! Runs Sessions: owns the published status and does the I/O that the
 //! `session` state machine asks for.
 
+use std::fmt;
 use std::time::Duration;
 
 use lucy_ipc::{State, Status};
@@ -14,11 +15,21 @@ use crate::status::StatusBus;
 
 /// A request from the public socket or the MCP server.
 pub enum Command {
-    Start(oneshot::Sender<Result<String, StartError>>),
+    Start(oneshot::Sender<Result<SessionId, StartError>>),
     /// End now, from any state.
     End(oneshot::Sender<Result<(), EndError>>),
     /// `end_session`: end once the reply has been spoken.
     EndAfterSpeech(oneshot::Sender<Result<(), EndError>>),
+}
+
+/// Names one Session to clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionId(u64);
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 pub struct StartError;
@@ -60,7 +71,7 @@ impl Runner {
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         self.sessions_started += 1;
-                        let id = self.sessions_started.to_string();
+                        let id = SessionId(self.sessions_started);
                         self.run_session(id, reply).await;
                     }
                     Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
@@ -80,8 +91,8 @@ impl Runner {
     /// replying, so a client sees them as soon as its request returns.
     async fn run_session(
         &mut self,
-        id: String,
-        started: oneshot::Sender<Result<String, StartError>>,
+        id: SessionId,
+        started: oneshot::Sender<Result<SessionId, StartError>>,
     ) {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // Revoked when the Session ends.
@@ -94,8 +105,8 @@ impl Runner {
         let mut silence = SilenceTimer::new(self.silence_timeout);
         silence.set_running(session.silence_timer_runs());
 
-        self.publish(session.state(), Some(&id));
-        let _ = started.send(Ok(id.clone()));
+        self.publish(session.state(), Some(id));
+        let _ = started.send(Ok(id));
         loop {
             let mut segment = None;
             let input = tokio::select! {
@@ -153,14 +164,14 @@ impl Runner {
                 }
             }
             silence.set_running(session.silence_timer_runs());
-            self.publish(session.state(), Some(&id));
+            self.publish(session.state(), Some(id));
         }
     }
 
-    fn publish(&self, state: State, session_id: Option<&str>) {
+    fn publish(&self, state: State, session_id: Option<SessionId>) {
         self.status.publish(Status {
             state,
-            session_id: session_id.map(str::to_owned),
+            session_id: session_id.map(|id| id.to_string()),
         });
     }
 }
