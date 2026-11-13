@@ -286,7 +286,10 @@ impl Runner {
         let wake_word = wake::word(&settings.wake_word);
         let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
-        let mut speaker = self.adapters.tts.open(&devices.speaker, speaker_tx);
+        let mut speaker =
+            self.adapters
+                .tts
+                .open(&devices.speaker, &settings.piper.voice, speaker_tx);
         speaker.sound(Sound::Start);
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();

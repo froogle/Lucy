@@ -109,11 +109,32 @@ fn a_voice_preview_can_speak_in_a_voice_that_is_not_running() {
 
     lucyd.client().start_session().unwrap();
     assert_eq!(
-        lucyd.tts.voice(),
-        None,
-        "a Session speaks in the running voice"
+        lucyd.tts.voice().as_deref(),
+        Some("en_GB-cori-medium"),
+        "a Session speaks in the configured voice"
     );
     lucyd.client().end_session().unwrap();
+}
+
+#[test]
+fn a_voice_picked_while_lucyd_runs_is_spoken_in_from_the_next_session_and_preview() {
+    let lucyd = Harness::start();
+    lucy_config::set(
+        lucyd.config_path(),
+        &["piper", "voice"],
+        "en_GB-alba-medium",
+    )
+    .unwrap();
+
+    lucyd.client().start_session().unwrap();
+    assert_eq!(lucyd.tts.voice().as_deref(), Some("en_GB-alba-medium"));
+    lucyd.client().end_session().unwrap();
+
+    let previewed = preview(&lucyd, "hello");
+    assert_eq!(lucyd.tts.next_sentence(), "hello");
+    assert_eq!(lucyd.tts.voice().as_deref(), Some("en_GB-alba-medium"));
+    lucyd.tts.finish_playing();
+    previewed.join().unwrap().unwrap();
 }
 
 #[test]

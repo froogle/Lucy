@@ -367,7 +367,7 @@ fn voice_step<B: Backend>(
         }
         if ui.yes("Keep this voice?", true)? {
             config.set(&["piper", "voice"], voice.name)?;
-            ui.say("Lucy speaks in it from lucyd's next start.")?;
+            ui.say("Lucy speaks in it from her next Session.")?;
             return Ok(());
         }
     }

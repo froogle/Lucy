@@ -42,14 +42,11 @@ impl Runner {
     pub(super) async fn preview(&mut self, preview: VoicePreview) {
         let settings = lucy_config::load(&self.files.config_path).unwrap_or_default();
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let speaker_name = &settings.audio.speaker;
-        let mut speaker = match &preview.voice {
-            Some(voice) => self
-                .adapters
-                .tts
-                .open_in_voice(speaker_name, voice, events_tx),
-            None => self.adapters.tts.open(speaker_name, events_tx),
-        };
+        let voice = preview.voice.as_ref().unwrap_or(&settings.piper.voice);
+        let mut speaker = self
+            .adapters
+            .tts
+            .open(&settings.audio.speaker, voice, events_tx);
         speaker.sound(Sound::Start);
         speaker.speak(preview.text);
         let ending = loop {

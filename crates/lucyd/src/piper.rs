@@ -34,6 +34,8 @@ const REFERENCE_SECS: usize = 2;
 
 pub struct Piper {
     shared: Arc<Shared>,
+    /// The voice the server preloads.
+    voice: String,
     reference: Reference,
     reference_out: Mutex<Option<rtrb::Consumer<f32>>>,
 }
@@ -72,11 +74,13 @@ impl Piper {
         });
         let supervisor = shared.clone();
         let voice = voice.to_owned();
-        std::thread::spawn(move || supervise(&supervisor, python, &voice));
+        let preloaded = voice.clone();
+        std::thread::spawn(move || supervise(&supervisor, python, &preloaded));
         let (reference, reference_out) =
             rtrb::RingBuffer::new(playback::REFERENCE_RATE as usize * REFERENCE_SECS);
         Piper {
             shared,
+            voice,
             reference: Arc::new(Mutex::new(reference)),
             reference_out: Mutex::new(Some(reference_out)),
         }
@@ -109,26 +113,17 @@ impl Drop for Piper {
 }
 
 impl Tts for Piper {
-    fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
-        let shared = self.shared.clone();
-        playback::speaker(
-            Box::new(move |text| shared.synthesise(text, None)),
-            speaker,
-            events,
-            self.reference.clone(),
-        )
-    }
-
-    fn open_in_voice(
+    fn open(
         &self,
         speaker: &str,
         voice: &str,
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker> {
         let shared = self.shared.clone();
-        let voice = voice.to_owned();
+        // The preloaded voice needs no fetching or switching.
+        let voice = (voice != self.voice).then(|| voice.to_owned());
         playback::speaker(
-            Box::new(move |text| shared.synthesise(text, Some(&voice))),
+            Box::new(move |text| shared.synthesise(text, voice.as_deref())),
             speaker,
             events,
             self.reference.clone(),
@@ -598,7 +593,7 @@ mod tests {
         let piper = Piper::start(Some(live_python()), voices.path().to_owned(), DEFAULT_VOICE);
         let reference = piper.take_reference().unwrap();
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let mut speaker = piper.open("default", events_tx);
+        let mut speaker = piper.open("default", DEFAULT_VOICE, events_tx);
 
         speaker.speak("Hello, I'm Lucy.".into());
         speaker.speak("This is my voice.".into());

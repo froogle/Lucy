@@ -1177,7 +1177,7 @@ impl FakeTts {
         }
     }
 
-    /// The voice the last Speaker was opened in, or None for the running one.
+    /// The voice the last Speaker was opened in.
     pub fn voice(&self) -> Option<String> {
         self.voice.lock().unwrap().clone()
     }
@@ -1245,22 +1245,16 @@ impl FakeTts {
 }
 
 impl Tts for FakeTts {
-    fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
-        *self.events.lock().unwrap() = Some(events);
-        *self.device.lock().unwrap() = Some(speaker.to_owned());
-        *self.voice.lock().unwrap() = None;
-        Box::new(FakeSpeaker { tts: self.clone() })
-    }
-
-    fn open_in_voice(
+    fn open(
         &self,
         speaker: &str,
         voice: &str,
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker> {
-        let opened = self.open(speaker, events);
+        *self.events.lock().unwrap() = Some(events);
+        *self.device.lock().unwrap() = Some(speaker.to_owned());
         *self.voice.lock().unwrap() = Some(voice.to_owned());
-        opened
+        Box::new(FakeSpeaker { tts: self.clone() })
     }
 }
 
