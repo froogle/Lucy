@@ -49,14 +49,14 @@ fn the_end_action_ends_the_session() {
 #[test]
 fn a_third_party_client_can_claim_the_indicator_role() {
     let lucyd = Harness::start();
-    let widget = lucyd.indicator("third-party-widget");
+    let indicator = lucyd.indicator("third-party-indicator");
     let mut client = lucyd.client();
     client.start_session().unwrap();
     client.end_session().unwrap();
 
-    // Once the widget goes, the next Session is notified. Had the first
+    // Once the Indicator goes, the next Session is notified. Had the first
     // Session been notified too, its notifications would arrive first.
-    drop(widget);
+    drop(indicator);
     client.start_session().unwrap();
 
     assert_eq!(

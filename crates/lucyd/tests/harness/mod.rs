@@ -297,7 +297,7 @@ impl Harness {
     }
 
     /// A client that claims the `indicator` role, as `lucy-indicator` or a
-    /// third-party widget would.
+    /// third-party Indicator would.
     pub fn indicator(&self, name: &str) -> Client {
         let client = Client::connect(self.socket_path(), name, Some(lucy_ipc::Role::Indicator))
             .expect("hello succeeds");
