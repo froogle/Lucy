@@ -3,9 +3,10 @@
 //! Session, forwarding the model's calls to it over MCP stdio.
 
 mod approval;
+mod authored;
 mod manage;
 mod manifest;
-mod sandbox;
+pub(crate) mod sandbox;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
@@ -254,6 +255,16 @@ impl Host {
     /// says whether the user approved; `Err` says why they couldn't be
     /// asked.
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
+        self.ask_approval(name, false).await
+    }
+
+    /// Asks the user's Approval as `request_approval` does, once neither
+    /// Lucy nor the user is speaking.
+    pub async fn request_approval_when_quiet(&self, name: &str) -> Result<bool, String> {
+        self.ask_approval(name, true).await
+    }
+
+    async fn ask_approval(&self, name: &str, quiet: bool) -> Result<bool, String> {
         const NO_SESSION: &str = "no Session is open to ask in";
         if self.session.lock().unwrap().upgrade().is_none() {
             return Err(NO_SESSION.into());
@@ -280,7 +291,12 @@ impl Host {
             prompt,
             expects: Expects::Yes,
         };
-        match runner::ask(&self.commands, question, shown).await {
+        let answer = if quiet {
+            runner::ask_when_quiet(&self.commands, question, shown).await
+        } else {
+            runner::ask(&self.commands, question, shown).await
+        };
+        match answer {
             Some(Answer::Yes) => {}
             Some(_) => return Ok(false),
             None => return Err(NO_SESSION.into()),
