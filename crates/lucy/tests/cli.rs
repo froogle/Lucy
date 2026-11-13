@@ -13,7 +13,7 @@ fn lucy(runtime_dir: &Path) -> Command {
 fn start_lucyd(runtime_dir: &Path) -> lucyd::Daemon {
     lucyd::spawn(lucyd::Options {
         socket_path: runtime_dir.join("lucy").join("lucyd.sock"),
-        config: lucy_config::Config::default(),
+        config_path: runtime_dir.join("config.toml"),
         lucy_program: env!("CARGO_BIN_EXE_lucy").into(),
         adapters: lucyd::adapters::Adapters::inert(),
     })

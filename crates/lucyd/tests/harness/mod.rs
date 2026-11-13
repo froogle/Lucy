@@ -10,7 +10,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use lucy_config::Config;
+use lucy_config::Provider;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
     Adapters, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
@@ -33,30 +33,46 @@ pub struct Harness {
     pub tts: FakeTts,
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
+    config_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
 impl Harness {
-    /// Starts lucyd with default config and a socket in a fresh runtime dir.
+    /// Starts lucyd with no config file and a socket in a fresh runtime dir.
     pub fn start() -> Harness {
-        Harness::with_config(Config::default())
+        Harness::launch(None, None)
     }
 
-    pub fn with_config(config: Config) -> Harness {
+    /// Starts lucyd with `config` as its `config.toml`.
+    pub fn with_config(config: &str) -> Harness {
+        Harness::launch(Some(config), None)
+    }
+
+    /// Starts lucyd with a real Thinking adapter in place of the fake.
+    pub fn with_thinking(config: Option<&str>, thinking: Arc<dyn Thinking>) -> Harness {
+        Harness::launch(config, Some(thinking))
+    }
+
+    fn launch(config: Option<&str>, real_thinking: Option<Arc<dyn Thinking>>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
+        let config_path = dir.path().join("config").join("config.toml");
+        if let Some(config) = config {
+            std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            std::fs::write(&config_path, config).unwrap();
+        }
         let (speech, speech_rx) = mpsc::unbounded_channel();
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
-            config,
+            config_path: config_path.clone(),
             lucy_program: lucy_binary(),
             adapters: Adapters {
                 speech: speech_rx,
                 stt: Arc::new(stt.clone()),
-                thinking: Box::new(thinking.clone()),
+                thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
                 tts: Box::new(tts.clone()),
             },
         })
@@ -68,6 +84,7 @@ impl Harness {
             thinking,
             tts,
             bus: Arc::default(),
+            config_path,
             _dir: dir,
         };
         harness.record_bus();
@@ -76,6 +93,11 @@ impl Harness {
 
     pub fn socket_path(&self) -> &Path {
         self.daemon.socket_path()
+    }
+
+    /// The `config.toml` lucyd reads at each Session start.
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     pub fn mcp_socket_path(&self) -> &Path {
@@ -269,6 +291,7 @@ pub struct FakeThinking {
     /// How the open SessionModel reaches Lucy's tools.
     relay: Arc<Mutex<Option<Relay>>>,
     streamed: Arc<Mutex<Vec<String>>>,
+    opened: Arc<Mutex<Vec<Provider>>>,
 }
 
 impl FakeThinking {
@@ -280,7 +303,13 @@ impl FakeThinking {
             events: Arc::default(),
             relay: Arc::default(),
             streamed: Arc::default(),
+            opened: Arc::default(),
         }
+    }
+
+    /// The Provider settings of each SessionModel opened, in order.
+    pub fn opened(&self) -> Vec<Provider> {
+        self.opened.lock().unwrap().clone()
     }
 
     /// Waits for the text of the next Turn sent to the model.
@@ -376,9 +405,11 @@ impl FakeThinking {
 impl Thinking for FakeThinking {
     fn open(
         &self,
+        provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
     ) -> Box<dyn SessionModel> {
+        self.opened.lock().unwrap().push(provider.clone());
         *self.events.lock().unwrap() = Some(events);
         *self.relay.lock().unwrap() = Some(relay);
         Box::new(FakeSessionModel {

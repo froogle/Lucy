@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lucy_config::Provider;
 use tokio::sync::mpsc;
 
 /// One utterance, cut from the microphone by the VAD: 16 kHz mono.
@@ -32,6 +33,9 @@ pub enum ThinkingEvent {
     TurnEnd,
     /// Where the subscription stands against its usage limits.
     RateLimit(RateLimit),
+    /// The Provider can't be used. The text says why and how to fix it,
+    /// ready to speak; the Session says it and ends.
+    Unavailable(String),
 }
 
 /// A `rate_limit_event` from `claude`.
@@ -67,11 +71,13 @@ pub struct Relay {
 
 /// A Thinking Provider.
 pub trait Thinking: Send + Sync {
-    /// Starts the model process for a new Session, configured with `relay`
-    /// as its MCP server. The process streams its replies into `events`.
-    /// Dropping the SessionModel ends the process.
+    /// Starts the model process for a new Session with the settings in
+    /// `provider`, configured with `relay` as its MCP server. The process
+    /// streams its replies into `events`. Dropping the SessionModel ends the
+    /// process.
     fn open(
         &self,
+        provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
     ) -> Box<dyn SessionModel>;
@@ -100,7 +106,7 @@ pub struct Adapters {
     /// Utterances from the microphone. Ignored while no Session is open.
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
     pub stt: Arc<dyn Stt>,
-    pub thinking: Box<dyn Thinking>,
+    pub thinking: Arc<dyn Thinking>,
     pub tts: Box<dyn Tts>,
 }
 
@@ -111,7 +117,7 @@ impl Adapters {
         Adapters {
             speech,
             stt: Arc::new(Inert),
-            thinking: Box::new(Inert),
+            thinking: Arc::new(Inert),
             tts: Box::new(Inert),
         }
     }
@@ -128,6 +134,7 @@ impl Stt for Inert {
 impl Thinking for Inert {
     fn open(
         &self,
+        _provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         _relay: Relay,
     ) -> Box<dyn SessionModel> {

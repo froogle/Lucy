@@ -1,14 +1,6 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    let config_path = lucy_config::default_path();
-    let config = match lucy_config::load(&config_path) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("lucyd: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
     let Some(socket_path) = lucy_ipc::default_socket_path() else {
         eprintln!("lucyd: XDG_RUNTIME_DIR is not set");
         return ExitCode::FAILURE;
@@ -22,9 +14,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Ticket 12 picks the Provider from config.
     let mut adapters = lucyd::adapters::Adapters::inert();
-    adapters.thinking = Box::new(lucyd::claude::Claude::new(
+    adapters.thinking = std::sync::Arc::new(lucyd::claude::Claude::new(
         "claude".into(),
         lucy_config::xdg_dir("XDG_STATE_HOME", ".local/state")
             .join("lucy")
@@ -32,7 +23,7 @@ fn main() -> ExitCode {
     ));
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
-        config,
+        config_path: lucy_config::default_path(),
         lucy_program,
         adapters,
     }) {

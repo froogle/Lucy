@@ -12,9 +12,7 @@ mod status;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use lucy_config::Config;
 use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -22,7 +20,8 @@ use tokio::sync::mpsc;
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
-    pub config: Config,
+    /// `config.toml`, read at each Session start. It need not exist.
+    pub config_path: PathBuf,
     /// The `lucy` binary, which model processes run as `lucy mcp-relay`.
     pub lucy_program: PathBuf,
     pub adapters: adapters::Adapters,
@@ -40,7 +39,7 @@ pub struct Daemon {
 pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
-        config,
+        config_path,
         lucy_program,
         adapters,
     } = options;
@@ -60,7 +59,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             status.clone(),
             adapters,
             relays.clone(),
-            Duration::from_secs_f64(config.session.silence_timeout_secs),
+            config_path,
         )
         .run(),
     );

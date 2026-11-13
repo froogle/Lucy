@@ -2,13 +2,15 @@
 //! `session` state machine asks for.
 
 use std::fmt;
+use std::path::PathBuf;
 use std::time::Duration;
 
+use lucy_config::Tier;
 use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::Adapters;
+use crate::adapters::{Adapters, SessionModel, ThinkingEvent};
 use crate::mcp::{Caller, Relays};
 use crate::session::{Input, Output, Session};
 use crate::status::StatusBus;
@@ -40,7 +42,7 @@ pub struct Runner {
     status: StatusBus,
     adapters: Adapters,
     relays: Relays,
-    silence_timeout: Duration,
+    config_path: PathBuf,
     /// False once the speech source has gone away.
     speech_open: bool,
     sessions_started: u64,
@@ -52,14 +54,14 @@ impl Runner {
         status: StatusBus,
         adapters: Adapters,
         relays: Relays,
-        silence_timeout: Duration,
+        config_path: PathBuf,
     ) -> Self {
         Runner {
             commands,
             status,
             adapters,
             relays,
-            silence_timeout,
+            config_path,
             speech_open: true,
             sessions_started: 0,
         }
@@ -97,12 +99,29 @@ impl Runner {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // Revoked when the Session ends.
         let (relay, _token) = self.relays.issue(Caller::SessionModel);
-        let mut model = self.adapters.thinking.open(events_tx, relay);
+        // Edits to the file apply from the next Session on.
+        let config = lucy_config::load(&self.config_path);
+        let provider = match &config {
+            Ok(config) => config.provider(Tier::Fast),
+            Err(e) => Err(format!(
+                "I {}. Fix the file and wake me again.",
+                e.to_string().lines().next().unwrap_or_default()
+            )),
+        };
+        let mut model: Box<dyn SessionModel> = match provider {
+            Ok(provider) => self.adapters.thinking.open(provider, events_tx, relay),
+            Err(reason) => {
+                eprintln!("lucyd: {reason}");
+                let _ = events_tx.send(ThinkingEvent::Unavailable(reason));
+                Box::new(Unopened { _events: events_tx })
+            }
+        };
+        let silence_timeout = config.unwrap_or_default().session.silence_timeout_secs;
         let (played_tx, mut played) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(played_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
         let mut session = Session::default();
-        let mut silence = SilenceTimer::new(self.silence_timeout);
+        let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
         silence.set_running(session.silence_timer_runs());
 
         self.publish(session.state(), Some(id));
@@ -174,6 +193,15 @@ impl Runner {
             session_id: session_id.map(|id| id.to_string()),
         });
     }
+}
+
+/// Stands in for the model when no Provider could be opened.
+struct Unopened {
+    _events: mpsc::UnboundedSender<ThinkingEvent>,
+}
+
+impl SessionModel for Unopened {
+    fn send_turn(&mut self, _text: String) {}
 }
 
 /// A countdown that can be paused and resumed.

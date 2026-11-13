@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use lucy_config::{Config, Provider, Tier};
 use lucyd::adapters::{Relay, Thinking, ThinkingEvent};
 use lucyd::claude::Claude;
 use tokio::sync::mpsc;
@@ -14,6 +15,11 @@ const LIVE_WAIT: Duration = Duration::from_secs(60);
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude")
+}
+
+/// The default fast-tier Provider.
+fn fast() -> Provider {
+    Config::default().provider(Tier::Fast).unwrap().clone()
 }
 
 fn relay() -> Relay {
@@ -54,6 +60,7 @@ fn read_turn(
             Ok(ThinkingEvent::SentenceEnd) => text.push('|'),
             Ok(ThinkingEvent::TurnEnd) => return (text, rate_limits),
             Ok(event @ ThinkingEvent::RateLimit(_)) => rate_limits.push(event),
+            Ok(ThinkingEvent::Unavailable(reason)) => panic!("Provider unavailable: {reason}"),
             Err(_) => {
                 assert!(Instant::now() < deadline, "the Turn never ended: {text:?}");
                 std::thread::sleep(Duration::from_millis(10));
@@ -81,7 +88,7 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
     let (tx, mut events) = mpsc::unbounded_channel();
 
-    let mut model = claude.open(tx, relay());
+    let mut model = claude.open(&fast(), tx, relay());
     // Spawned before any Turn is sent.
     wait_for_file(&work.path().join("argv"));
 
@@ -128,7 +135,7 @@ fn claude_dying_mid_turn_ends_the_turn() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(fixtures().join("dying-claude"), work.path().to_owned());
     let (tx, mut events) = mpsc::unbounded_channel();
-    let mut model = claude.open(tx, relay());
+    let mut model = claude.open(&fast(), tx, relay());
 
     model.send_turn("Remember the word kiwi.".into());
 
@@ -141,7 +148,7 @@ fn runs_with_an_isolated_config_naming_only_the_relay() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
     let (tx, _events) = mpsc::unbounded_channel();
-    let _model = claude.open(tx, relay());
+    let _model = claude.open(&fast(), tx, relay());
     let args = args(work.path());
 
     for flag in [
@@ -172,10 +179,29 @@ fn runs_with_an_isolated_config_naming_only_the_relay() {
             "args": ["mcp-relay", "--token", "abc"],
         }}})
     );
+    assert_eq!(value_of(&args, "--model"), "haiku");
     let prompt = value_of(&args, "--append-system-prompt");
     assert!(prompt.contains("one to three short"), "{prompt}");
     assert!(prompt.contains("markdown"), "{prompt}");
     assert!(prompt.contains("Let me check"), "{prompt}");
+}
+
+#[test]
+fn any_model_the_cli_accepts_is_passed_through() {
+    let work = tempfile::tempdir().unwrap();
+    let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
+    let (tx, _events) = mpsc::unbounded_channel();
+    let provider = Provider {
+        model: Some("claude-not-yet-released".into()),
+        ..fast()
+    };
+
+    let _model = claude.open(&provider, tx, relay());
+
+    assert_eq!(
+        value_of(&args(work.path()), "--model"),
+        "claude-not-yet-released"
+    );
 }
 
 /// Opt-in: `cargo test -p lucyd --test claude -- --ignored`. Uses the real
@@ -191,7 +217,7 @@ fn live_claude_keeps_context_across_turns() {
         program: PathBuf::from("true"),
         args: vec![],
     };
-    let mut model = claude.open(tx, relay);
+    let mut model = claude.open(&fast(), tx, relay);
 
     model.send_turn("Remember the word kiwi. Reply with just OK.".into());
     read_turn(&mut events, LIVE_WAIT);

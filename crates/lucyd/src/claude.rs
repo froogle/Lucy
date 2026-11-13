@@ -7,6 +7,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use lucy_config::Provider;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -40,7 +41,7 @@ impl Claude {
         Claude { program, work_dir }
     }
 
-    fn command(&self, relay: &Relay) -> Command {
+    fn command(&self, provider: &Provider, relay: &Relay) -> Command {
         let mcp_config = serde_json::json!({"mcpServers": {"lucy": {
             "command": relay.program,
             "args": relay.args,
@@ -59,13 +60,19 @@ impl Claude {
             .args(["--tools", ""])
             .args(["--permission-mode", "dontAsk"])
             .args(["--allowedTools", "mcp__lucy__*"])
-            .args(["--append-system-prompt", SYSTEM_PROMPT])
+            .args(["--append-system-prompt", SYSTEM_PROMPT]);
+        if let Some(model) = &provider.model {
+            command.args(["--model", model]);
+        }
+        command
             .current_dir(&self.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        for name in SCRUBBED_ENV {
-            command.env_remove(name);
+        if !provider.allow_api_key {
+            for name in SCRUBBED_ENV {
+                command.env_remove(name);
+            }
         }
         command
     }
@@ -74,11 +81,12 @@ impl Claude {
 impl Thinking for Claude {
     fn open(
         &self,
+        provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
     ) -> Box<dyn SessionModel> {
-        let child =
-            std::fs::create_dir_all(&self.work_dir).and_then(|()| self.command(&relay).spawn());
+        let child = std::fs::create_dir_all(&self.work_dir)
+            .and_then(|()| self.command(provider, &relay).spawn());
         let mut child = match child {
             Ok(child) => child,
             Err(e) => {
@@ -304,19 +312,29 @@ mod tests {
         assert_eq!(stream.line(line), []);
     }
 
-    #[test]
-    fn the_child_env_drops_billing_overrides_and_keeps_the_oauth_token() {
+    /// The env vars the child process has removed.
+    fn removed_env(allow_api_key: bool) -> Vec<String> {
         let claude = Claude::new("claude".into(), "/work".into());
+        let provider = Provider {
+            kind: lucy_config::Kind::Claude,
+            model: None,
+            allow_api_key,
+        };
         let relay = Relay {
             program: "lucy".into(),
             args: vec![],
         };
-        let command = claude.command(&relay);
-        let removed: Vec<_> = command
+        let command = claude.command(&provider, &relay);
+        command
             .get_envs()
             .filter(|(_, value)| value.is_none())
             .map(|(name, _)| name.to_str().unwrap().to_owned())
-            .collect();
+            .collect()
+    }
+
+    #[test]
+    fn the_child_env_drops_billing_overrides_and_keeps_the_oauth_token() {
+        let removed = removed_env(false);
         for name in [
             "CLAUDE_CODE_USE_BEDROCK",
             "CLAUDE_CODE_USE_VERTEX",
@@ -327,5 +345,10 @@ mod tests {
             assert!(removed.iter().any(|r| r == name), "{name} kept");
         }
         assert!(!removed.iter().any(|r| r == "CLAUDE_CODE_OAUTH_TOKEN"));
+    }
+
+    #[test]
+    fn allow_api_key_keeps_the_child_env() {
+        assert_eq!(removed_env(true), Vec::<String>::new());
     }
 }
