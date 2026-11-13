@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use lucy_config::Provider;
 use tokio::sync::mpsc;
 
 /// One utterance, cut from the microphone by the VAD: 16 kHz mono.
@@ -33,6 +34,9 @@ pub enum ThinkingEvent {
     TurnEnd,
     /// Where the subscription stands against its usage limits.
     RateLimit(RateLimit),
+    /// The Provider can't be used. The text says why and how to fix it,
+    /// ready to speak; the Session says it and ends.
+    Unavailable(String),
 }
 
 /// A `rate_limit_event` from `claude`.
@@ -68,16 +72,27 @@ pub struct Relay {
 
 /// A Thinking Provider.
 pub trait Thinking: Send + Sync {
-    /// Starts the model process for a new Session, configured with `relay`
-    /// as its MCP server and following `instructions` (the Persona) all
-    /// Session. The process streams its replies into `events`. Dropping the
-    /// SessionModel ends the process.
+    /// Starts the model process for a new Session with the settings in
+    /// `provider`, configured with `relay` as its MCP server and following
+    /// `instructions` (the Persona) all Session. The process streams its
+    /// replies into `events`. Dropping the SessionModel ends the process. If
+    /// the Provider can't be used, it sends `Unavailable`.
     fn open(
         &self,
+        provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
         instructions: String,
     ) -> Box<dyn SessionModel>;
+
+    /// Checks without a model call that the CLI is installed and signed in
+    /// as `provider` requires. Blocking. The error is a reason ready to
+    /// speak, with the fix.
+    fn health(&self, provider: &Provider) -> Result<(), String>;
+
+    /// A real "Reply OK" round trip, with the subscription guard's checks
+    /// on it. Blocking. The error is a reason ready to speak, with the fix.
+    fn check(&self, provider: &Provider) -> Result<(), String>;
 }
 
 /// The model process of one Session.
@@ -150,7 +165,7 @@ pub struct Adapters {
     /// Utterances from the microphone. Ignored while no Session is open.
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
     pub stt: Arc<dyn Stt>,
-    pub thinking: Box<dyn Thinking>,
+    pub thinking: Arc<dyn Thinking>,
     pub tts: Box<dyn Tts>,
     pub notifier: Arc<dyn Notifier>,
     pub launcher: Arc<dyn Launcher>,
@@ -165,7 +180,7 @@ impl Adapters {
         Adapters {
             speech,
             stt: Arc::new(Inert),
-            thinking: Box::new(Inert),
+            thinking: Arc::new(Inert),
             tts: Box::new(Inert),
             notifier: Arc::new(Inert),
             launcher: Arc::new(Inert),
@@ -185,13 +200,24 @@ impl Stt for Inert {
 impl Thinking for Inert {
     fn open(
         &self,
+        _provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         _relay: Relay,
         _instructions: String,
     ) -> Box<dyn SessionModel> {
         Box::new(InertSessionModel { _events: events })
     }
+
+    fn health(&self, _provider: &Provider) -> Result<(), String> {
+        Err(INERT_THINKING.to_owned())
+    }
+
+    fn check(&self, _provider: &Provider) -> Result<(), String> {
+        Err(INERT_THINKING.to_owned())
+    }
 }
+
+const INERT_THINKING: &str = "This lucyd has no Thinking Provider.";
 
 struct InertSessionModel {
     _events: mpsc::UnboundedSender<ThinkingEvent>,

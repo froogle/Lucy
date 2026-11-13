@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     let config_path = lucy_config::default_path();
+    // Read again at each Session start; the launcher is set once, here.
     let config = match lucy_config::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
@@ -22,9 +23,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Ticket 12 picks the Provider from config.
     let mut adapters = lucyd::adapters::Adapters::inert();
-    adapters.thinking = Box::new(lucyd::claude::Claude::new(
+    adapters.thinking = std::sync::Arc::new(lucyd::claude::Claude::new(
         "claude".into(),
         lucy_config::xdg_dir("XDG_STATE_HOME", ".local/state")
             .join("lucy")
@@ -46,7 +46,7 @@ fn main() -> ExitCode {
     adapters.applications = lucyd::desktop_entries::xdg_dirs();
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
-        config,
+        config_path,
         persona_path: lucy_config::xdg_dir("XDG_CONFIG_HOME", ".config")
             .join("lucy")
             .join("persona.md"),

@@ -4,7 +4,8 @@ use schemars::generate::SchemaSettings;
 use serde_json::{json, Value};
 
 use crate::{
-    Hello, HelloResult, LoudnessEvent, SessionStarted, StateEvent, Status, Subscribe, PROTOCOL,
+    Hello, HelloResult, LoudnessEvent, ProviderCheck, ProviderCheckResult, ProvidersStatus,
+    SessionStarted, StateEvent, Status, Subscribe, PROTOCOL,
 };
 
 /// The schema committed as `schema/lucy-ipc.schema.json`. `x-methods` maps
@@ -19,6 +20,9 @@ pub fn schema() -> Value {
     let state_event = generator.subschema_for::<StateEvent>();
     let level_event = generator.subschema_for::<LoudnessEvent>();
     let session_started = generator.subschema_for::<SessionStarted>();
+    let providers_status = generator.subschema_for::<ProvidersStatus>();
+    let provider_check = generator.subschema_for::<ProviderCheck>();
+    let provider_check_result = generator.subschema_for::<ProviderCheckResult>();
 
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -31,6 +35,8 @@ pub fn schema() -> Value {
             "subscribe": {"params": subscribe, "result": {"type": "object"}},
             "session.start": {"result": session_started},
             "session.end": {"result": {"type": "object"}},
+            "providers.status": {"result": providers_status},
+            "provider.check": {"params": provider_check, "result": provider_check_result},
         },
         "x-events": {
             "state": {"params": state_event},

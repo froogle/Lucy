@@ -10,7 +10,10 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
-use crate::{Event, Hello, HelloResult, Role, SessionStarted, Status, Subscribe, Topic, PROTOCOL};
+use crate::{
+    Event, Hello, HelloResult, ProviderCheck, ProviderCheckResult, ProvidersStatus, Role,
+    SessionStarted, Status, Subscribe, Topic, PROTOCOL,
+};
 
 pub struct Client {
     reader: BufReader<UnixStream>,
@@ -69,6 +72,19 @@ impl Client {
     pub fn end_session(&mut self) -> Result<(), Error> {
         let _: Value = self.call("session.end", Value::Null)?;
         Ok(())
+    }
+
+    /// Each Thinking Provider in config, with its health.
+    pub fn providers_status(&mut self) -> Result<ProvidersStatus, Error> {
+        self.call("providers.status", Value::Null)
+    }
+
+    /// Runs a real "Reply OK" round trip through the Provider `name`.
+    pub fn check_provider(&mut self, name: &str) -> Result<ProviderCheckResult, Error> {
+        let params = ProviderCheck {
+            name: name.to_owned(),
+        };
+        self.call("provider.check", json!(params))
     }
 
     /// The next event, exactly as lucyd sent it (one NDJSON line, no newline).

@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use lucy_config::Config;
+use lucy_config::Provider;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
     Adapters, Launcher, Notification, NotificationAction, Notifier, Relay, SessionModel, Speaker,
@@ -40,33 +40,51 @@ pub struct Harness {
     applications: [PathBuf; 2],
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
+    config_path: PathBuf,
     plugins: lucyd::plugins::Paths,
     persona_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
+/// The `persona.md` of a user who has had a Session before.
+const PERSONA: &str = "You are Lucy.";
+
 impl Harness {
-    /// Starts lucyd with default config and a socket in a fresh runtime dir,
+    /// Starts lucyd with no config file and a socket in a fresh runtime dir,
     /// for a user who already has a Persona.
     pub fn start() -> Harness {
-        Harness::with_config(Config::default())
+        Harness::launch(None, Some(PERSONA), None)
     }
 
-    pub fn with_config(config: Config) -> Harness {
-        Harness::build(config, Some("You are Lucy."))
+    /// Starts lucyd with `config` as its `config.toml`.
+    pub fn with_config(config: &str) -> Harness {
+        Harness::launch(Some(config), Some(PERSONA), None)
     }
 
     /// Starts lucyd for a user who has never had a Session: no `persona.md`.
     pub fn first_run() -> Harness {
-        Harness::build(Config::default(), None)
+        Harness::launch(None, None, None)
     }
 
-    fn build(config: Config, persona: Option<&str>) -> Harness {
+    /// Starts lucyd with a real Thinking adapter in place of the fake.
+    pub fn with_thinking(config: Option<&str>, thinking: Arc<dyn Thinking>) -> Harness {
+        Harness::launch(config, Some(PERSONA), Some(thinking))
+    }
+
+    fn launch(
+        config: Option<&str>,
+        persona: Option<&str>,
+        real_thinking: Option<Arc<dyn Thinking>>,
+    ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
+        let config_path = dir.path().join("config").join("lucy").join("config.toml");
         let persona_path = dir.path().join("config").join("lucy").join("persona.md");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        if let Some(config) = config {
+            std::fs::write(&config_path, config).unwrap();
+        }
         if let Some(persona) = persona {
-            std::fs::create_dir_all(persona_path.parent().unwrap()).unwrap();
             std::fs::write(&persona_path, persona).unwrap();
         }
         let (speech, speech_rx) = mpsc::unbounded_channel();
@@ -86,14 +104,14 @@ impl Harness {
         }
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
-            config,
+            config_path: config_path.clone(),
             persona_path: persona_path.clone(),
             lucy_program: lucy_binary(),
             plugins: plugins.clone(),
             adapters: Adapters {
                 speech: speech_rx,
                 stt: Arc::new(stt.clone()),
-                thinking: Box::new(thinking.clone()),
+                thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
                 tts: Box::new(tts.clone()),
                 notifier: Arc::new(notifier.clone()),
                 launcher: Arc::new(launcher.clone()),
@@ -111,6 +129,7 @@ impl Harness {
             launcher,
             applications,
             bus: Arc::default(),
+            config_path,
             plugins,
             persona_path,
             _dir: dir,
@@ -121,6 +140,11 @@ impl Harness {
 
     pub fn socket_path(&self) -> &Path {
         self.daemon.socket_path()
+    }
+
+    /// The `config.toml` lucyd reads at each Session start.
+    pub fn config_path(&self) -> &Path {
+        &self.config_path
     }
 
     pub fn mcp_socket_path(&self) -> &Path {
@@ -472,6 +496,10 @@ pub struct FakeThinking {
     /// The instructions the open SessionModel was given.
     instructions: Arc<Mutex<Option<String>>>,
     streamed: Arc<Mutex<Vec<String>>>,
+    opened: Arc<Mutex<Vec<Provider>>>,
+    /// Problems scripted for `health` and `check`, by model.
+    unhealthy: Arc<Mutex<HashMap<String, String>>>,
+    failing_checks: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl FakeThinking {
@@ -484,7 +512,27 @@ impl FakeThinking {
             relay: Arc::default(),
             instructions: Arc::default(),
             streamed: Arc::default(),
+            opened: Arc::default(),
+            unhealthy: Arc::default(),
+            failing_checks: Arc::default(),
         }
+    }
+
+    /// Health checks of a Provider using `model` report `problem`.
+    pub fn unhealthy(&self, model: &str, problem: &str) {
+        let mut unhealthy = self.unhealthy.lock().unwrap();
+        unhealthy.insert(model.to_owned(), problem.to_owned());
+    }
+
+    /// Round-trip checks of a Provider using `model` report `problem`.
+    pub fn fails_check(&self, model: &str, problem: &str) {
+        let mut failing = self.failing_checks.lock().unwrap();
+        failing.insert(model.to_owned(), problem.to_owned());
+    }
+
+    /// The Provider settings of each SessionModel opened, in order.
+    pub fn opened(&self) -> Vec<Provider> {
+        self.opened.lock().unwrap().clone()
     }
 
     /// Waits for the text of the next Turn sent to the model.
@@ -609,16 +657,37 @@ impl FakeThinking {
 impl Thinking for FakeThinking {
     fn open(
         &self,
+        provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
         instructions: String,
     ) -> Box<dyn SessionModel> {
+        self.opened.lock().unwrap().push(provider.clone());
         *self.events.lock().unwrap() = Some(events);
         *self.relay.lock().unwrap() = Some(relay);
         *self.instructions.lock().unwrap() = Some(instructions);
         Box::new(FakeSessionModel {
             turns: self.turns_tx.clone(),
         })
+    }
+
+    fn health(&self, provider: &Provider) -> Result<(), String> {
+        scripted_problem(&self.unhealthy, provider)
+    }
+
+    fn check(&self, provider: &Provider) -> Result<(), String> {
+        scripted_problem(&self.failing_checks, provider)
+    }
+}
+
+fn scripted_problem(
+    problems: &Mutex<HashMap<String, String>>,
+    provider: &Provider,
+) -> Result<(), String> {
+    let model = provider.model.as_deref().unwrap_or_default();
+    match problems.lock().unwrap().get(model) {
+        Some(problem) => Err(problem.clone()),
+        None => Ok(()),
     }
 }
 

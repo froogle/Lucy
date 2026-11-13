@@ -35,6 +35,10 @@ pub mod error_code {
     pub const SESSION_OPEN: i64 = -32003;
     /// `session.end` while no Session is open.
     pub const NO_SESSION: i64 = -32004;
+    /// `provider.check` named a Provider that isn't in `config.toml`.
+    pub const UNKNOWN_PROVIDER: i64 = -32005;
+    /// `config.toml` can't be read or parsed. The message says why.
+    pub const INVALID_CONFIG: i64 = -32006;
 }
 
 /// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
@@ -111,6 +115,51 @@ pub enum State {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStarted {
     pub session_id: String,
+}
+
+/// Result of `providers.status`: each Thinking Provider in `config.toml`,
+/// with health checks that make no model call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProvidersStatus {
+    /// Sorted by name.
+    pub providers: Vec<ProviderStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderStatus {
+    /// Its `[providers.<name>]` name.
+    pub name: String,
+    /// The CLI it drives, e.g. `claude`.
+    pub kind: String,
+    /// The model passed to the CLI; `None` means the CLI's default.
+    pub model: Option<String>,
+    /// The Model tiers that use it.
+    pub tiers: Vec<Tier>,
+    /// What's wrong and how to fix it, or `None` if it is healthy.
+    pub problem: Option<String>,
+}
+
+/// A Model tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    Fast,
+    Advanced,
+}
+
+/// Params of `provider.check`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderCheck {
+    /// The `[providers.<name>]` name.
+    pub name: String,
+}
+
+/// Result of `provider.check`: a real "Reply OK" round trip through the
+/// Provider, with the subscription guard's checks on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderCheckResult {
+    /// What's wrong and how to fix it, or `None` if the check passed.
+    pub problem: Option<String>,
 }
 
 /// Params of `subscribe`.

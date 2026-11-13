@@ -22,9 +22,7 @@ mod system_status;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use lucy_config::Config;
 use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -32,7 +30,8 @@ use tokio::sync::mpsc;
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
-    pub config: Config,
+    /// `config.toml`, read at each Session start. It need not exist.
+    pub config_path: PathBuf,
     /// The user's Persona; normally `persona.md` beside `config.toml`.
     pub persona_path: PathBuf,
     /// The `lucy` binary, which model processes run as `lucy mcp-relay`.
@@ -54,7 +53,7 @@ pub struct Daemon {
 pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
-        config,
+        config_path,
         persona_path,
         lucy_program,
         adapters,
@@ -79,6 +78,10 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let (indicators, fallback) =
         notifications::fallback(&status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
+    let providers = ipc::Providers {
+        thinking: adapters.thinking.clone(),
+        config_path: config_path.clone(),
+    };
     runtime.spawn(
         runner::Runner::new(
             commands,
@@ -88,7 +91,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             relays.clone(),
             plugins::Host::new(plugins),
             persona.clone(),
-            Duration::from_secs_f64(config.session.silence_timeout_secs),
+            config_path,
         )
         .run(),
     );
@@ -99,7 +102,9 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         sessions.clone(),
         desktop,
     ));
-    runtime.spawn(ipc::serve(listener, status, levels, indicators, sessions));
+    runtime.spawn(ipc::serve(
+        listener, status, levels, indicators, sessions, providers,
+    ));
 
     Ok(Daemon {
         socket_path,
