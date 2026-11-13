@@ -229,6 +229,10 @@ impl Runner {
                 Input::Ask(ask.question)
             } else {
                 tokio::select! {
+                // The model's events first: a Turn that ended before a
+                // request came in (an End, say) is seen to have ended.
+                biased;
+                Some(event) = events.recv() => Input::Thinking(event),
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         let _ = reply.send(Err(StartError));
@@ -273,7 +277,6 @@ impl Runner {
                         Input::TranscribeFailed
                     }
                 },
-                Some(event) = events.recv() => Input::Thinking(event),
                 Some(event) = speaker_events.recv() => match event {
                     SpeakerEvent::Played => Input::Played,
                     // Lucy can't say it, so she shows it.
