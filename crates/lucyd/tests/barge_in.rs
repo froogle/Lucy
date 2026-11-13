@@ -603,3 +603,39 @@ fn a_delegate_question_parked_while_lucy_speaks_waits_out_a_barge_in_and_its_tur
 fn until_state(events: &mut Client, state: State) {
     while next_state(events).state != state {}
 }
+
+#[test]
+fn talking_over_a_voice_preview_leaves_it_be_and_the_wake_word_opens_a_session_unducked() {
+    let lucyd = Harness::hearing(
+        "[barge_in]\nwarm_up_ms = 0\n[wake_word]\nmodel = \"/models/hey_lucy.onnx\"\n",
+    );
+    lucyd.echo.set_erle(Some(20.0));
+    let mut events = lucyd.state_client();
+    let mut client = lucyd.client();
+    let preview = std::thread::spawn(move || client.voice_preview("hello"));
+    assert_eq!(lucyd.tts.next_sentence(), "hello");
+
+    // Long enough to cut Lucy off by speech in a Session: outside one,
+    // nothing ducks or stops the preview.
+    lucyd.mic.feed(SPEECH, ms(640));
+    lucyd.mic.feed(SILENCE, ms(960));
+    lucyd.mic.wait_until_heard();
+    assert_eq!(lucyd.tts.ducks(), Vec::<bool>::new());
+    assert_eq!(lucyd.tts.stops(), 0);
+
+    lucyd.stt.script("Hey Lucy, what's the time?");
+    lucyd.mic.feed(WAKE, ms(512));
+    lucyd.mic.feed(SPEECH, ms(1024));
+    lucyd.mic.feed(SILENCE, ms(1024));
+
+    match preview.join().unwrap() {
+        Err(lucy_ipc::Error::Rpc { code, .. }) => {
+            assert_eq!(code, lucy_ipc::error_code::INTERRUPTED);
+        }
+        other => panic!("expected the preview interrupted, got {other:?}"),
+    }
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    assert_eq!(lucyd.thinking.next_turn(), "what's the time?");
+    assert_eq!(lucyd.tts.ducks(), Vec::<bool>::new());
+    assert_eq!(lucyd.thinking.interrupts(), 0);
+}
