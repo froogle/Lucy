@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use lucy_config::Config;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Conversation, Relay, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
+    Adapters, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -264,9 +264,9 @@ impl Stt for FakeStt {
 pub struct FakeThinking {
     turns_tx: std_mpsc::Sender<String>,
     turns: Arc<Mutex<std_mpsc::Receiver<String>>>,
-    /// The open Conversation's event stream.
+    /// The open SessionModel's event stream.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<ThinkingEvent>>>>,
-    /// How the open Conversation's model reaches Lucy's tools.
+    /// How the open SessionModel reaches Lucy's tools.
     relay: Arc<Mutex<Option<Relay>>>,
     streamed: Arc<Mutex<Vec<String>>>,
 }
@@ -329,7 +329,7 @@ impl FakeThinking {
         .unwrap()
     }
 
-    /// Spawns the relay the last Conversation was given, as the model
+    /// Spawns the relay the last SessionModel was given, as the model
     /// process would, and runs `f` against it as an MCP client.
     fn with_mcp<F, Fut, T>(&self, f: F) -> Result<T, String>
     where
@@ -341,7 +341,7 @@ impl FakeThinking {
             .lock()
             .unwrap()
             .clone()
-            .expect("a Conversation was opened");
+            .expect("a SessionModel was opened");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -362,10 +362,10 @@ impl FakeThinking {
 
     fn send(&self, event: ThinkingEvent) {
         let events = self.events.lock().unwrap();
-        let events = events.as_ref().expect("a Conversation is open");
+        let events = events.as_ref().expect("a SessionModel is open");
         events
             .send(event)
-            .expect("lucyd is reading the Conversation");
+            .expect("lucyd is reading the SessionModel");
     }
 
     fn streamed(&self) -> Vec<String> {
@@ -378,20 +378,20 @@ impl Thinking for FakeThinking {
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
-    ) -> Box<dyn Conversation> {
+    ) -> Box<dyn SessionModel> {
         *self.events.lock().unwrap() = Some(events);
         *self.relay.lock().unwrap() = Some(relay);
-        Box::new(FakeConversation {
+        Box::new(FakeSessionModel {
             turns: self.turns_tx.clone(),
         })
     }
 }
 
-struct FakeConversation {
+struct FakeSessionModel {
     turns: std_mpsc::Sender<String>,
 }
 
-impl Conversation for FakeConversation {
+impl SessionModel for FakeSessionModel {
     fn send_turn(&mut self, text: String) {
         let _ = self.turns.send(text);
     }

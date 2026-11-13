@@ -3,7 +3,7 @@
 //! behind these.
 //!
 //! An adapter keeps the sender it was handed alive for as long as the handle
-//! it returned (`Conversation`, `Speaker`).
+//! it returned (`SessionModel`, `Speaker`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -69,16 +69,16 @@ pub struct Relay {
 pub trait Thinking: Send + Sync {
     /// Starts the model process for a new Session, configured with `relay`
     /// as its MCP server. The process streams its replies into `events`.
-    /// Dropping the Conversation ends the process.
+    /// Dropping the SessionModel ends the process.
     fn open(
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
-    ) -> Box<dyn Conversation>;
+    ) -> Box<dyn SessionModel>;
 }
 
 /// The model process of one Session.
-pub trait Conversation: Send {
+pub trait SessionModel: Send {
     /// Starts a Turn with what the user said.
     fn send_turn(&mut self, text: String);
 }
@@ -130,16 +130,16 @@ impl Thinking for Inert {
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         _relay: Relay,
-    ) -> Box<dyn Conversation> {
-        Box::new(InertConversation { _events: events })
+    ) -> Box<dyn SessionModel> {
+        Box::new(InertSessionModel { _events: events })
     }
 }
 
-struct InertConversation {
+struct InertSessionModel {
     _events: mpsc::UnboundedSender<ThinkingEvent>,
 }
 
-impl Conversation for InertConversation {
+impl SessionModel for InertSessionModel {
     fn send_turn(&mut self, _text: String) {}
 }
 

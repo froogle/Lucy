@@ -86,7 +86,7 @@ impl Runner {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // Revoked when the Session ends.
         let (relay, _token) = self.relays.issue(Caller::SessionModel);
-        let mut conversation = self.adapters.thinking.open(events_tx, relay);
+        let mut model = self.adapters.thinking.open(events_tx, relay);
         let (played_tx, mut played) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(played_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
@@ -143,7 +143,7 @@ impl Runner {
                             let _ = transcripts.send(stt.transcribe(segment));
                         });
                     }
-                    Output::SendTurn(text) => conversation.send_turn(text),
+                    Output::SendTurn(text) => model.send_turn(text),
                     Output::Speak(sentence) => speaker.speak(sentence),
                     Output::ResetSilenceTimer => silence.reset(),
                     Output::End => {

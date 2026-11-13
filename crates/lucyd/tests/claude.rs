@@ -81,11 +81,11 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
     let (tx, mut events) = mpsc::unbounded_channel();
 
-    let mut conversation = claude.open(tx, relay());
+    let mut model = claude.open(tx, relay());
     // Spawned before any Turn is sent.
     wait_for_file(&work.path().join("argv"));
 
-    conversation.send_turn("Remember the word kiwi.".into());
+    model.send_turn("Remember the word kiwi.".into());
     let (text, rate_limits) = read_turn(&mut events, WAIT);
     assert_eq!(
         text,
@@ -93,7 +93,7 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     );
     assert_eq!(rate_limits.len(), 1);
 
-    conversation.send_turn("What word?".into());
+    model.send_turn("What word?".into());
     let (text, rate_limits) = read_turn(&mut events, WAIT);
     assert_eq!(text, "Kiwi.| You asked me to remember that word.|");
     assert!(rate_limits.is_empty());
@@ -115,7 +115,7 @@ fn one_process_is_prespawned_and_serves_every_turn() {
 
     // Ending the Session ends the process.
     let pid = pids.trim().to_owned();
-    drop(conversation);
+    drop(model);
     let deadline = Instant::now() + WAIT;
     while Path::new("/proc").join(&pid).exists() {
         assert!(Instant::now() < deadline, "claude outlived its Session");
@@ -128,9 +128,9 @@ fn claude_dying_mid_turn_ends_the_turn() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(fixtures().join("dying-claude"), work.path().to_owned());
     let (tx, mut events) = mpsc::unbounded_channel();
-    let mut conversation = claude.open(tx, relay());
+    let mut model = claude.open(tx, relay());
 
-    conversation.send_turn("Remember the word kiwi.".into());
+    model.send_turn("Remember the word kiwi.".into());
 
     let (text, _) = read_turn(&mut events, WAIT);
     assert_eq!(text, "Got it, I'll remember the word kiw");
@@ -141,7 +141,7 @@ fn runs_with_an_isolated_config_naming_only_the_relay() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
     let (tx, _events) = mpsc::unbounded_channel();
-    let _conversation = claude.open(tx, relay());
+    let _model = claude.open(tx, relay());
     let args = args(work.path());
 
     for flag in [
@@ -191,11 +191,11 @@ fn live_claude_keeps_context_across_turns() {
         program: PathBuf::from("true"),
         args: vec![],
     };
-    let mut conversation = claude.open(tx, relay);
+    let mut model = claude.open(tx, relay);
 
-    conversation.send_turn("Remember the word kiwi. Reply with just OK.".into());
+    model.send_turn("Remember the word kiwi. Reply with just OK.".into());
     read_turn(&mut events, LIVE_WAIT);
-    conversation.send_turn("What word did I ask you to remember? One word.".into());
+    model.send_turn("What word did I ask you to remember? One word.".into());
     let (reply, _) = read_turn(&mut events, LIVE_WAIT);
     assert!(reply.to_lowercase().contains("kiwi"), "{reply:?}");
 }

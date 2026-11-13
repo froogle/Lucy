@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::adapters::{Conversation, Relay, Thinking, ThinkingEvent};
+use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent};
 
 /// Until the Persona lands (ticket 16).
 const SYSTEM_PROMPT: &str = "You are Lucy, a voice assistant. Everything you write is spoken \
@@ -76,14 +76,14 @@ impl Thinking for Claude {
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
-    ) -> Box<dyn Conversation> {
+    ) -> Box<dyn SessionModel> {
         let child =
             std::fs::create_dir_all(&self.work_dir).and_then(|()| self.command(&relay).spawn());
         let mut child = match child {
             Ok(child) => child,
             Err(e) => {
                 eprintln!("lucyd: can't start {}: {e}", self.program.display());
-                return Box::new(ClaudeConversation {
+                return Box::new(ClaudeSessionModel {
                     process: None,
                     events,
                     in_turn: Arc::default(),
@@ -110,7 +110,7 @@ impl Thinking for Claude {
                 let _ = reader_events.send(ThinkingEvent::TurnEnd);
             }
         });
-        Box::new(ClaudeConversation {
+        Box::new(ClaudeSessionModel {
             process: Some((child, stdin)),
             events,
             in_turn,
@@ -118,14 +118,14 @@ impl Thinking for Claude {
     }
 }
 
-struct ClaudeConversation {
+struct ClaudeSessionModel {
     process: Option<(Child, ChildStdin)>,
     events: mpsc::UnboundedSender<ThinkingEvent>,
     /// A Turn was sent and its `TurnEnd` hasn't been.
     in_turn: Arc<AtomicBool>,
 }
 
-impl Conversation for ClaudeConversation {
+impl SessionModel for ClaudeSessionModel {
     fn send_turn(&mut self, text: String) {
         let message =
             serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
@@ -144,7 +144,7 @@ impl Conversation for ClaudeConversation {
     }
 }
 
-impl Drop for ClaudeConversation {
+impl Drop for ClaudeSessionModel {
     fn drop(&mut self) {
         if let Some((mut child, _)) = self.process.take() {
             let _ = child.kill();
