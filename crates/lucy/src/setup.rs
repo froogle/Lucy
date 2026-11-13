@@ -174,16 +174,19 @@ fn tiers_step<B: Backend>(
     has: &dyn Fn(&str) -> bool,
 ) -> Result<(), String> {
     for tier in [Tier::Fast, Tier::Advanced] {
-        let options: Vec<_> = RECOMMENDATIONS
+        let (options, missing): (Vec<_>, Vec<_>) = RECOMMENDATIONS
             .iter()
-            .filter(|r| r.tier == tier && has(cli(r.kind)))
-            .collect();
+            .filter(|r| r.tier == tier)
+            .partition(|r| has(cli(r.kind)));
         ui.say("")?;
         if options.is_empty() {
-            ui.say(
-                "Neither claude nor codex is installed. Install one, then run lucy setup again.",
-            )?;
-            return Ok(());
+            let clis: Vec<&str> = missing.iter().map(|r| cli(r.kind)).collect();
+            ui.say(format!(
+                "No thinking CLI for the {tier} tier is installed: install {}, then run lucy \
+                 setup again. Until then the {tier} tier stays as config.toml has it.",
+                clis.join(" or ")
+            ))?;
+            continue;
         }
         let labels: Vec<String> = options
             .iter()
