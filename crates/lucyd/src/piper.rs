@@ -410,11 +410,22 @@ mod tests {
         assert_eq!(pythonpath, Some(("PYTHONPATH".as_ref(), None)));
     }
 
+    /// A shell script running `body`, written by a child process so that
+    /// no write fd here can leak into a child another test forks and make
+    /// running it fail with "Text file busy".
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let written = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+                "sh",
+            ])
+            .arg(format!("#!/bin/sh\n{body}\n"))
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(written.success());
         path
     }
 
