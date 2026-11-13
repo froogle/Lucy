@@ -132,6 +132,7 @@ fn a_recording_played_into_the_microphone_is_heard() {
         &config.audio,
         Box::new(lucyd::audio::Silero::load().unwrap()),
         None,
+        None,
         &config.endpointing,
     )
     .unwrap();

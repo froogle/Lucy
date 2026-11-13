@@ -281,6 +281,15 @@ pub fn text(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(text.into())])
 }
 
+/// The text of a tool result.
+pub fn result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|text| text.text.as_str()))
+        .collect()
+}
+
 /// A failed tool result: `text` tells the model why.
 pub fn error(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text.into())])

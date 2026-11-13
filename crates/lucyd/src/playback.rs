@@ -36,6 +36,9 @@ const SOUND_RATE: u32 = 22_050;
 /// The longest a cue keeps playing after the Speaker is dropped.
 const PLAY_OUT: Duration = Duration::from_secs(1);
 
+/// Ducked playback is 12 dB down.
+const DUCKED_GAIN: f32 = 0.25;
+
 /// One synthesised sentence: mono samples from -1.0 to 1.0.
 pub struct Pcm {
     pub sample_rate: u32,
@@ -56,10 +59,16 @@ pub fn speaker(
     events: mpsc::UnboundedSender<SpeakerEvent>,
     reference: Reference,
 ) -> Box<dyn Speaker> {
-    let (sentences, sentences_rx) = std_mpsc::channel::<Request>();
+    let (sentences, sentences_rx) = std_mpsc::channel::<(u64, Request)>();
     let (items, items_rx) = std_mpsc::channel();
+    let control = Arc::new(Control::default());
+    let synth_control = control.clone();
     std::thread::spawn(move || {
-        for request in sentences_rx {
+        for (epoch, request) in sentences_rx {
+            // Stopped before it was synthesised.
+            if epoch != synth_control.epoch.load(Ordering::Acquire) {
+                continue;
+            }
             let item = match request {
                 Request::Sound(sound) => Item::Sound(sound),
                 Request::Sentence(sentence) => match synthesise(&sentence) {
@@ -70,18 +79,44 @@ pub fn speaker(
                     }
                 },
             };
-            if items.send(item).is_err() {
+            if items.send((epoch, item)).is_err() {
                 return;
             }
         }
     });
     let device = device.to_owned();
-    std::thread::spawn(move || Player::new(device, events, reference).run(items_rx));
-    Box::new(PlaybackSpeaker { sentences })
+    let player_control = control.clone();
+    std::thread::spawn(move || {
+        Player::new(device, events, reference, player_control).run(items_rx);
+    });
+    Box::new(PlaybackSpeaker { sentences, control })
 }
 
 struct PlaybackSpeaker {
-    sentences: std_mpsc::Sender<Request>,
+    sentences: std_mpsc::Sender<(u64, Request)>,
+    control: Arc<Control>,
+}
+
+/// What the Speaker changes under the player and its callback.
+#[derive(Default)]
+struct Control {
+    /// Bumped by each stop. Requests and items from an older epoch are
+    /// dropped.
+    epoch: AtomicU64,
+    /// The epoch the player has flushed up to. Until it catches up with
+    /// `epoch`, the callback throws away whatever is in its ring.
+    flushed: AtomicU64,
+    /// The playback gain, as f32 bits; 0 means full volume.
+    gain: AtomicU32,
+}
+
+impl Control {
+    fn gain(&self) -> f32 {
+        match self.gain.load(Ordering::Relaxed) {
+            0 => 1.0,
+            bits => f32::from_bits(bits),
+        }
+    }
 }
 
 /// What the Speaker queues, in order.
@@ -90,13 +125,30 @@ enum Request {
     Sound(Sound),
 }
 
+impl PlaybackSpeaker {
+    fn send(&self, request: Request) {
+        let epoch = self.control.epoch.load(Ordering::Acquire);
+        let _ = self.sentences.send((epoch, request));
+    }
+}
+
 impl Speaker for PlaybackSpeaker {
     fn speak(&mut self, sentence: String) {
-        let _ = self.sentences.send(Request::Sentence(sentence));
+        self.send(Request::Sentence(sentence));
     }
 
     fn sound(&mut self, sound: Sound) {
-        let _ = self.sentences.send(Request::Sound(sound));
+        self.send(Request::Sound(sound));
+    }
+
+    fn duck(&mut self, ducked: bool) {
+        let gain = if ducked { DUCKED_GAIN.to_bits() } else { 0 };
+        self.control.gain.store(gain, Ordering::Relaxed);
+    }
+
+    fn stop(&mut self) {
+        self.duck(false);
+        self.control.epoch.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -141,6 +193,7 @@ struct Player {
     pending: VecDeque<(u64, Option<Failure>)>,
     /// The last item queued was a cue.
     sound_last: bool,
+    control: Arc<Control>,
 }
 
 impl Player {
@@ -148,6 +201,7 @@ impl Player {
         device: String,
         events: mpsc::UnboundedSender<SpeakerEvent>,
         reference: Reference,
+        control: Arc<Control>,
     ) -> Self {
         Player {
             device,
@@ -160,16 +214,22 @@ impl Player {
             rms: Arc::default(),
             pending: VecDeque::new(),
             sound_last: false,
+            control,
         }
     }
 
     /// Plays until the Speaker is dropped, which stops playback at once,
     /// unless the last thing queued was a cue: that plays out.
-    fn run(mut self, items: std_mpsc::Receiver<Item>) {
+    fn run(mut self, items: std_mpsc::Receiver<(u64, Item)>) {
         let mut next_tick = Instant::now() + LEVEL_PERIOD;
         loop {
             match items.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
-                Ok(item) => self.queue(item),
+                Ok((epoch, item)) => {
+                    self.flush_if_stopped();
+                    if epoch == self.control.epoch.load(Ordering::Acquire) {
+                        self.queue(item);
+                    }
+                }
                 Err(std_mpsc::RecvTimeoutError::Timeout) => {
                     self.tick();
                     next_tick = Instant::now() + LEVEL_PERIOD;
@@ -249,12 +309,28 @@ impl Player {
             sample_rate,
             self.consumed.clone(),
             self.rms.clone(),
+            self.control.clone(),
             self.events.clone(),
         )?);
         Ok(())
     }
 
+    /// After a stop, drops everything not yet handed to the callback and
+    /// lets the callback know, without reporting any of it.
+    fn flush_if_stopped(&mut self) {
+        let epoch = self.control.epoch.load(Ordering::Acquire);
+        if self.control.flushed.load(Ordering::Acquire) == epoch {
+            return;
+        }
+        self.written -= self.backlog.len() as u64;
+        self.backlog.clear();
+        self.pending.clear();
+        self.sound_last = false;
+        self.control.flushed.store(epoch, Ordering::Release);
+    }
+
     fn tick(&mut self) {
+        self.flush_if_stopped();
         let Some(output) = &mut self.output else {
             self.report_finished();
             return;
@@ -321,6 +397,7 @@ fn open_output(
     sample_rate: u32,
     consumed: Arc<AtomicU64>,
     rms: Arc<AtomicU32>,
+    control: Arc<Control>,
     events: mpsc::UnboundedSender<SpeakerEvent>,
 ) -> Result<Output, String> {
     let device = audio::cpal::find(audio::Direction::Output, device)?;
@@ -336,14 +413,34 @@ fn open_output(
     let ring = sample_rate as usize * RING_SECS;
     let (pcm, mut source) = rtrb::RingBuffer::new(ring);
     let (mut played_tx, played) = rtrb::RingBuffer::new(ring);
+    // The epoch whose stop the callback has finished throwing away.
+    let mut dropped_epoch = 0;
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [f32], _| {
                 let (mut played_now, mut sum) = (0u64, 0.0f32);
+                let epoch = control.epoch.load(Ordering::Acquire);
+                if epoch != dropped_epoch {
+                    // Once the player has flushed, nothing stale reaches
+                    // the ring after this drain.
+                    let flushed = control.flushed.load(Ordering::Acquire) == epoch;
+                    let mut dropped = 0;
+                    while source.pop().is_ok() {
+                        dropped += 1;
+                    }
+                    consumed.fetch_add(dropped, Ordering::Release);
+                    if !flushed {
+                        data.fill(0.0);
+                        return;
+                    }
+                    dropped_epoch = epoch;
+                }
+                let gain = control.gain();
                 for frame in data.chunks_mut(channels as usize) {
                     let sample = match source.pop() {
                         Ok(sample) => {
+                            let sample = sample * gain;
                             played_now += 1;
                             sum += sample * sample;
                             let _ = played_tx.push(sample);

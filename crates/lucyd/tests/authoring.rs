@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use harness::{next_state, stage_plugin, Harness};
 use lucy_config::{Config, Tier};
-use lucy_ipc::{Client, State};
+use lucy_ipc::{error_code, Client, State};
 use rmcp::model::CallToolResult;
 use serde_json::json;
 
@@ -137,6 +137,21 @@ fn the_session_stays_open_in_listening_while_the_build_runs() {
     let said = lucyd.tts.sentences();
     let times = said.iter().filter(|s| *s == A_FEW_MINUTES).count();
     assert_eq!(times, 1, "{said:?}");
+}
+
+#[test]
+fn a_voice_preview_is_refused_while_a_build_holds_the_session_open() {
+    let lucyd = Harness::start();
+    let _events = request_photos(&lucyd);
+
+    let refused = lucyd.client().voice_preview("hello");
+
+    match refused {
+        Err(lucy_ipc::Error::Rpc { code, .. }) => assert_eq!(code, error_code::SESSION_OPEN),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(lucyd.tts.sentences(), [A_FEW_MINUTES]);
+    assert_eq!(lucyd.client().status().unwrap().state, State::Listening);
 }
 
 #[test]

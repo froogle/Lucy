@@ -75,13 +75,20 @@ impl Endpointer {
     }
 
     /// Takes the next frame of audio, returning an utterance if it ended.
-    pub fn push(&mut self, frame: &[f32]) -> Option<SpeechSegment> {
+    /// `judged` hears the speech probability of each VAD chunk judged, and
+    /// its length.
+    pub fn push(
+        &mut self,
+        frame: &[f32],
+        mut judged: impl FnMut(f32, usize),
+    ) -> Option<SpeechSegment> {
         self.pending.extend_from_slice(frame);
         let chunk_len = self.vad.chunk_len();
         let mut ended = None;
         while self.pending.len() >= chunk_len {
             let chunk: Vec<f32> = self.pending.drain(..chunk_len).collect();
             let probability = self.vad.speech_probability(&chunk);
+            judged(probability, chunk_len);
             ended = self.judge(chunk, probability).or(ended);
         }
         ended

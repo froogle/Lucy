@@ -120,3 +120,20 @@ fn the_wake_word_test_is_refused_while_a_session_is_open() {
     assert_eq!(code, error_code::SESSION_OPEN);
     client.end_session().unwrap();
 }
+
+#[test]
+fn the_mic_level_is_the_microphone_before_lucys_echo_is_taken_out() {
+    let lucyd = Harness::hearing("");
+    lucyd.mic.wait_until_open();
+    lucyd.echo.cancel_everything();
+    let mut client = lucyd.client();
+
+    lucyd.mic.feed(MURMUR, Duration::from_millis(100));
+    let rms = wait_until("the murmur's level", || {
+        let rms = client.mic_level().unwrap().rms;
+        (rms > 0.0).then_some(rms)
+    });
+
+    assert!((rms - MURMUR).abs() < 0.01, "{rms}");
+    assert!(lucyd.echo.frames() > 0);
+}

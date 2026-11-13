@@ -39,6 +39,8 @@ pub struct Harness {
     /// utterance, unless lucyd hears through `mic`.
     speaking: Option<watch::Sender<bool>>,
     pub mic: FakeMic,
+    /// Lucy's echo canceller, under `hearing`.
+    pub echo: FakeEchoCanceller,
     pub stt: FakeStt,
     pub thinking: FakeThinking,
     pub tts: FakeTts,
@@ -110,15 +112,18 @@ impl Harness {
     pub fn hearing(config: &str) -> Harness {
         let parsed: Config = toml::from_str(config).expect("config parses");
         let mic = FakeMic::default();
+        let echo = FakeEchoCanceller::default();
         let ears = lucyd::audio::listen(
             Box::new(mic.clone()),
             &parsed.audio,
-            Box::new(FakeVad),
+            Box::new(FakeVad(mic.judged.clone())),
             Some(Box::new(FakeWakeWord::default())),
+            Some(Box::new(echo.clone())),
             &parsed.endpointing,
         )
         .expect("the fake microphone opens");
-        Harness::launch(Some(config), Some(PERSONA), None, Some((ears, mic)), None)
+        let ears = Some((ears, mic, echo));
+        Harness::launch(Some(config), Some(PERSONA), None, ears, None)
     }
 
     /// `ears` is what lucyd hears through instead of `say`.
@@ -126,7 +131,7 @@ impl Harness {
         config: Option<&str>,
         persona: Option<&str>,
         real_thinking: Option<Arc<dyn Thinking>>,
-        ears: Option<(lucyd::audio::Ears, FakeMic)>,
+        ears: Option<(lucyd::audio::Ears, FakeMic, FakeEchoCanceller)>,
         superwhisper: Option<Arc<dyn Stt>>,
     ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
@@ -140,6 +145,10 @@ impl Harness {
         if let Some(persona) = persona {
             std::fs::write(&persona_path, persona).unwrap();
         }
+        let (ears, echo) = match ears {
+            Some((ears, mic, echo)) => (Some((ears, mic)), echo),
+            None => (None, FakeEchoCanceller::default()),
+        };
         let (speech, speech_rx, wake_word, wake_word_rx, speaking, speaking_rx, hearing, mic) =
             match ears {
                 Some((ears, mic)) => (
@@ -209,6 +218,7 @@ impl Harness {
             wake_word,
             speaking,
             mic,
+            echo,
             stt,
             thinking,
             tts,
@@ -705,6 +715,8 @@ pub struct FakeThinking {
     instructions: Arc<Mutex<Option<String>>>,
     streamed: Arc<Mutex<Vec<String>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
+    /// How many times a Turn was interrupted.
+    interrupts: Arc<Mutex<usize>>,
     /// Problems scripted for `health` and `check`, by model.
     unhealthy: Arc<Mutex<HashMap<String, String>>>,
     failing_checks: Arc<Mutex<HashMap<String, String>>>,
@@ -724,6 +736,7 @@ impl FakeThinking {
             instructions: Arc::default(),
             streamed: Arc::default(),
             opened: Arc::default(),
+            interrupts: Arc::default(),
             unhealthy: Arc::default(),
             failing_checks: Arc::default(),
         }
@@ -744,6 +757,11 @@ impl FakeThinking {
     /// The Provider settings of each SessionModel opened, in order.
     pub fn opened(&self) -> Vec<Provider> {
         self.opened.lock().unwrap().clone()
+    }
+
+    /// How many times lucyd has interrupted the model's Turn.
+    pub fn interrupts(&self) -> usize {
+        *self.interrupts.lock().unwrap()
     }
 
     /// Waits for the text of the next Turn sent to the model.
@@ -913,6 +931,7 @@ impl Thinking for FakeThinking {
         *self.instructions.lock().unwrap() = Some(instructions);
         Box::new(FakeSessionModel {
             turns: self.turns_tx.clone(),
+            interrupts: self.interrupts.clone(),
         })
     }
 
@@ -940,6 +959,7 @@ impl Thinking for FakeThinking {
         *delegate.workspace.lock().unwrap() = Some(workspace);
         Box::new(FakeSessionModel {
             turns: delegate.turns_tx.clone(),
+            interrupts: Arc::default(),
         })
     }
 }
@@ -1103,6 +1123,7 @@ fn scripted_problem(
 
 struct FakeSessionModel {
     turns: std_mpsc::Sender<String>,
+    interrupts: Arc<Mutex<usize>>,
 }
 
 impl SessionModel for FakeSessionModel {
@@ -1110,7 +1131,9 @@ impl SessionModel for FakeSessionModel {
         let _ = self.turns.send(text);
     }
 
-    fn interrupt(&mut self) {}
+    fn interrupt(&mut self) {
+        *self.interrupts.lock().unwrap() += 1;
+    }
 }
 
 /// TTS that records each sentence and "plays" it until the test finishes it,
@@ -1124,6 +1147,10 @@ pub struct FakeTts {
     /// Every sentence and cue queued, in order.
     queued: Arc<Mutex<Vec<Queued>>>,
     failing: Arc<AtomicBool>,
+    /// How many times playback was stopped and flushed.
+    stops: Arc<Mutex<usize>>,
+    /// Each change to whether playback is ducked, in order.
+    ducks: Arc<Mutex<Vec<bool>>>,
     /// The open Speaker's event channel.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
     /// The device the open Speaker plays on.
@@ -1142,6 +1169,8 @@ impl FakeTts {
             sounds: Arc::default(),
             queued: Arc::default(),
             failing: Arc::default(),
+            stops: Arc::default(),
+            ducks: Arc::default(),
             events: Arc::default(),
             device: Arc::default(),
             voice: Arc::default(),
@@ -1181,6 +1210,16 @@ impl FakeTts {
     /// Every sentence and cue queued so far, in order.
     pub fn queued(&self) -> Vec<Queued> {
         self.queued.lock().unwrap().clone()
+    }
+
+    /// How many times lucyd stopped and flushed playback.
+    pub fn stops(&self) -> usize {
+        *self.stops.lock().unwrap()
+    }
+
+    /// Each time lucyd ducked (true) or unducked (false) playback, in order.
+    pub fn ducks(&self) -> Vec<bool> {
+        self.ducks.lock().unwrap().clone()
     }
 
     /// The oldest queued sentence finishes playing.
@@ -1257,6 +1296,14 @@ impl Speaker for FakeSpeaker {
     fn sound(&mut self, sound: Sound) {
         self.tts.sounds.lock().unwrap().push(sound);
         self.tts.queued.lock().unwrap().push(Queued::Sound(sound));
+    }
+
+    fn duck(&mut self, ducked: bool) {
+        self.tts.ducks.lock().unwrap().push(ducked);
+    }
+
+    fn stop(&mut self) {
+        *self.tts.stops.lock().unwrap() += 1;
     }
 }
 
@@ -1386,9 +1433,19 @@ pub struct FakeMic {
     /// The device lucyd asked for.
     opened: Arc<Mutex<Option<String>>>,
     unplugged: Arc<Mutex<Vec<String>>>,
+    pulseaudio: Arc<AtomicBool>,
+    /// Samples fed so far.
+    fed: Arc<Mutex<usize>>,
+    /// VAD chunks the fake VAD has judged so far, under `Harness::hearing`.
+    judged: Arc<Mutex<usize>>,
 }
 
 impl FakeMic {
+    /// The sound server is PulseAudio, not PipeWire.
+    pub fn use_pulseaudio(&self) {
+        self.pulseaudio.store(true, Ordering::SeqCst);
+    }
+
     /// The device with node name `name` is no longer there.
     pub fn unplug(&self, name: &str) {
         self.unplugged.lock().unwrap().push(name.to_owned());
@@ -1420,8 +1477,18 @@ impl FakeMic {
         self.play(&vec![level; len]);
     }
 
+    /// Waits until the fake VAD has judged every whole chunk fed so far, so
+    /// whatever lucyd is told next applies only to what is fed after.
+    pub fn wait_until_heard(&self) {
+        let chunks = *self.fed.lock().unwrap() / FAKE_VAD_CHUNK;
+        wait_until("the VAD never caught up with the microphone", || {
+            (*self.judged.lock().unwrap() >= chunks).then_some(())
+        });
+    }
+
     /// Feeds `samples`, waiting while the ring is full.
     pub fn play(&self, mut samples: &[f32]) {
+        *self.fed.lock().unwrap() += samples.len();
         while !samples.is_empty() {
             let written = {
                 let mut ring = self.ring.lock().unwrap();
@@ -1460,17 +1527,63 @@ impl lucyd::audio::AudioIo for FakeMic {
     fn has_device(&self, _direction: lucyd::audio::Direction, name: &str) -> bool {
         !self.unplugged.lock().unwrap().iter().any(|n| n == name)
     }
+
+    fn is_pipewire(&self) -> bool {
+        !self.pulseaudio.load(Ordering::SeqCst)
+    }
+}
+
+/// An echo canceller that passes the microphone through, or silences it all,
+/// and reports the ERLE the test sets.
+#[derive(Clone, Default)]
+pub struct FakeEchoCanceller {
+    erle_db: Arc<Mutex<Option<f32>>>,
+    cancel_everything: Arc<AtomicBool>,
+    frames: Arc<Mutex<usize>>,
+}
+
+impl FakeEchoCanceller {
+    pub fn set_erle(&self, erle_db: Option<f32>) {
+        *self.erle_db.lock().unwrap() = erle_db;
+    }
+
+    /// From now on it hears everything as Lucy's echo.
+    pub fn cancel_everything(&self) {
+        self.cancel_everything.store(true, Ordering::SeqCst);
+    }
+
+    /// How many 10 ms frames it has cleaned.
+    pub fn frames(&self) -> usize {
+        *self.frames.lock().unwrap()
+    }
+}
+
+impl lucyd::audio::EchoCanceller for FakeEchoCanceller {
+    fn cancel(&mut self, frame: &mut [f32]) {
+        *self.frames.lock().unwrap() += 1;
+        if self.cancel_everything.load(Ordering::SeqCst) {
+            frame.fill(0.0);
+        }
+    }
+
+    fn erle_db(&self) -> Option<f32> {
+        *self.erle_db.lock().unwrap()
+    }
 }
 
 /// A VAD that hears each chunk's first sample as its speech probability.
-pub struct FakeVad;
+/// Counts the chunks it judges.
+pub struct FakeVad(Arc<Mutex<usize>>);
+
+const FAKE_VAD_CHUNK: usize = 512;
 
 impl lucyd::audio::Vad for FakeVad {
     fn chunk_len(&self) -> usize {
-        512
+        FAKE_VAD_CHUNK
     }
 
     fn speech_probability(&mut self, chunk: &[f32]) -> f32 {
+        *self.0.lock().unwrap() += 1;
         chunk[0]
     }
 }

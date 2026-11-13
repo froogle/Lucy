@@ -26,6 +26,7 @@ pub struct Config {
     pub piper: Piper,
     pub wake_word: WakeWord,
     pub confirmation: Confirmation,
+    pub barge_in: BargeIn,
 }
 
 impl Default for Config {
@@ -50,6 +51,7 @@ impl Default for Config {
             piper: Piper::default(),
             wake_word: WakeWord::default(),
             confirmation: Confirmation::default(),
+            barge_in: BargeIn::default(),
         }
     }
 }
@@ -210,6 +212,8 @@ pub struct Audio {
     pub mic: String,
     /// `"default"`, or the PipeWire node name of a pinned speaker.
     pub speaker: String,
+    /// What cancels Lucy's own voice from the microphone.
+    pub echo_cancellation: EchoCancellation,
 }
 
 impl Default for Audio {
@@ -217,8 +221,76 @@ impl Default for Audio {
         Audio {
             mic: "default".to_owned(),
             speaker: "default".to_owned(),
+            echo_cancellation: EchoCancellation::default(),
         }
     }
+}
+
+/// What cancels Lucy's own voice from the microphone.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EchoCancellation {
+    /// Lucy's own echo canceller, with what she plays as its reference.
+    #[default]
+    Lucy,
+    /// PipeWire's echo-cancel module, which the user has set up and pointed
+    /// `mic` at. Lucy's own is off.
+    #[serde(rename = "pipewire")]
+    PipeWire,
+}
+
+/// `[barge_in]`: how the user cuts in while Lucy speaks. The gate values
+/// are starting points to tune.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct BargeIn {
+    pub mode: BargeInMode,
+    /// Lets speech barge in on PulseAudio or ALSA, where it is off by
+    /// default because the echo canceller works less well there.
+    pub force: bool,
+    /// Speech probability that counts while Lucy speaks.
+    pub threshold: f32,
+    /// How long speech must stay above `threshold`.
+    pub sustain_ms: u64,
+    /// The stricter threshold while the echo canceller hasn't converged.
+    pub unconverged_threshold: f32,
+    /// How long speech must stay above `unconverged_threshold`.
+    pub unconverged_sustain_ms: u64,
+    /// The echo canceller has converged once its echo return loss
+    /// enhancement reaches this.
+    pub converged_erle_db: f32,
+    /// The echo canceller counts as unconverged for this much of Lucy's
+    /// speech at the start of each Session.
+    pub warm_up_ms: u64,
+    /// How long after Lucy stops speaking her echo may still be heard.
+    pub tail_ms: u64,
+}
+
+impl Default for BargeIn {
+    fn default() -> Self {
+        BargeIn {
+            mode: BargeInMode::default(),
+            force: false,
+            threshold: 0.7,
+            sustain_ms: 300,
+            unconverged_threshold: 0.85,
+            unconverged_sustain_ms: 500,
+            converged_erle_db: 10.0,
+            warm_up_ms: 2000,
+            tail_ms: 300,
+        }
+    }
+}
+
+/// What can cut Lucy off.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BargeInMode {
+    /// Sustained speech, or the Wake word.
+    #[default]
+    Speech,
+    /// Only the Wake word: for when her own voice would cut her off.
+    WakeWord,
 }
 
 /// `[endpointing]`: how the VAD cuts utterances from the microphone.
@@ -648,6 +720,30 @@ mod tests {
         assert_eq!(config.audio.speaker, "alsa_output.hdmi");
         assert_eq!(config.endpointing.end_silence_ms, 900);
         assert_eq!(config.endpointing.pre_roll_ms, 500);
+    }
+
+    #[test]
+    fn barge_in_is_by_speech_with_the_spec_gate_unless_config_says_otherwise() {
+        let defaults = Config::default();
+        assert_eq!(defaults.barge_in.mode, BargeInMode::Speech);
+        assert!(!defaults.barge_in.force);
+        assert_eq!(defaults.barge_in.threshold, 0.7);
+        assert_eq!(defaults.barge_in.sustain_ms, 300);
+        assert_eq!(defaults.barge_in.unconverged_threshold, 0.85);
+        assert_eq!(defaults.barge_in.unconverged_sustain_ms, 500);
+        assert_eq!(defaults.barge_in.converged_erle_db, 10.0);
+        assert_eq!(defaults.barge_in.warm_up_ms, 2000);
+        assert_eq!(defaults.barge_in.tail_ms, 300);
+        assert_eq!(defaults.audio.echo_cancellation, EchoCancellation::Lucy);
+
+        let config = parse(
+            "[barge_in]\nmode = \"wake_word\"\nforce = true\n\
+             [audio]\necho_cancellation = \"pipewire\"\n",
+        );
+
+        assert_eq!(config.barge_in.mode, BargeInMode::WakeWord);
+        assert!(config.barge_in.force);
+        assert_eq!(config.audio.echo_cancellation, EchoCancellation::PipeWire);
     }
 
     #[test]

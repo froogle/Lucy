@@ -66,7 +66,7 @@ impl Runner {
             .as_mut()
             .ok_or(SetupTestError::NoMicrophone)?;
         let settings = lucy_config::load(&self.files.config_path).unwrap_or_default();
-        hearing.configure(&settings.audio, &settings.endpointing);
+        hearing.configure(&settings.audio, &settings.endpointing, &settings.barge_in);
         Ok(hearing.take_level())
     }
 

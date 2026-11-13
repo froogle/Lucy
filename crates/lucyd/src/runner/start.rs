@@ -61,8 +61,10 @@ impl Runner {
         let config = lucy_config::load(&self.files.config_path);
         let settings = config.as_ref().cloned().unwrap_or_default();
         let devices = match &mut self.adapters.hearing {
-            Some(hearing) => hearing.configure(&settings.audio, &settings.endpointing),
-            None => Devices::as_configured(&settings.audio),
+            Some(hearing) => {
+                hearing.configure(&settings.audio, &settings.endpointing, &settings.barge_in)
+            }
+            None => Devices::as_configured(&settings.audio, &settings.barge_in),
         };
         if !devices.missing.is_empty() {
             self.notify(notifications::devices_missing(&devices.missing));
