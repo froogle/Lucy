@@ -76,12 +76,13 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let buses = status::Buses {
         status: status::StatusBus::new(),
         levels: status::LevelBus::new(),
+        plugins: status::ChangeBus::default(),
     };
     let (sessions, commands) = mpsc::unbounded_channel();
     let (indicators, fallback) =
         notifications::fallback(&buses.status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
-    let plugin_host = plugins::Host::new(plugin_paths, sessions.clone());
+    let plugin_host = plugins::Host::new(plugin_paths, sessions.clone(), buses.plugins.clone());
     let providers = ipc::Providers {
         thinking: adapters.thinking.clone(),
         config_path: config_path.clone(),
@@ -101,7 +102,14 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         .run(),
     );
     runtime.spawn(mcp::serve(mcp_listener, relays, persona, sessions.clone()));
-    runtime.spawn(ipc::serve(listener, buses, indicators, sessions, providers));
+    runtime.spawn(ipc::serve(
+        listener,
+        buses,
+        indicators,
+        sessions,
+        providers,
+        plugin_host.clone(),
+    ));
 
     Ok(Daemon {
         socket_path,

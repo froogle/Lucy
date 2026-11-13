@@ -9,9 +9,7 @@ use serde::Deserialize;
 pub struct Manifest {
     pub name: String,
     /// Shown only; Approval uses the hash.
-    #[allow(dead_code)] // Read once Approvals are spoken.
     pub version: String,
-    #[allow(dead_code)] // Read once Lucy edits her own Plugins.
     pub author: Author,
     pub summary: String,
     /// The executable, relative to the Plugin's folder, then its arguments.

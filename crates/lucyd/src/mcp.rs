@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::adapters::Relay;
 use crate::desktop::Desktop;
 use crate::persona::Persona;
-use crate::plugins::SessionTools;
+use crate::plugins::{self, SessionTools};
 use crate::runner::Command;
 
 /// Who a token was issued to. Each sees a different set of tools.
@@ -306,7 +306,11 @@ impl ServerHandler for Tools {
         let grant = self.grant()?;
         let tools = match grant.caller {
             Caller::SessionModel => [
-                vec![end_session_tool(), update_persona_tool()],
+                vec![
+                    end_session_tool(),
+                    update_persona_tool(),
+                    plugins::manage_plugin_tool(),
+                ],
                 Desktop::tools(),
                 grant.plugins.list(),
             ]
@@ -326,6 +330,9 @@ impl ServerHandler for Tools {
         match (grant.caller, &*request.name) {
             (Caller::SessionModel, "end_session") => Ok(self.end_session().await.into()),
             (Caller::SessionModel, "update_persona") => Ok(self.update_persona(&request).into()),
+            (Caller::SessionModel, "manage_plugin") => {
+                Ok(grant.plugins.manage(&arguments).await.into())
+            }
             (Caller::SessionModel, name) => {
                 if let Some(result) = grant.desktop.call(name, &arguments).await {
                     return Ok(result.into());
