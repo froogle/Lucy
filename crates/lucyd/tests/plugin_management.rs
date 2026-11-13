@@ -212,6 +212,33 @@ fn a_shipped_plugin_can_be_disabled_but_not_removed() {
 }
 
 #[test]
+fn removing_a_user_copy_leaves_the_shipped_plugin_it_overrode_approved() {
+    let lucyd = Harness::start();
+    lucyd.install_shipped_plugin("notes", &manifest("human", false));
+    let user_copy = lucyd.install_plugin("notes", &manifest("human", true));
+    lucyd.approve("notes");
+    let mut events = in_a_session(&lucyd);
+    assert!(offers(&lucyd, "notes__write_file"));
+    let call = manage_in_a_turn(&lucyd, &mut events, "notes", "remove");
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert!(!user_copy.exists());
+    events.end_session().unwrap();
+
+    events.start_session().unwrap();
+
+    assert!(offers(&lucyd, "notes__echo"));
+    assert!(!offers(&lucyd, "notes__write_file"));
+    let listed = plugin(&lucyd, "notes").unwrap();
+    assert!(listed.shipped);
+    assert_eq!(listed.status, PluginStatus::Approved);
+}
+
+#[test]
 fn rollback_restores_the_previous_approved_version_with_no_prompt() {
     let lucyd = Harness::start();
     let first = manifest("lucy", false);

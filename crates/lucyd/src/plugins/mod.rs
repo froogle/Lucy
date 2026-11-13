@@ -209,11 +209,14 @@ impl Host {
             }
             match self.scan(&name, &folder) {
                 Ok(Scanned::Approved(plugin)) => usable.push(plugin),
-                // Shipped Plugins are approved at setup, not mentioned.
-                Ok(Scanned::Awaiting(contents)) if !self.is_shipped(&folder) => {
-                    awaiting.push((name, contents));
+                // Lucy ships it, so she approves it herself.
+                Ok(Scanned::Awaiting(_)) if self.is_shipped(&folder) => {
+                    match self.approve_shipped(&name).await {
+                        Ok(plugin) => usable.push(plugin),
+                        Err(reason) => broken.push(broken_message(&name, &reason)),
+                    }
                 }
-                Ok(Scanned::Awaiting(_)) => {}
+                Ok(Scanned::Awaiting(contents)) => awaiting.push((name, contents)),
                 Err(reason) => broken.push(broken_message(&name, &reason)),
             }
         }
@@ -281,6 +284,18 @@ impl Host {
         self.record(&candidate)?;
         self.offer(candidate.plugin).await;
         Ok(true)
+    }
+
+    /// Approves the shipped Plugin `name` as it is now without asking: it
+    /// came with Lucy.
+    async fn approve_shipped(&self, name: &str) -> Result<Usable, String> {
+        let candidate = self.candidate(name).await?;
+        self.record(&candidate)?;
+        self.verdicts
+            .lock()
+            .unwrap()
+            .insert(candidate.plugin.hash.clone(), Ok(()));
+        Ok(candidate.plugin)
     }
 
     /// The Plugin `name` as it is now, checked against its live tools and
