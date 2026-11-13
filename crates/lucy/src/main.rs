@@ -26,6 +26,10 @@ enum Command {
     Listen,
     /// End the open Session.
     End,
+    /// Have Lucy say `text` outside any Session (a Voice preview), and
+    /// wait until she has.
+    #[command(hide = true)]
+    Say { text: String },
     /// Bridge stdio to lucyd's private MCP socket. A model process that
     /// lucyd spawns runs this as its MCP server.
     #[command(hide = true)]
@@ -45,6 +49,7 @@ fn main() -> ExitCode {
         Command::Events => events(),
         Command::Listen => connect().and_then(|mut client| client.start_session().map(drop)),
         Command::End => connect().and_then(|mut client| client.end_session()),
+        Command::Say { text } => connect().and_then(|mut client| client.voice_preview(&text)),
         Command::McpRelay { token, socket } => return mcp_relay(&token, socket),
     };
     match result {

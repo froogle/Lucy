@@ -962,6 +962,8 @@ pub struct FakeTts {
     sentences: Arc<Mutex<std_mpsc::Receiver<String>>>,
     spoken: Arc<Mutex<Vec<String>>>,
     sounds: Arc<Mutex<Vec<Sound>>>,
+    /// Every sentence and cue queued, in order.
+    queued: Arc<Mutex<Vec<Queued>>>,
     failing: Arc<AtomicBool>,
     /// The open Speaker's event channel.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
@@ -977,6 +979,7 @@ impl FakeTts {
             sentences: Arc::new(Mutex::new(sentences)),
             spoken: Arc::default(),
             sounds: Arc::default(),
+            queued: Arc::default(),
             failing: Arc::default(),
             events: Arc::default(),
             device: Arc::default(),
@@ -1006,6 +1009,11 @@ impl FakeTts {
     /// Every cue played so far.
     pub fn sounds(&self) -> Vec<Sound> {
         self.sounds.lock().unwrap().clone()
+    }
+
+    /// Every sentence and cue queued so far, in order.
+    pub fn queued(&self) -> Vec<Queued> {
+        self.queued.lock().unwrap().clone()
     }
 
     /// The oldest queued sentence finishes playing.
@@ -1038,6 +1046,16 @@ impl Tts for FakeTts {
     }
 }
 
+/// Why the fake TTS fails a sentence, once told to.
+pub const FAKE_TTS_FAILURE: &str = "the fake TTS is failing";
+
+/// Something queued on a Speaker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Queued {
+    Sentence(String),
+    Sound(Sound),
+}
+
 struct FakeSpeaker {
     tts: FakeTts,
 }
@@ -1045,8 +1063,13 @@ struct FakeSpeaker {
 impl Speaker for FakeSpeaker {
     fn speak(&mut self, sentence: String) {
         self.tts.spoken.lock().unwrap().push(sentence.clone());
+        let queued = Queued::Sentence(sentence.clone());
+        self.tts.queued.lock().unwrap().push(queued);
         if self.tts.failing.load(Ordering::SeqCst) {
-            self.tts.send(SpeakerEvent::Failed(sentence));
+            self.tts.send(SpeakerEvent::Failed {
+                sentence,
+                reason: FAKE_TTS_FAILURE.to_owned(),
+            });
         } else {
             let _ = self.tts.sentences_tx.send(sentence);
         }
@@ -1054,6 +1077,7 @@ impl Speaker for FakeSpeaker {
 
     fn sound(&mut self, sound: Sound) {
         self.tts.sounds.lock().unwrap().push(sound);
+        self.tts.queued.lock().unwrap().push(Queued::Sound(sound));
     }
 }
 

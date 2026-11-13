@@ -43,7 +43,7 @@ Automated tests use the fake `claude` and the recorded fixtures in `crates/lucyd
 
 ## Real Piper
 
-lucyd runs `python -m piper.http_server`, which needs the `http` extra: install with `uv tool install 'piper-tts[http]'`. Clear `PYTHONPATH` when running Piper by hand (`env -u PYTHONPATH ...`): a `PYTHONPATH` pointing at the system site-packages loads the wrong numpy and Piper fails to import. Voices live in `$XDG_DATA_HOME/lucy/voices/` (`en_GB-cori-medium.onnx`, its `.onnx.json` and `MODEL_CARD`); `piper -m <voice>.onnx -f out.wav` synthesises a line to check.
+lucyd runs `python -m piper.http_server`, which needs the `http` extra: install with `uv tool install 'piper-tts[http]'`. Clear `PYTHONPATH` when running Piper by hand (`env -u PYTHONPATH ...`): a `PYTHONPATH` pointing at the system site-packages loads the wrong numpy and Piper fails to import. Voices live in `$XDG_DATA_HOME/lucy/voices/` (`en_GB-cori-medium.onnx`, its `.onnx.json` and `MODEL_CARD`); `piper -m <voice>.onnx -f out.wav` synthesises a line to check. With lucyd running, the hidden `lucy say "<text>"` (a Voice preview) speaks a line through lucyd's own voice and speaker, with no model call.
 
 ## Hearing (mic, VAD, Whisper)
 

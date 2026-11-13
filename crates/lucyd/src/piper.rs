@@ -570,7 +570,9 @@ mod tests {
                     assert!((0.0..=1.0).contains(&rms));
                     levels += 1;
                 }
-                SpeakerEvent::Failed(sentence) => panic!("{sentence:?} failed"),
+                SpeakerEvent::Failed { sentence, reason } => {
+                    panic!("{sentence:?} failed: {reason}")
+                }
                 SpeakerEvent::DeviceLost => panic!("the speaker went away"),
             }
         }
