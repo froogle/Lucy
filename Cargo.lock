@@ -209,6 +209,7 @@ dependencies = [
  "lucy-config",
  "lucy-ipc",
  "lucyd",
+ "serde_json",
  "tempfile",
 ]
 

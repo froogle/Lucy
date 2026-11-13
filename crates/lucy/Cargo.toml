@@ -14,4 +14,5 @@ clap.workspace = true
 [dev-dependencies]
 lucyd.workspace = true
 lucy-config.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
