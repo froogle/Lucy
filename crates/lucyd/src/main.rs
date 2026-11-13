@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -22,11 +23,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Ticket 12 picks the Provider from config.
+    let mut adapters = lucyd::adapters::Adapters::inert();
+    adapters.thinking = Box::new(lucyd::claude::Claude::new(
+        "claude".into(),
+        state_dir().join("work"),
+    ));
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,
         lucy_program,
-        adapters: lucyd::adapters::Adapters::inert(),
+        adapters,
     }) {
         Ok(daemon) => daemon,
         Err(e) => {
@@ -40,4 +47,16 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+/// `$XDG_STATE_HOME/lucy`, falling back to `~/.local/state`.
+fn state_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var_os("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".local").join("state")
+        });
+    base.join("lucy")
 }
