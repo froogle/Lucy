@@ -16,6 +16,7 @@ use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
     Adapters, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay, SessionModel,
     Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking, ThinkingEvent, Tts,
+    Workspace,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
@@ -243,6 +244,11 @@ impl Harness {
         let scratch = self._dir.path().join("scratch");
         std::fs::create_dir_all(&scratch).unwrap();
         scratch
+    }
+
+    /// Where user and Lucy-written Plugins live.
+    pub fn plugins_dir(&self) -> &Path {
+        &self.plugin_paths.user
     }
 
     /// Lucy's state dir.
@@ -702,12 +708,15 @@ pub struct FakeThinking {
     /// Problems scripted for `health` and `check`, by model.
     unhealthy: Arc<Mutex<HashMap<String, String>>>,
     failing_checks: Arc<Mutex<HashMap<String, String>>>,
+    /// The scripted Delegate, which `open_delegate` opens.
+    pub delegate: FakeDelegate,
 }
 
 impl FakeThinking {
     fn new() -> Self {
         let (turns_tx, turns) = std_mpsc::channel();
         FakeThinking {
+            delegate: FakeDelegate::new(),
             turns_tx,
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
@@ -874,22 +883,7 @@ impl FakeThinking {
             .unwrap()
             .clone()
             .expect("a SessionModel was opened");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let mut command = tokio::process::Command::new(&relay.program);
-            command.args(&relay.args);
-            let transport = TokioChildProcess::new(command).map_err(|e| e.to_string())?;
-            let client = tokio::time::timeout(WAIT, ().serve(transport))
-                .await
-                .map_err(|_| "timed out connecting".to_owned())?
-                .map_err(|e| e.to_string())?;
-            tokio::time::timeout(WAIT, f(client))
-                .await
-                .map_err(|_| "timed out calling".to_owned())?
-        })
+        with_mcp(&relay, f)
     }
 
     fn send(&self, event: ThinkingEvent) {
@@ -929,6 +923,171 @@ impl Thinking for FakeThinking {
     fn check(&self, provider: &Provider) -> Result<(), String> {
         scripted_problem(&self.failing_checks, provider)
     }
+
+    fn open_delegate(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        workspace: Workspace,
+    ) -> Box<dyn SessionModel> {
+        let delegate = &self.delegate;
+        delegate.opened.lock().unwrap().push(provider.clone());
+        *delegate.events.lock().unwrap() = Some(events);
+        *delegate.relay.lock().unwrap() = Some(relay);
+        *delegate.instructions.lock().unwrap() = Some(instructions);
+        *delegate.workspace.lock().unwrap() = Some(workspace);
+        Box::new(FakeSessionModel {
+            turns: delegate.turns_tx.clone(),
+        })
+    }
+}
+
+/// A scripted Delegate: the test reads each Turn it is sent, does its work
+/// in the workspace, and calls the Delegate tools through its real relay.
+#[derive(Clone)]
+pub struct FakeDelegate {
+    turns_tx: std_mpsc::Sender<String>,
+    turns: Arc<Mutex<std_mpsc::Receiver<String>>>,
+    events: Arc<Mutex<Option<mpsc::UnboundedSender<ThinkingEvent>>>>,
+    relay: Arc<Mutex<Option<Relay>>>,
+    instructions: Arc<Mutex<Option<String>>>,
+    workspace: Arc<Mutex<Option<Workspace>>>,
+    opened: Arc<Mutex<Vec<Provider>>>,
+}
+
+impl FakeDelegate {
+    fn new() -> Self {
+        let (turns_tx, turns) = std_mpsc::channel();
+        FakeDelegate {
+            turns_tx,
+            turns: Arc::new(Mutex::new(turns)),
+            events: Arc::default(),
+            relay: Arc::default(),
+            instructions: Arc::default(),
+            workspace: Arc::default(),
+            opened: Arc::default(),
+        }
+    }
+
+    /// The Provider settings of each Delegate opened, in order.
+    pub fn opened(&self) -> Vec<Provider> {
+        self.opened.lock().unwrap().clone()
+    }
+
+    /// Waits for the text of the next Turn sent to the Delegate.
+    pub fn next_turn(&self) -> String {
+        recv(&self.turns, "a Turn sent to the Delegate")
+    }
+
+    /// Fails if a Turn was sent to the Delegate that the test hasn't read.
+    pub fn assert_no_turn(&self) {
+        let turn = self.turns.lock().unwrap().try_recv();
+        assert!(
+            turn.is_err(),
+            "unexpected Turn sent to the Delegate: {turn:?}"
+        );
+    }
+
+    /// The system prompt the last Delegate was opened with.
+    pub fn instructions(&self) -> String {
+        let instructions = self.instructions.lock().unwrap();
+        instructions.clone().expect("a Delegate was opened")
+    }
+
+    /// Where the last Delegate was opened to work.
+    pub fn workspace(&self) -> Workspace {
+        let workspace = self.workspace.lock().unwrap();
+        workspace.clone().expect("a Delegate was opened")
+    }
+
+    /// The Delegate calls one of Lucy's tools with `arguments`, a JSON
+    /// object, through its relay.
+    pub fn call_tool_with(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, String> {
+        call_through(&self.relay(), name, arguments)
+    }
+
+    /// The names of the tools the Delegate is offered.
+    pub fn tool_names(&self) -> Vec<String> {
+        with_mcp(&self.relay(), |client| async move {
+            let tools = client.list_all_tools().await.map_err(|e| e.to_string())?;
+            Ok(tools
+                .into_iter()
+                .map(|tool| tool.name.into_owned())
+                .collect())
+        })
+        .unwrap()
+    }
+
+    /// The Delegate ends its Turn.
+    pub fn turn_end(&self) {
+        let events = self.events.lock().unwrap();
+        let events = events.as_ref().expect("a Delegate is open");
+        events
+            .send(ThinkingEvent::TurnEnd)
+            .expect("lucyd is reading the Delegate");
+    }
+
+    fn relay(&self) -> Relay {
+        let relay = self.relay.lock().unwrap();
+        relay.clone().expect("a Delegate was opened")
+    }
+}
+
+/// Writes a Plugin into `dir` as a Delegate would: `manifest`, the fixture
+/// Plugin executable as `./fixture-plugin`, and `build.sh` and `test.sh`
+/// running `build` and `test` (shell commands).
+pub fn stage_plugin(dir: &Path, manifest: &str, build: &str, test: &str) {
+    install(dir, manifest);
+    std::fs::write(dir.join("build.sh"), format!("{build}\n")).unwrap();
+    std::fs::write(dir.join("test.sh"), format!("{test}\n")).unwrap();
+}
+
+/// Spawns `relay` as a model process would, and runs `f` against it as an
+/// MCP client.
+fn with_mcp<F, Fut, T>(relay: &Relay, f: F) -> Result<T, String>
+where
+    F: FnOnce(RunningService<RoleClient, ()>) -> Fut,
+    Fut: std::future::Future<Output = Result<T, String>>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let mut command = tokio::process::Command::new(&relay.program);
+        command.args(&relay.args);
+        let transport = TokioChildProcess::new(command).map_err(|e| e.to_string())?;
+        let client = tokio::time::timeout(WAIT, ().serve(transport))
+            .await
+            .map_err(|_| "timed out connecting".to_owned())?
+            .map_err(|e| e.to_string())?;
+        tokio::time::timeout(WAIT, f(client))
+            .await
+            .map_err(|_| "timed out calling".to_owned())?
+    })
+}
+
+/// Calls the tool `name` with `arguments`, a JSON object, through `relay`.
+fn call_through(
+    relay: &Relay,
+    name: &str,
+    arguments: serde_json::Value,
+) -> Result<CallToolResult, String> {
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("tool arguments are an object");
+    };
+    with_mcp(relay, |client| async move {
+        client
+            .call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))
+            .await
+            .map_err(|e| e.to_string())
+    })
 }
 
 fn scripted_problem(

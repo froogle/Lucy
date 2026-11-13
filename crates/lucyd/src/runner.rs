@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use lucy_config::SttKind;
 use lucy_ipc::{State, Status};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
 use crate::adapters::{
@@ -39,6 +39,11 @@ pub enum Command {
     /// Session ends or the model process dies first, `reply` is dropped
     /// unanswered.
     Ask(Ask),
+    /// Lucy says this herself, in the open Session, straight away.
+    Say(String),
+    /// Starts a Turn with these instructions in the open Session, once
+    /// neither Lucy nor the user is speaking.
+    Turn(String),
 }
 
 pub struct Ask {
@@ -46,6 +51,9 @@ pub struct Ask {
     /// Shown when the question is asked: details too long to say.
     pub shown: Option<Notification>,
     pub reply: oneshot::Sender<Answer>,
+    /// Wait to ask until neither Lucy nor the user is speaking, rather
+    /// than as part of the Turn in progress.
+    pub quiet: bool,
 }
 
 /// Asks the user `question` in the open Session, showing `shown` as it is
@@ -61,8 +69,27 @@ pub async fn ask(
         question,
         shown,
         reply,
+        quiet: false,
     }));
     answer.await.ok()
+}
+
+/// Asks the user `question`, as `ask` does, but only once neither Lucy nor
+/// the user is speaking. The question is queued by the time this is first
+/// polled.
+pub fn ask_when_quiet(
+    commands: &mpsc::UnboundedSender<Command>,
+    question: Question,
+    shown: Option<Notification>,
+) -> impl std::future::Future<Output = Option<Answer>> {
+    let (reply, answer) = oneshot::channel();
+    let _ = commands.send(Command::Ask(Ask {
+        question,
+        shown,
+        reply,
+        quiet: true,
+    }));
+    async move { answer.await.ok() }
 }
 
 /// Names one Session to clients.
@@ -99,6 +126,14 @@ pub struct Runner {
     /// False once the source of whether the user is speaking has gone away.
     speaking_open: bool,
     sessions_started: u64,
+    /// Whether an Authoring build is running.
+    building: watch::Receiver<bool>,
+}
+
+/// What waits to be said until neither Lucy nor the user is speaking.
+enum Parked {
+    Ask(Ask),
+    Turn(String),
 }
 
 impl Runner {
@@ -109,6 +144,7 @@ impl Runner {
         relays: Relays,
         plugin_host: Arc<plugins::Host>,
         files: SessionFiles,
+        building: watch::Receiver<bool>,
     ) -> Self {
         Runner {
             commands,
@@ -121,6 +157,7 @@ impl Runner {
             wake_open: true,
             speaking_open: true,
             sessions_started: 0,
+            building,
         }
     }
 
@@ -135,8 +172,8 @@ impl Runner {
                     Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
                         let _ = reply.send(Err(EndError));
                     }
-                    // Dropped unanswered: there is no one to ask.
-                    Some(Command::Ask(_)) => {}
+                    // Dropped unanswered: there is no one to ask or tell.
+                    Some(Command::Ask(_) | Command::Say(_) | Command::Turn(_)) => {}
                     None => return,
                 },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
@@ -213,6 +250,9 @@ impl Runner {
         if *self.adapters.speaking.borrow_and_update() {
             session.handle(Input::Speaking(true));
         }
+        if *self.building.borrow_and_update() {
+            session.handle(Input::Building(true));
+        }
         let silence_timeout = Duration::from_secs_f64(silence_timeout);
         let mut silence = SilenceTimer::new(silence_timeout);
         if woken {
@@ -223,6 +263,8 @@ impl Runner {
         // Questions waiting to be asked, and where the answer to the one
         // being asked goes.
         let mut questions: VecDeque<Ask> = VecDeque::new();
+        // What waits for neither side to be speaking, in order.
+        let mut parked: VecDeque<Parked> = VecDeque::new();
         let mut answer_to = None;
         let mut answer_timer =
             SilenceTimer::new(Duration::from_secs_f64(confirmation.timeout_secs));
@@ -243,13 +285,25 @@ impl Runner {
             let mut segment = None;
             let input = if let Some(input) = opening.take() {
                 input
-            } else if let Some(ask) = answer_to.is_none().then(|| questions.pop_front()).flatten() {
-                if let Some(shown) = ask.shown {
-                    self.notify(shown);
+            } else if let Some(next) = answer_to
+                .is_none()
+                .then(|| {
+                    let when_quiet = || session.quiet().then(|| parked.pop_front()).flatten();
+                    questions.pop_front().map(Parked::Ask).or_else(when_quiet)
+                })
+                .flatten()
+            {
+                match next {
+                    Parked::Ask(ask) => {
+                        if let Some(shown) = ask.shown {
+                            self.notify(shown);
+                        }
+                        answer_to = Some(ask.reply);
+                        answer_timer.reset();
+                        Input::Ask(ask.question)
+                    }
+                    Parked::Turn(text) => Input::Opening(text),
                 }
-                answer_to = Some(ask.reply);
-                answer_timer.reset();
-                Input::Ask(ask.question)
             } else {
                 tokio::select! {
                 // What the model and the speaker report first: a Turn that
@@ -287,8 +341,17 @@ impl Runner {
                         let _ = reply.send(Ok(()));
                         Input::EndRequested
                     }
+                    Some(Command::Ask(ask)) if ask.quiet => {
+                        parked.push_back(Parked::Ask(ask));
+                        continue;
+                    }
                     Some(Command::Ask(ask)) => {
                         questions.push_back(ask);
+                        continue;
+                    }
+                    Some(Command::Say(text)) => Input::Say(text),
+                    Some(Command::Turn(text)) => {
+                        parked.push_back(Parked::Turn(text));
                         continue;
                     }
                     None => return,
@@ -312,6 +375,9 @@ impl Runner {
                         continue;
                     }
                 },
+                Ok(()) = self.building.changed() => {
+                    Input::Building(*self.building.borrow_and_update())
+                }
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
                     Some(()) => Input::WakeWord,
                     None => {

@@ -18,7 +18,8 @@ use lucy_config::Provider;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent};
+use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 
 /// How long app-server may take to answer a request.
@@ -44,20 +45,37 @@ impl Codex {
     }
 
     /// `codex app-server` with `relay` as its one MCP server, or none, and
-    /// no built-in shell or web search. Lucy's tools need no approval from
-    /// Codex: she asks the user herself.
-    fn command(&self, provider: &Provider, relay: Option<&Relay>) -> Command {
+    /// no web search. Only a Delegate, confined to its `workspace`, has the
+    /// built-in shell. Lucy's tools need no approval from Codex: she asks the
+    /// user herself.
+    fn command(
+        &self,
+        provider: &Provider,
+        relay: Option<&Relay>,
+        workspace: Option<&Workspace>,
+    ) -> std::io::Result<Command> {
         let mut command = Command::new(&self.program);
         command
             .arg("app-server")
-            .current_dir(&self.work_dir)
+            .current_dir(workspace.map_or(&self.work_dir, |w| &w.dir))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let mut config = vec![
-            "features.shell_tool=false".to_owned(),
-            r#"web_search="disabled""#.to_owned(),
-        ];
+        let mut config = vec![r#"web_search="disabled""#.to_owned()];
+        match workspace {
+            Some(workspace) => {
+                let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                let codex_home = std::env::var_os("CODEX_HOME")
+                    .map_or_else(|| home.join(".codex"), PathBuf::from);
+                let mut writable = vec![workspace.dir.clone(), workspace.tmp.clone(), codex_home];
+                command.env("TMPDIR", &workspace.tmp);
+                writable.extend(workspace.writable.iter().cloned());
+                let mut readable = workspace.readable.clone();
+                readable.extend(sandbox::program_dir(&self.program));
+                sandbox::confine_delegate(&mut command, &readable, &writable)?;
+            }
+            None => config.push("features.shell_tool=false".to_owned()),
+        }
         if !provider.allow_api_key {
             config.push(r#"forced_login_method="chatgpt""#.to_owned());
         }
@@ -71,7 +89,7 @@ impl Codex {
         for setting in config {
             command.arg("-c").arg(setting);
         }
-        command
+        Ok(command)
     }
 
     /// Starts app-server and checks who is signed in. Its messages arrive
@@ -80,14 +98,15 @@ impl Codex {
         &self,
         provider: &Provider,
         relay: Option<&Relay>,
+        workspace: Option<&Workspace>,
         inbox: Inbox,
     ) -> Result<(AppServer, Child), String> {
         let Inbox { tx, inputs } = inbox;
         std::fs::create_dir_all(&self.work_dir)
             .map_err(|e| format!("I couldn't make my Codex work folder: {e}."))?;
         let mut child = self
-            .command(provider, relay)
-            .spawn()
+            .command(provider, relay, workspace)
+            .and_then(|mut command| command.spawn())
             .map_err(|e| match e.kind() {
                 ErrorKind::NotFound => format!(
                     "I can't find Codex at {}. Please install it, or put codex on my PATH.",
@@ -127,26 +146,31 @@ impl Codex {
         check: impl FnOnce(&mut AppServer) -> Result<(), String>,
     ) -> Result<(), String> {
         let (tx, inputs) = std_mpsc::channel();
-        let (mut server, mut child) = self.connect(provider, None, Inbox { tx, inputs })?;
+        let (mut server, mut child) = self.connect(provider, None, None, Inbox { tx, inputs })?;
         let result = check(&mut server);
         let _ = child.kill();
         let _ = child.wait();
         result
     }
 
-    /// One Session's app-server: connected, with a thread started, then fed
-    /// each Turn until the SessionModel is dropped.
+    /// One Session's or Delegate's app-server: connected, with a thread
+    /// started, then fed each Turn until the SessionModel is dropped.
     fn run_session(
         &self,
         provider: &Provider,
-        relay: &Relay,
-        instructions: &str,
+        role: &Role,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         inbox: Inbox,
         process: &Arc<Mutex<Process>>,
     ) {
+        let Role {
+            relay,
+            instructions,
+            workspace,
+        } = role;
+        let workspace = workspace.as_ref();
         let started = self
-            .connect(provider, Some(relay), inbox)
+            .connect(provider, Some(relay), workspace, inbox)
             .and_then(|(mut server, child)| {
                 {
                     let mut process = process.lock().unwrap();
@@ -158,7 +182,12 @@ impl Codex {
                     }
                     *process = Process::Running(child);
                 }
-                let thread = server.start_thread(provider, &self.work_dir, instructions)?;
+                let thread = match workspace {
+                    Some(workspace) => {
+                        server.start_delegate_thread(provider, workspace, instructions)?
+                    }
+                    None => server.start_thread(provider, &self.work_dir, instructions)?,
+                };
                 Ok(Some((server, thread)))
             });
         match started {
@@ -180,15 +209,22 @@ impl Codex {
     }
 }
 
-impl Thinking for Codex {
+/// What an app-server is for: a Session's model, or with a `workspace`, a
+/// Delegate.
+struct Role {
+    relay: Relay,
+    instructions: String,
+    workspace: Option<Workspace>,
+}
+
+impl Codex {
     /// Returns at once. The checks and the spawn happen on a thread of their
     /// own; Turns sent meanwhile wait for the thread to start.
-    fn open(
+    fn open_as(
         &self,
         provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
-        relay: Relay,
-        instructions: String,
+        role: Role,
     ) -> Box<dyn SessionModel> {
         let (tx, inputs) = std_mpsc::channel();
         let process = Arc::new(Mutex::new(Process::Starting));
@@ -200,8 +236,7 @@ impl Thinking for Codex {
         std::thread::spawn(move || {
             codex.run_session(
                 &provider,
-                &relay,
-                &instructions,
+                &role,
                 &thread_events,
                 Inbox {
                     tx: thread_tx,
@@ -215,6 +250,39 @@ impl Thinking for Codex {
             process,
             _events: events,
         })
+    }
+}
+
+impl Thinking for Codex {
+    fn open(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+    ) -> Box<dyn SessionModel> {
+        let role = Role {
+            relay,
+            instructions,
+            workspace: None,
+        };
+        self.open_as(provider, events, role)
+    }
+
+    fn open_delegate(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        workspace: Workspace,
+    ) -> Box<dyn SessionModel> {
+        let role = Role {
+            relay,
+            instructions,
+            workspace: Some(workspace),
+        };
+        self.open_as(provider, events, role)
     }
 
     fn health(&self, provider: &Provider) -> Result<(), String> {
@@ -415,6 +483,33 @@ impl AppServer {
                            what's wrong."
                     .to_owned()
             })
+    }
+
+    /// Starts a Delegate's ephemeral thread in `workspace`, following
+    /// `instructions`, free to run commands there: lucyd's Landlock rules,
+    /// not Codex's sandbox, confine it, so it keeps the network to fetch
+    /// dependencies. Returns its id.
+    fn start_delegate_thread(
+        &mut self,
+        provider: &Provider,
+        workspace: &Workspace,
+        instructions: &str,
+    ) -> Result<String, String> {
+        let result = self.request(
+            "thread/start",
+            json!({
+                "model": provider.model,
+                "cwd": workspace.dir,
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+                "developerInstructions": instructions,
+                "ephemeral": true,
+            }),
+        )?;
+        result["thread"]["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| "Codex didn't start the build.".to_owned())
     }
 
     fn start_turn(&mut self, thread: &str, text: &str) -> u64 {
