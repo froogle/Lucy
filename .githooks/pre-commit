@@ -1,3 +1,11 @@
 #!/usr/bin/env bash
 # Enable once per clone: git config core.hooksPath .githooks
-exec "$(git rev-parse --show-toplevel)/scripts/check.sh"
+# Commits that only touch docs, tickets or markdown skip the cargo gates;
+# CI and every merge still run the full check.
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+if ! git diff --cached --name-only --diff-filter=ACMR \
+    | grep -qvE '(\.md$|^\.scratch/|^docs/)'; then
+    exec "$root/scripts/check-glossary-terms.sh" "$root"
+fi
+exec "$root/scripts/check.sh"

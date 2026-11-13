@@ -67,7 +67,7 @@ fn hello_with_another_major_version_is_refused_with_a_clear_error() {
     let lucyd = Harness::start();
 
     let reply = lucyd.raw_exchange(
-        r#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":2,"client":"future-widget","role":null}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"hello","params":{"protocol":2,"client":"future-indicator","role":null}}"#,
     );
 
     assert_eq!(reply["id"], 1);

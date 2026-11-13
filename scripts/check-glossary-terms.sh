@@ -17,6 +17,7 @@ for term in $terms; do
     if found=$(grep -rnE --include='*.rs' "\b(struct|enum|trait|type) [A-Za-z0-9_]*${word}[A-Za-z0-9_]*\b" "$root/crates"); then
         echo "Type name uses \"$term\", which GLOSSARY.md says to avoid:" >&2
         echo "$found" >&2
+        echo "Use the glossary term instead. If \"$term\" means something else here, qualify its _Avoid_ entry in GLOSSARY.md as \"$term (when meaning <the glossary term>)\"; qualified entries are skipped." >&2
         status=1
     fi
 done

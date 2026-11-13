@@ -20,7 +20,7 @@ struct Cli {
 enum Command {
     /// Print a snapshot of lucyd's state.
     Status,
-    /// Print lucyd's raw event stream as NDJSON, for widget authors.
+    /// Print lucyd's raw event stream as NDJSON, for client authors.
     Events,
     /// Open a Session, as if the Wake word had been heard.
     Listen,

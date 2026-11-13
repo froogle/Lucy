@@ -9,4 +9,5 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 scripts/check-client-deps.sh
 scripts/check-glossary-terms.sh
+scripts/check-lint-allows.sh
 cargo deny check licenses

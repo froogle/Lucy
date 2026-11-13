@@ -4,7 +4,7 @@ Facts about the codebase that aren't obvious from reading it.
 
 ## Checks
 
-`scripts/check.sh` runs every gate: fmt, clippy, tests, the client-deps check, the glossary-term check and `cargo deny`. The pre-commit hook runs it once you've run `git config core.hooksPath .githooks`.
+`scripts/check.sh` runs every gate: fmt, clippy, tests, the client-deps check, the glossary-term check, the lint-allow check and `cargo deny`. The pre-commit hook runs it once you've run `git config core.hooksPath .githooks`; a commit that only touches markdown, `docs/` or `.scratch/` runs just the glossary check. Commit with the hook on; `--no-verify` leaves the gates to CI.
 
 ## lucyd test harness
 
@@ -42,4 +42,8 @@ Socket paths are limited to about 108 bytes. The session scratchpad path is too 
 
 ## Implementer subagents
 
-The `tdd` skill asks the user to approve seams first, and a subagent can't ask. The ticket's acceptance checks driven through the harness, plus the adapter traits above, are the approved seams. A ticket that needs a new adapter trait names it in the implementer's report.
+The `tdd` skill asks the user to approve seams first, and a subagent can't ask. The ticket's acceptance checks driven through the harness, plus the adapter traits above, are the approved seams. A ticket that needs a new adapter trait names it in the implementer's report. The ticket's `Seams:` line says which shared seams it owns and which it only uses.
+
+## Merging
+
+A merge that combines two tickets' changes to the same seam (both edit one adapter trait, the Session start, the notification fallback) gets one harness test of the combination before the merge commit. Each ticket's own tests pass alone; the combination is where the bugs were in slice 2 (a refused Provider swallowing the first-run introduction; a TTS-failure notification replacing the End button).
