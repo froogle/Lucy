@@ -191,12 +191,12 @@ impl Stream {
     }
 }
 
-/// Splits streamed text at sentence ends: a `.`, `!`, `?` or newline
+/// Splits streamed text at sentence ends: a newline, or a `.`, `!` or `?`
 /// followed by whitespace. Each sentence is closed as soon as the text that
 /// proves it complete arrives.
 #[derive(Default)]
 struct Sentences {
-    /// Text has been passed on since the last `SentenceEnd`.
+    /// Non-blank text has been passed on since the last `SentenceEnd`.
     open: bool,
     /// The last character passed on ends a sentence if whitespace follows.
     after_terminator: bool,
@@ -207,7 +207,8 @@ impl Sentences {
         let mut events = vec![];
         let mut start = 0;
         for (i, c) in text.char_indices() {
-            if self.after_terminator && c.is_whitespace() {
+            let ends = c == '\n' || (self.after_terminator && c.is_whitespace());
+            if ends && (self.open || !text[start..i].trim().is_empty()) {
                 if i > start {
                     events.push(ThinkingEvent::Delta(text[start..i].to_owned()));
                 }
@@ -215,11 +216,11 @@ impl Sentences {
                 self.open = false;
                 start = i;
             }
-            self.after_terminator = matches!(c, '.' | '!' | '?' | '\n');
+            self.after_terminator = matches!(c, '.' | '!' | '?');
         }
         if start < text.len() {
             events.push(ThinkingEvent::Delta(text[start..].to_owned()));
-            self.open = true;
+            self.open |= !text[start..].trim().is_empty();
         }
         events
     }
@@ -263,6 +264,18 @@ mod tests {
                 delta("\nOK"),
             ]
         );
+    }
+
+    #[test]
+    fn a_newline_ends_a_sentence() {
+        let mut s = Sentences::default();
+        assert_eq!(
+            s.push("Hi\nThere"),
+            [delta("Hi"), SentenceEnd, delta("\nThere")]
+        );
+        // Across deltas too, and a blank line doesn't end an empty sentence.
+        assert_eq!(s.push("\n"), [SentenceEnd, delta("\n")]);
+        assert_eq!(s.push("\nOK"), [delta("\nOK")]);
     }
 
     #[test]
