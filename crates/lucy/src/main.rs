@@ -20,6 +20,10 @@ enum Command {
     Status,
     /// Print lucyd's raw event stream as NDJSON, for widget authors.
     Events,
+    /// Open a Session, as if the Wake word had been heard.
+    Listen,
+    /// End the open Session.
+    End,
 }
 
 fn main() -> ExitCode {
@@ -27,6 +31,8 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Status => status(),
         Command::Events => events(),
+        Command::Listen => connect().and_then(|mut client| client.start_session().map(drop)),
+        Command::End => connect().and_then(|mut client| client.end_session()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -51,6 +57,9 @@ fn status() -> Result<(), lucy_ipc::Error> {
     let status = connect()?.status()?;
     let state = match status.state {
         State::Idle => "Idle",
+        State::Listening => "Listening",
+        State::Thinking => "Thinking",
+        State::Speaking => "Speaking",
     };
     println!("State: {state}");
     if let Some(session_id) = status.session_id {

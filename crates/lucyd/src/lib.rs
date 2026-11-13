@@ -2,6 +2,7 @@
 //! process (ADR 0006). Everything else talks to it over the public socket.
 
 mod ipc;
+mod runner;
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -11,7 +12,7 @@ use lucy_config::Config;
 use lucy_ipc::Status;
 use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
@@ -22,8 +23,6 @@ pub struct Options {
 /// A running lucyd. Dropping it stops lucyd and removes the socket.
 pub struct Daemon {
     socket_path: PathBuf,
-    /// The published status; the Session will drive it.
-    _status: watch::Sender<Status>,
     runtime: Option<Runtime>,
 }
 
@@ -42,11 +41,12 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         state: lucy_ipc::State::Idle,
         session_id: None,
     });
-    runtime.spawn(ipc::serve(listener, status_rx));
+    let (sessions, commands) = mpsc::unbounded_channel();
+    runtime.spawn(runner::Runner::new(commands, status).run());
+    runtime.spawn(ipc::serve(listener, status_rx, sessions));
 
     Ok(Daemon {
         socket_path,
-        _status: status,
         runtime: Some(runtime),
     })
 }

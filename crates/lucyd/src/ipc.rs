@@ -1,19 +1,26 @@
 //! The public socket: newline-delimited JSON-RPC 2.0 (ADR 0006).
 
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, StateEvent, Status, Subscribe, Topic, PROTOCOL,
+    error_code, Event, Hello, HelloResult, SessionStarted, StateEvent, Status, Subscribe, Topic,
+    PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 
-pub async fn serve(listener: UnixListener, status: watch::Receiver<Status>) {
+use crate::runner::Command;
+
+pub async fn serve(
+    listener: UnixListener,
+    status: watch::Receiver<Status>,
+    sessions: mpsc::UnboundedSender<Command>,
+) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(connection(stream, status.clone()));
+                tokio::spawn(connection(stream, status.clone(), sessions.clone()));
             }
             Err(e) => eprintln!("lucyd: accept failed: {e}"),
         }
@@ -23,16 +30,22 @@ pub async fn serve(listener: UnixListener, status: watch::Receiver<Status>) {
 struct Connection {
     writer: OwnedWriteHalf,
     status: watch::Receiver<Status>,
+    sessions: mpsc::UnboundedSender<Command>,
     greeted: bool,
     state_subscribed: bool,
 }
 
-async fn connection(stream: UnixStream, status: watch::Receiver<Status>) {
+async fn connection(
+    stream: UnixStream,
+    status: watch::Receiver<Status>,
+    sessions: mpsc::UnboundedSender<Command>,
+) {
     let (reader, writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
     let mut conn = Connection {
         writer,
         status,
+        sessions,
         greeted: false,
         state_subscribed: false,
     };
@@ -84,7 +97,7 @@ impl Connection {
         };
         let params = request.get("params").cloned().unwrap_or(Value::Null);
         let was_subscribed = self.state_subscribed;
-        let outcome = self.dispatch(method, params);
+        let outcome = self.dispatch(method, params).await;
         self.respond(id, outcome).await?;
         if self.state_subscribed && !was_subscribed {
             self.send_state().await?;
@@ -104,7 +117,7 @@ impl Connection {
         self.send(message).await
     }
 
-    fn dispatch(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
+    async fn dispatch(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
         if method == "hello" {
             return self.hello(params);
         }
@@ -123,11 +136,33 @@ impl Connection {
                 }
                 Ok(json!({}))
             }
+            "session.start" => match self.ask(Command::Start).await? {
+                Ok(session_id) => Ok(json!(SessionStarted { session_id })),
+                Err(_) => Err(RpcError::new(
+                    error_code::SESSION_OPEN,
+                    "a Session is already open",
+                )),
+            },
+            "session.end" => match self.ask(Command::End).await? {
+                Ok(()) => Ok(json!({})),
+                Err(_) => Err(RpcError::new(error_code::NO_SESSION, "no Session is open")),
+            },
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method {method:?}"),
             )),
         }
+    }
+
+    /// Sends a command to the Session runner and waits for its reply.
+    async fn ask<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<T>) -> Command,
+    ) -> Result<T, RpcError> {
+        let (reply, answer) = oneshot::channel();
+        let gone = || RpcError::new(error_code::INTERNAL_ERROR, "lucyd's Session runner stopped");
+        self.sessions.send(command(reply)).map_err(|_| gone())?;
+        answer.await.map_err(|_| gone())
     }
 
     fn hello(&mut self, params: Value) -> Result<Value, RpcError> {

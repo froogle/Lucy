@@ -26,10 +26,15 @@ pub mod error_code {
     pub const INVALID_REQUEST: i64 = -32600;
     pub const METHOD_NOT_FOUND: i64 = -32601;
     pub const INVALID_PARAMS: i64 = -32602;
+    pub const INTERNAL_ERROR: i64 = -32603;
     /// `hello` asked for a major protocol version lucyd doesn't speak.
     pub const PROTOCOL_MISMATCH: i64 = -32001;
     /// A request arrived before `hello`.
     pub const HELLO_REQUIRED: i64 = -32002;
+    /// `session.start` while a Session is already open.
+    pub const SESSION_OPEN: i64 = -32003;
+    /// `session.end` while no Session is open.
+    pub const NO_SESSION: i64 = -32004;
 }
 
 /// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
@@ -78,7 +83,20 @@ pub struct Status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
+    /// No Session is open.
     Idle,
+    /// A Session is open and waiting for the user to speak.
+    Listening,
+    /// A Turn is in progress and nothing is playing.
+    Thinking,
+    /// Lucy's speech is queued or playing.
+    Speaking,
+}
+
+/// Result of `session.start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionStarted {
+    pub session_id: String,
 }
 
 /// Params of `subscribe`.

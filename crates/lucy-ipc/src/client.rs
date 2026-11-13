@@ -10,7 +10,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
-use crate::{Event, Hello, HelloResult, Role, Status, Subscribe, Topic, PROTOCOL};
+use crate::{Event, Hello, HelloResult, Role, SessionStarted, Status, Subscribe, Topic, PROTOCOL};
 
 pub struct Client {
     reader: BufReader<UnixStream>,
@@ -57,6 +57,17 @@ impl Client {
                 topics: topics.to_vec()
             }),
         )?;
+        Ok(())
+    }
+
+    /// Opens a Session and returns its id.
+    pub fn start_session(&mut self) -> Result<String, Error> {
+        let started: SessionStarted = self.call("session.start", Value::Null)?;
+        Ok(started.session_id)
+    }
+
+    pub fn end_session(&mut self) -> Result<(), Error> {
+        let _: Value = self.call("session.end", Value::Null)?;
         Ok(())
     }
 

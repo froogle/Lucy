@@ -26,7 +26,7 @@ fn stderr(output: &Output) -> String {
 fn commands_say_plainly_when_lucyd_is_not_running() {
     let dir = tempfile::tempdir().unwrap();
 
-    for command in ["status", "events"] {
+    for command in ["status", "events", "listen", "end"] {
         let output = lucy(dir.path()).arg(command).output().unwrap();
 
         assert!(!output.status.success(), "lucy {command} should fail");
@@ -78,5 +78,47 @@ fn events_prints_the_raw_ndjson_stream() {
             "method": "state",
             "params": {"state": "idle", "session_id": null},
         })
+    );
+}
+
+#[test]
+fn listen_opens_a_session_and_end_closes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let _lucyd = start_lucyd(dir.path());
+
+    let listen = lucy(dir.path()).arg("listen").output().unwrap();
+    assert!(listen.status.success(), "{}", stderr(&listen));
+    let status = lucy(dir.path()).arg("status").output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout),
+        "State: Listening\nSession: 1\n"
+    );
+
+    let end = lucy(dir.path()).arg("end").output().unwrap();
+    assert!(end.status.success(), "{}", stderr(&end));
+    let status = lucy(dir.path()).arg("status").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "State: Idle\n");
+}
+
+#[test]
+fn listen_during_a_session_and_end_without_one_say_why_they_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    let _lucyd = start_lucyd(dir.path());
+
+    let end = lucy(dir.path()).arg("end").output().unwrap();
+    assert!(!end.status.success());
+    assert!(
+        stderr(&end).contains("no Session is open"),
+        "{}",
+        stderr(&end)
+    );
+
+    lucy(dir.path()).arg("listen").output().unwrap();
+    let listen = lucy(dir.path()).arg("listen").output().unwrap();
+    assert!(!listen.status.success());
+    assert!(
+        stderr(&listen).contains("a Session is already open"),
+        "{}",
+        stderr(&listen)
     );
 }

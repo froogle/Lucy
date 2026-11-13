@@ -61,12 +61,42 @@
         }
       ]
     },
+    "SessionStarted": {
+      "description": "Result of `session.start`.",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id"
+      ],
+      "type": "object"
+    },
     "State": {
       "description": "Lucy's Session state.",
-      "enum": [
-        "idle"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "const": "idle",
+          "description": "No Session is open.",
+          "type": "string"
+        },
+        {
+          "const": "listening",
+          "description": "A Session is open and waiting for the user to speak.",
+          "type": "string"
+        },
+        {
+          "const": "thinking",
+          "description": "A Turn is in progress and nothing is playing.",
+          "type": "string"
+        },
+        {
+          "const": "speaking",
+          "description": "Lucy's speech is queued or playing.",
+          "type": "string"
+        }
+      ]
     },
     "StateEvent": {
       "description": "Params of the `state` event.",
@@ -147,6 +177,16 @@
       },
       "result": {
         "$ref": "#/$defs/HelloResult"
+      }
+    },
+    "session.end": {
+      "result": {
+        "type": "object"
+      }
+    },
+    "session.start": {
+      "result": {
+        "$ref": "#/$defs/SessionStarted"
       }
     },
     "status": {

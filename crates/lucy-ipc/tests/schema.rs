@@ -24,7 +24,13 @@ fn committed_schema_matches_the_types() {
 fn schema_describes_every_method_and_event() {
     let schema = lucy_ipc::schema();
 
-    for method in ["hello", "status", "subscribe"] {
+    for method in [
+        "hello",
+        "status",
+        "subscribe",
+        "session.start",
+        "session.end",
+    ] {
         assert!(
             schema["x-methods"][method].is_object(),
             "missing method {method}"
