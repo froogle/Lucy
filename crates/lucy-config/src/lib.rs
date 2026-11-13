@@ -14,6 +14,7 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct Config {
     pub session: Session,
+    pub desktop: Desktop,
     /// `[providers.<name>]`: the Thinking Providers the tiers can name.
     pub providers: BTreeMap<String, Provider>,
     pub tiers: Tiers,
@@ -28,6 +29,7 @@ impl Default for Config {
         };
         Config {
             session: Session::default(),
+            desktop: Desktop::default(),
             providers: BTreeMap::from([
                 ("claude-fast".to_owned(), claude(Tier::Fast)),
                 ("claude-advanced".to_owned(), claude(Tier::Advanced)),
@@ -158,6 +160,16 @@ impl Default for Session {
             silence_timeout_secs: 20.0,
         }
     }
+}
+
+/// `[desktop]`
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Desktop {
+    /// The command `launch_app` runs, with the app's desktop entry path
+    /// appended. Unset, Lucy uses `uwsm app --` when uwsm is running and
+    /// `gio launch` otherwise.
+    pub launcher: Option<Vec<String>>,
 }
 
 /// `$XDG_CONFIG_HOME/lucy/config.toml`, falling back to `~/.config`.
@@ -324,6 +336,19 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[session]\nsilence_timeout_secs = 45\n").unwrap();
         assert_eq!(load(&path).unwrap().session.silence_timeout_secs, 45.0);
+    }
+
+    #[test]
+    fn the_launcher_is_chosen_at_runtime_unless_config_names_one() {
+        assert_eq!(Config::default().desktop.launcher, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[desktop]\nlauncher = [\"dex\"]\n").unwrap();
+        assert_eq!(
+            load(&path).unwrap().desktop.launcher,
+            Some(vec!["dex".to_owned()])
+        );
     }
 
     #[test]

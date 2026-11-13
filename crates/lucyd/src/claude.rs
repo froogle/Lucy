@@ -15,11 +15,6 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent};
 
-/// Until the Persona lands (ticket 16).
-const SYSTEM_PROMPT: &str = "You are Lucy, a voice assistant. Everything you write is spoken \
-aloud. Answer in one to three short spoken sentences. No markdown, no lists, no emoji. \
-Before calling a tool that may be slow, first say \"Let me check.\"";
-
 /// Settings that would make `claude` bill something other than the user's
 /// subscription. Everything above `CLAUDE_CODE_OAUTH_TOKEN` in Claude Code's
 /// credential precedence. `apiKeyHelper` lives only in settings files, which
@@ -57,8 +52,9 @@ impl Claude {
         command
     }
 
-    /// `claude -p` stream-json, with `relay` as its only MCP server, or none.
-    fn command(&self, provider: &Provider, relay: Option<&Relay>) -> Command {
+    /// `claude -p` stream-json, with `relay` as its only MCP server, or none,
+    /// and `instructions` appended to its system prompt.
+    fn command(&self, provider: &Provider, relay: Option<&Relay>, instructions: &str) -> Command {
         let servers = match relay {
             Some(relay) => serde_json::json!({"lucy": {
                 "command": relay.program,
@@ -81,7 +77,8 @@ impl Claude {
             .args(["--tools", ""])
             .args(["--permission-mode", "dontAsk"])
             .args(["--allowedTools", "mcp__lucy__*"])
-            .args(["--append-system-prompt", SYSTEM_PROMPT]);
+            .arg("--append-system-prompt")
+            .arg(instructions);
         if let Some(model) = &provider.model {
             command.args(["--model", model]);
         }
@@ -95,6 +92,7 @@ impl Claude {
         &self,
         provider: &Provider,
         relay: &Relay,
+        instructions: &str,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         turns: std_mpsc::Receiver<String>,
         process: &Mutex<Process>,
@@ -104,7 +102,7 @@ impl Claude {
             let _ = events.send(ThinkingEvent::Unavailable(reason));
             return;
         }
-        let mut child = match self.command(provider, Some(relay)).spawn() {
+        let mut child = match self.command(provider, Some(relay), instructions).spawn() {
             Ok(child) => child,
             Err(e) => {
                 eprintln!("lucyd: can't start {}: {e}", self.program.display());
@@ -165,6 +163,7 @@ impl Thinking for Claude {
         provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
+        instructions: String,
     ) -> Box<dyn SessionModel> {
         let (turns, turns_rx) = std_mpsc::channel();
         let process = Arc::new(Mutex::new(Process::Starting));
@@ -173,7 +172,14 @@ impl Thinking for Claude {
         let thread_events = events.clone();
         let thread_process = process.clone();
         std::thread::spawn(move || {
-            claude.run_session(&provider, &relay, &thread_events, turns_rx, &thread_process);
+            claude.run_session(
+                &provider,
+                &relay,
+                &instructions,
+                &thread_events,
+                turns_rx,
+                &thread_process,
+            );
         });
         Box::new(ClaudeSessionModel {
             turns,
@@ -386,7 +392,7 @@ mod tests {
             program: "lucy".into(),
             args: vec![],
         };
-        let command = claude.command(&provider, Some(&relay));
+        let command = claude.command(&provider, Some(&relay), "");
         command
             .get_envs()
             .filter(|(_, value)| value.is_none())

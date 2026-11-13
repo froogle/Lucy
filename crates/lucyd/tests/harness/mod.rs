@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 use lucy_config::Provider;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
+    Adapters, Launcher, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent,
+    Tts,
 };
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
@@ -31,49 +32,86 @@ pub struct Harness {
     pub stt: FakeStt,
     pub thinking: FakeThinking,
     pub tts: FakeTts,
+    pub launcher: FakeLauncher,
+    /// Where lucyd looks for desktop entries: the user's dir, then the
+    /// system's.
+    applications: [PathBuf; 2],
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
     config_path: PathBuf,
+    plugins: lucyd::plugins::Paths,
+    persona_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
+/// The `persona.md` of a user who has had a Session before.
+const PERSONA: &str = "You are Lucy.";
+
 impl Harness {
-    /// Starts lucyd with no config file and a socket in a fresh runtime dir.
+    /// Starts lucyd with no config file and a socket in a fresh runtime dir,
+    /// for a user who already has a Persona.
     pub fn start() -> Harness {
-        Harness::launch(None, None)
+        Harness::launch(None, Some(PERSONA), None)
     }
 
     /// Starts lucyd with `config` as its `config.toml`.
     pub fn with_config(config: &str) -> Harness {
-        Harness::launch(Some(config), None)
+        Harness::launch(Some(config), Some(PERSONA), None)
+    }
+
+    /// Starts lucyd for a user who has never had a Session: no `persona.md`.
+    pub fn first_run() -> Harness {
+        Harness::launch(None, None, None)
     }
 
     /// Starts lucyd with a real Thinking adapter in place of the fake.
     pub fn with_thinking(config: Option<&str>, thinking: Arc<dyn Thinking>) -> Harness {
-        Harness::launch(config, Some(thinking))
+        Harness::launch(config, Some(PERSONA), Some(thinking))
     }
 
-    fn launch(config: Option<&str>, real_thinking: Option<Arc<dyn Thinking>>) -> Harness {
+    fn launch(
+        config: Option<&str>,
+        persona: Option<&str>,
+        real_thinking: Option<Arc<dyn Thinking>>,
+    ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
-        let config_path = dir.path().join("config").join("config.toml");
+        let config_path = dir.path().join("config").join("lucy").join("config.toml");
+        let persona_path = dir.path().join("config").join("lucy").join("persona.md");
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
         if let Some(config) = config {
-            std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
             std::fs::write(&config_path, config).unwrap();
+        }
+        if let Some(persona) = persona {
+            std::fs::write(&persona_path, persona).unwrap();
         }
         let (speech, speech_rx) = mpsc::unbounded_channel();
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
+        let plugins = lucyd::plugins::Paths {
+            user: dir.path().join("data/lucy/plugins"),
+            shipped: dir.path().join("usr/share/lucy/plugins"),
+            state: dir.path().join("state/lucy"),
+        };
+        let launcher = FakeLauncher::default();
+        let applications = ["applications", "system-applications"].map(|d| dir.path().join(d));
+        for dir in &applications {
+            std::fs::create_dir(dir).unwrap();
+        }
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config_path: config_path.clone(),
+            persona_path: persona_path.clone(),
             lucy_program: lucy_binary(),
+            plugins: plugins.clone(),
             adapters: Adapters {
                 speech: speech_rx,
                 stt: Arc::new(stt.clone()),
                 thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
                 tts: Box::new(tts.clone()),
+                launcher: Arc::new(launcher.clone()),
+                applications: applications.to_vec(),
             },
         })
         .expect("lucyd starts");
@@ -83,8 +121,12 @@ impl Harness {
             stt,
             thinking,
             tts,
+            launcher,
+            applications,
             bus: Arc::default(),
             config_path,
+            plugins,
+            persona_path,
             _dir: dir,
         };
         harness.record_bus();
@@ -104,6 +146,81 @@ impl Harness {
         self.daemon.mcp_socket_path()
     }
 
+    /// A scratch directory for the test's own files, outside every Plugin
+    /// folder and Lucy's state.
+    pub fn scratch(&self) -> PathBuf {
+        let scratch = self._dir.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        scratch
+    }
+
+    /// Lucy's state dir.
+    pub fn state_dir(&self) -> &Path {
+        &self.plugins.state
+    }
+
+    /// Installs a user Plugin: `manifest` plus the fixture Plugin executable
+    /// as `./fixture-plugin`. Returns its folder.
+    pub fn install_plugin(&self, name: &str, manifest: &str) -> PathBuf {
+        install(&self.plugins.user.join(name), manifest)
+    }
+
+    /// Installs a shipped Plugin, as `install_plugin` does.
+    pub fn install_shipped_plugin(&self, name: &str, manifest: &str) -> PathBuf {
+        install(&self.plugins.shipped.join(name), manifest)
+    }
+
+    /// Records an Approval for the Plugin `name` as it is now (the user copy
+    /// if there is one), saving an input schema for each Manifest tool that
+    /// marks it as approved: `{"type": "object", "description": "approved
+    /// <tool>", "properties": {..}}`.
+    pub fn approve(&self, name: &str) {
+        let user = self.plugins.user.join(name);
+        let dir = if user.exists() {
+            user
+        } else {
+            self.plugins.shipped.join(name)
+        };
+        let manifest = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
+        let parsed: toml::Table = toml::from_str(&manifest).unwrap();
+        let command = parsed["command"].as_array().unwrap()[0].as_str().unwrap();
+        let executable = std::fs::read(dir.join(command)).unwrap();
+        let mut schemas = toml::Table::new();
+        for tool in parsed["tools"].as_array().unwrap() {
+            let tool = tool["name"].as_str().unwrap();
+            let schema = serde_json::json!({
+                "type": "object",
+                "description": format!("approved {tool}"),
+                "properties": {"text": {"type": "string"}, "path": {"type": "string"}},
+            });
+            schemas.insert(tool.into(), schema.to_string().into());
+        }
+        let mut approval = toml::Table::new();
+        approval.insert(
+            "hash".into(),
+            content_hash(manifest.as_bytes(), &executable).into(),
+        );
+        approval.insert("schemas".into(), schemas.into());
+
+        let path = self.plugins.state.join("approvals.toml");
+        let mut approvals: toml::Table = std::fs::read_to_string(&path)
+            .map(|text| toml::from_str(&text).unwrap())
+            .unwrap_or_default();
+        approvals
+            .entry("plugins")
+            .or_insert_with(|| toml::Table::new().into())
+            .as_table_mut()
+            .unwrap()
+            .insert(name.into(), approval.into());
+        std::fs::create_dir_all(&self.plugins.state).unwrap();
+        std::fs::write(path, toml::to_string(&approvals).unwrap()).unwrap();
+    }
+
+    /// The user's `persona.md`.
+    pub fn persona_path(&self) -> &Path {
+        &self.persona_path
+    }
+
     /// Runs `lucy mcp-relay` against lucyd's MCP socket with `args` after the
     /// socket option, and no input.
     pub fn relay(&self, args: &[&str]) -> Output {
@@ -115,6 +232,17 @@ impl Harness {
             .stdin(Stdio::null())
             .output()
             .unwrap()
+    }
+
+    /// Installs a user's desktop entry named `file_name`, of type
+    /// Application, with the given `[Desktop Entry]` keys. Returns its path.
+    pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
+        write_desktop_entry(&self.applications[0], file_name, keys)
+    }
+
+    /// Installs a system-wide desktop entry, as `desktop_entry` does.
+    pub fn system_desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
+        write_desktop_entry(&self.applications[1], file_name, keys)
     }
 
     /// A client that has completed the `hello` handshake.
@@ -208,6 +336,18 @@ impl Harness {
     }
 }
 
+/// Writes a desktop entry of type Application with `keys`; a `Type` key in
+/// `keys` overrides it.
+fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
+    let path = dir.join(file_name);
+    std::fs::write(
+        &path,
+        format!("[Desktop Entry]\nType=Application\n{keys}\n"),
+    )
+    .unwrap();
+    path
+}
+
 /// The next event, which must be a `state` event.
 pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {
@@ -226,6 +366,46 @@ fn lucy_binary() -> PathBuf {
         lucy.display()
     );
     lucy
+}
+
+/// The fixture Plugin executable (`examples/fixture-plugin.rs`), which cargo
+/// builds beside this test's binary.
+fn fixture_plugin() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let fixture = exe
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/fixture-plugin");
+    assert!(
+        fixture.exists(),
+        "{} not found; run `cargo build -p lucyd --examples`",
+        fixture.display()
+    );
+    fixture
+}
+
+fn install(dir: &Path, manifest: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+    std::fs::copy(fixture_plugin(), dir.join("fixture-plugin")).unwrap();
+    dir.to_owned()
+}
+
+/// What an Approval pins: SHA-256 over the Manifest's length (u64, little
+/// endian), the Manifest, then the executable, as lowercase hex.
+fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update((manifest.len() as u64).to_le_bytes());
+    hasher.update(manifest);
+    hasher.update(executable);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Waits for `receiver`, failing the test rather than hanging.
@@ -290,6 +470,8 @@ pub struct FakeThinking {
     events: Arc<Mutex<Option<mpsc::UnboundedSender<ThinkingEvent>>>>,
     /// How the open SessionModel reaches Lucy's tools.
     relay: Arc<Mutex<Option<Relay>>>,
+    /// The instructions the open SessionModel was given.
+    instructions: Arc<Mutex<Option<String>>>,
     streamed: Arc<Mutex<Vec<String>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
     /// Problems scripted for `health` and `check`, by model.
@@ -305,6 +487,7 @@ impl FakeThinking {
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
             relay: Arc::default(),
+            instructions: Arc::default(),
             streamed: Arc::default(),
             opened: Arc::default(),
             unhealthy: Arc::default(),
@@ -353,14 +536,43 @@ impl FakeThinking {
         self.send(ThinkingEvent::TurnEnd);
     }
 
+    /// The instructions the last SessionModel was opened with.
+    pub fn instructions(&self) -> String {
+        self.instructions
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a SessionModel was opened")
+    }
+
     /// The model calls one of Lucy's tools through the real relay.
     pub fn call_tool(&self, name: &str) -> Result<CallToolResult, String> {
+        self.call_tool_with(name, serde_json::json!({}))
+    }
+
+    /// The model calls one of Lucy's tools with `arguments`, a JSON object.
+    pub fn call_tool_with(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, String> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("tool arguments are an object");
+        };
         self.with_mcp(|client| async move {
             client
-                .call_tool(CallToolRequestParams::new(name.to_owned()))
+                .call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))
                 .await
                 .map_err(|e| e.to_string())
         })
+    }
+
+    /// The tools the model is offered.
+    pub fn tools(&self) -> Vec<Tool> {
+        self.with_mcp(
+            |client| async move { client.list_all_tools().await.map_err(|e| e.to_string()) },
+        )
+        .unwrap()
     }
 
     /// The names of the tools the model is offered.
@@ -425,10 +637,12 @@ impl Thinking for FakeThinking {
         provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
+        instructions: String,
     ) -> Box<dyn SessionModel> {
         self.opened.lock().unwrap().push(provider.clone());
         *self.events.lock().unwrap() = Some(events);
         *self.relay.lock().unwrap() = Some(relay);
+        *self.instructions.lock().unwrap() = Some(instructions);
         Box::new(FakeSessionModel {
             turns: self.turns_tx.clone(),
         })
@@ -522,5 +736,36 @@ impl Speaker for FakeSpeaker {
     fn speak(&mut self, sentence: String) {
         self.spoken.lock().unwrap().push(sentence.clone());
         let _ = self.sentences.send(sentence);
+    }
+}
+
+/// A launcher that records what it was asked to open instead of opening it.
+#[derive(Clone, Default)]
+pub struct FakeLauncher {
+    opened: Arc<Mutex<Vec<String>>>,
+    launched: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+impl FakeLauncher {
+    /// Every URL opened so far.
+    pub fn opened(&self) -> Vec<String> {
+        self.opened.lock().unwrap().clone()
+    }
+
+    /// The desktop entry of every app launched so far.
+    pub fn launched(&self) -> Vec<PathBuf> {
+        self.launched.lock().unwrap().clone()
+    }
+}
+
+impl Launcher for FakeLauncher {
+    fn open_url(&self, url: &str) -> std::io::Result<()> {
+        self.opened.lock().unwrap().push(url.to_owned());
+        Ok(())
+    }
+
+    fn launch(&self, entry: &Path) -> std::io::Result<()> {
+        self.launched.lock().unwrap().push(entry.to_owned());
+        Ok(())
     }
 }

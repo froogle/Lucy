@@ -3,6 +3,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use lucy_config::Tier;
@@ -12,6 +13,8 @@ use tokio::time::Instant;
 
 use crate::adapters::{Adapters, SessionModel, ThinkingEvent};
 use crate::mcp::{Caller, Relays};
+use crate::persona::{self, Loaded, Persona};
+use crate::plugins;
 use crate::session::{Input, Output, Session};
 use crate::status::StatusBus;
 
@@ -42,6 +45,8 @@ pub struct Runner {
     status: StatusBus,
     adapters: Adapters,
     relays: Relays,
+    plugins: Arc<plugins::Host>,
+    persona: Persona,
     config_path: PathBuf,
     /// False once the speech source has gone away.
     speech_open: bool,
@@ -54,6 +59,8 @@ impl Runner {
         status: StatusBus,
         adapters: Adapters,
         relays: Relays,
+        plugins: Arc<plugins::Host>,
+        persona: Persona,
         config_path: PathBuf,
     ) -> Self {
         Runner {
@@ -61,6 +68,8 @@ impl Runner {
             status,
             adapters,
             relays,
+            plugins,
+            persona,
             config_path,
             speech_open: true,
             sessions_started: 0,
@@ -89,17 +98,33 @@ impl Runner {
         }
     }
 
-    /// Runs one Session until it ends. Status changes are published before
-    /// replying, so a client sees them as soon as its request returns.
+    /// Runs one Session until it ends, then stops the Plugins it started.
     async fn run_session(
         &mut self,
         id: SessionId,
         started: oneshot::Sender<Result<SessionId, StartError>>,
     ) {
+        let plugin_tools = self.plugins.open_session().await;
+        self.session_loop(id, started, plugin_tools.clone()).await;
+        plugin_tools.stop().await;
+    }
+
+    /// Status changes are published before replying, so a client sees them
+    /// as soon as its request returns.
+    async fn session_loop(
+        &mut self,
+        id: SessionId,
+        started: oneshot::Sender<Result<SessionId, StartError>>,
+        plugin_tools: Arc<plugins::SessionTools>,
+    ) {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // Revoked when the Session ends.
-        let (relay, _token) = self.relays.issue(Caller::SessionModel);
-        // Edits to the file apply from the next Session on.
+        let (relay, _token) = self.relays.issue(Caller::SessionModel, plugin_tools);
+        // Read afresh each Session, so hand edits apply at the next one.
+        let persona = self.persona.load().unwrap_or_else(|e| {
+            eprintln!("lucyd: can't load {}: {e}", self.persona.path().display());
+            Loaded::fallback()
+        });
         let config = lucy_config::load(&self.config_path);
         let provider = match &config {
             Ok(config) => config.provider(Tier::Fast),
@@ -109,7 +134,10 @@ impl Runner {
             )),
         };
         let mut model: Box<dyn SessionModel> = match provider {
-            Ok(provider) => self.adapters.thinking.open(provider, events_tx, relay),
+            Ok(provider) => self
+                .adapters
+                .thinking
+                .open(provider, events_tx, relay, persona.text),
             Err(reason) => {
                 eprintln!("lucyd: {reason}");
                 let _ = events_tx.send(ThinkingEvent::Unavailable(reason));
@@ -124,11 +152,19 @@ impl Runner {
         let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
         silence.set_running(session.silence_timer_runs());
 
+        // Sent before anything the user says.
+        let mut opening = persona
+            .created
+            .then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
+
         self.publish(session.state(), Some(id));
         let _ = started.send(Ok(id));
         loop {
             let mut segment = None;
-            let input = tokio::select! {
+            let input = if let Some(input) = opening.take() {
+                input
+            } else {
+                tokio::select! {
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         let _ = reply.send(Err(StartError));
@@ -161,6 +197,7 @@ impl Runner {
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
                     self.publish(State::Idle, None);
                     return;
+                }
                 }
             };
             for output in session.handle(input) {

@@ -132,7 +132,7 @@ impl Claude {
 
     fn reply_ok(&self, provider: &Provider) -> Result<Reply, String> {
         let mut child = self
-            .command(provider, None)
+            .command(provider, None, "")
             .spawn()
             .map_err(|e| format!("I couldn't start Claude Code: {e}."))?;
         let mut stdin = child.stdin.take().expect("stdin is piped");
