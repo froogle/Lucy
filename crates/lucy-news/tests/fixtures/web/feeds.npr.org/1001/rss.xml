@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:npr="https://www.npr.org/rss/" xmlns:nprml="https://api.npr.org/nprml" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:media="http://search.yahoo.com/mrss/" version="2.0">
+  <channel>
+    <title>NPR Topics: News</title>
+    <link>https://www.npr.org/templates/story/story.php?storyId=1001</link>
+    <description>Breaking news, top national and world stories, politics, business and culture from NPR.</description>
+    <language>en</language>
+    <copyright>Copyright 2024 NPR - For Personal Use Only</copyright>
+    <generator>Story API Shim 1.2.24</generator>
+    <lastBuildDate>Fri, 13 Nov 2026 09:07:23 -0500</lastBuildDate>
+    <image>
+      <url>https://media.npr.org/images/podcasts/primary/npr_generic_image_300.jpg?s=200</url>
+      <title>NPR Topics: News</title>
+      <link>https://www.npr.org/sections/news/</link>
+    </image>
+    <item>
+      <title>Storm Elin knocks out power to thousands across Europe</title>
+      <description>Crews are working to restore power after winds topped 100 mph. &lt;em&gt;This story is developing.&lt;/em&gt;</description>
+      <pubDate>Fri, 13 Nov 2026 08:35:22 -0500</pubDate>
+      <link>https://www.npr.org/2026/11/13/nx-s1-0000001/storm-elin-power</link>
+      <guid>https://www.npr.org/2026/11/13/nx-s1-0000001/storm-elin-power</guid>
+      <content:encoded><![CDATA[<p>Crews are working to restore power after winds topped 100 mph. <em>This story is developing.</em></p><img src='https://media.npr.org/include/images/tracking/npr-rss-pixel.png?story=nx-s1-0000001' />]]></content:encoded>
+      <dc:creator>A. Reporter</dc:creator>
+    </item>
+    <item>
+      <title>What the rate cut means for your mortgage</title>
+      <description>Borrowers won&apos;t see big changes right away, economists say.</description>
+      <pubDate>Fri, 13 Nov 2026 08:32:23 -0500</pubDate>
+      <link>https://www.npr.org/2026/11/13/nx-s1-0000002/rate-cut-mortgage</link>
+      <guid>https://www.npr.org/2026/11/13/nx-s1-0000002/rate-cut-mortgage</guid>
+      <dc:creator>B. Reporter</dc:creator>
+    </item>
+    <item>
+      <title>A library returns a book 120 years overdue</title>
+      <description>The fine was waived.</description>
+      <pubDate>Fri, 13 Nov 2026 08:00:00 -0500</pubDate>
+      <link>https://www.npr.org/2026/11/13/nx-s1-0000003/overdue-book</link>
+      <guid>https://www.npr.org/2026/11/13/nx-s1-0000003/overdue-book</guid>
+    </item>
+  </channel>
+</rss>
