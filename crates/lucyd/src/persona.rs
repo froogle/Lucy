@@ -44,21 +44,35 @@ impl Persona {
         &self.path
     }
 
-    /// The Persona's text, writing the default first if there is none.
-    /// `created` is true when it had to be written: the user's first Session.
+    /// The Persona's text, or the default if there is none yet. `first_run`
+    /// is true when there is none: the user hasn't been introduced to Lucy.
     pub fn load(&self) -> io::Result<Loaded> {
         match std::fs::read_to_string(&self.path) {
             Ok(text) => Ok(Loaded {
                 text,
-                created: false,
+                first_run: false,
             }),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                self.save(DEFAULT)?;
-                Ok(Loaded {
-                    text: DEFAULT.to_owned(),
-                    created: true,
-                })
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Loaded {
+                text: DEFAULT.to_owned(),
+                first_run: true,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Writes the default once Lucy has introduced herself, unless the
+    /// Persona has been written since.
+    pub fn introduced(&self) -> io::Result<()> {
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.path)
+        {
+            Ok(mut file) => io::Write::write_all(&mut file, DEFAULT.as_bytes()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
             Err(e) => Err(e),
         }
     }
@@ -74,7 +88,7 @@ impl Persona {
 
 pub struct Loaded {
     pub text: String,
-    pub created: bool,
+    pub first_run: bool,
 }
 
 impl Loaded {
@@ -82,7 +96,7 @@ impl Loaded {
     pub fn fallback() -> Loaded {
         Loaded {
             text: DEFAULT.to_owned(),
-            created: false,
+            first_run: false,
         }
     }
 }

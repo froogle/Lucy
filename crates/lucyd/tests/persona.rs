@@ -3,11 +3,21 @@ mod harness;
 use harness::{next_state, Harness};
 use lucy_ipc::State;
 
+/// Opens the first Session and lets Lucy finish introducing herself.
+fn introduce(lucyd: &Harness) {
+    let mut events = lucyd.state_client();
+    lucyd.client().start_session().unwrap();
+    lucyd.thinking.next_turn();
+    while next_state(&mut events).state != State::Thinking {}
+    lucyd.thinking.turn_end();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+}
+
 #[test]
 fn a_missing_persona_is_created_with_the_default_and_given_to_the_model() {
     let lucyd = Harness::first_run();
 
-    lucyd.client().start_session().unwrap();
+    introduce(&lucyd);
 
     let persona = std::fs::read_to_string(lucyd.persona_path()).expect("persona.md created");
     let instructions = lucyd.thinking.instructions();
@@ -23,7 +33,7 @@ fn a_missing_persona_is_created_with_the_default_and_given_to_the_model() {
 fn the_default_persona_names_no_one_until_told() {
     let lucyd = Harness::first_run();
 
-    lucyd.client().start_session().unwrap();
+    introduce(&lucyd);
 
     let persona = std::fs::read_to_string(lucyd.persona_path()).unwrap();
     assert!(
@@ -140,6 +150,42 @@ fn a_persona_change_by_voice_is_saved_and_read_back_without_approval() {
     let text = format!("{:?}", result.content);
     assert!(text.contains(persona), "{text}");
     assert!(text.contains("Tell the user what changed"), "{text}");
+}
+
+#[test]
+fn an_invalid_config_on_the_first_run_does_not_use_up_the_introduction() {
+    let lucyd = Harness::first_run();
+    let mut events = lucyd.state_client();
+    let mut client = lucyd.client();
+    std::fs::write(lucyd.config_path(), "[tiers]\nfast = \"missing\"\n").unwrap();
+    client.start_session().unwrap();
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    while next_state(&mut events).state != State::Idle {}
+
+    std::fs::remove_file(lucyd.config_path()).unwrap();
+    client.start_session().unwrap();
+
+    let opening = lucyd.thinking.next_turn();
+    assert!(opening.contains("Introduce yourself"), "{opening}");
+}
+
+#[test]
+fn a_refused_provider_on_the_first_run_does_not_use_up_the_introduction() {
+    let lucyd = Harness::first_run();
+    let mut events = lucyd.state_client();
+    let mut client = lucyd.client();
+    client.start_session().unwrap();
+    lucyd.thinking.next_turn();
+    lucyd.thinking.unavailable("I can't reach Claude.");
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    while next_state(&mut events).state != State::Idle {}
+
+    client.start_session().unwrap();
+
+    let opening = lucyd.thinking.next_turn();
+    assert!(opening.contains("Introduce yourself"), "{opening}");
 }
 
 #[test]

@@ -156,10 +156,11 @@ impl Runner {
         let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
         silence.set_running(session.silence_timer_runs());
 
-        // Sent before anything the user says.
-        let mut opening = persona
-            .created
-            .then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
+        // Sent before anything the user says. The first run lasts until the
+        // introduction's Turn has ended, so a Provider that can't be used
+        // doesn't use it up.
+        let mut introducing = persona.first_run;
+        let mut opening = introducing.then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
 
         self.publish(session.state(), Some(id));
         let _ = started.send(Ok(id));
@@ -222,6 +223,12 @@ impl Runner {
                 }
                 }
             };
+            if introducing && matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
+                introducing = false;
+                if let Err(e) = self.persona.introduced() {
+                    eprintln!("lucyd: can't save {}: {e}", self.persona.path().display());
+                }
+            }
             for output in session.handle(input) {
                 match output {
                     Output::Transcribe => {

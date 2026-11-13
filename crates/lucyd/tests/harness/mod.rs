@@ -592,6 +592,11 @@ impl FakeThinking {
         self.send(ThinkingEvent::TurnEnd);
     }
 
+    /// The Provider turns out to be unusable, for `reason`.
+    pub fn unavailable(&self, reason: &str) {
+        self.send(ThinkingEvent::Unavailable(reason.to_owned()));
+    }
+
     /// The instructions the last SessionModel was opened with.
     pub fn instructions(&self) -> String {
         self.instructions
