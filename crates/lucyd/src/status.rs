@@ -61,6 +61,8 @@ impl StatusBus {
 pub struct Buses {
     pub status: StatusBus,
     pub levels: LevelBus,
+    /// `plugins.changed`.
+    pub plugins: ChangeBus,
 }
 
 /// Lucy's voice level while she speaks. A subscriber that falls behind skips
@@ -81,5 +83,23 @@ impl LevelBus {
     pub fn publish(&self, rms: f32) {
         // No subscribers is fine.
         let _ = self.0.send(rms);
+    }
+}
+
+/// Says that something changed, once per change, to every subscriber, in
+/// order: what changed is fetched afresh.
+#[derive(Clone, Default)]
+pub struct ChangeBus(Arc<Mutex<Vec<mpsc::UnboundedSender<()>>>>);
+
+impl ChangeBus {
+    /// A queue of every change after now.
+    pub fn subscribe(&self) -> mpsc::UnboundedReceiver<()> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.0.lock().unwrap().push(tx);
+        rx
+    }
+
+    pub fn publish(&self) {
+        self.0.lock().unwrap().retain(|tx| tx.send(()).is_ok());
     }
 }
