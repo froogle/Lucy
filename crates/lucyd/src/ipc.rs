@@ -1,7 +1,12 @@
 //! The public socket: newline-delimited JSON-RPC 2.0 (ADR 0006).
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use lucy_config::{Config, Tier};
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, SessionStarted, Status, Subscribe, Topic, PROTOCOL,
+    error_code, Event, Hello, HelloResult, ProviderCheck, ProviderCheckResult, ProviderStatus,
+    ProvidersStatus, SessionStarted, Status, Subscribe, Topic, PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -9,18 +14,33 @@ use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::adapters::Thinking;
 use crate::runner::Command;
 use crate::status::StatusBus;
+
+/// What `providers.status` and `provider.check` need.
+#[derive(Clone)]
+pub struct Providers {
+    pub thinking: Arc<dyn Thinking>,
+    /// `config.toml`, read afresh for each request.
+    pub config_path: PathBuf,
+}
 
 pub async fn serve(
     listener: UnixListener,
     status: StatusBus,
     sessions: mpsc::UnboundedSender<Command>,
+    providers: Providers,
 ) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(connection(stream, status.clone(), sessions.clone()));
+                tokio::spawn(connection(
+                    stream,
+                    status.clone(),
+                    sessions.clone(),
+                    providers.clone(),
+                ));
             }
             Err(e) => eprintln!("lucyd: accept failed: {e}"),
         }
@@ -31,6 +51,7 @@ struct Connection {
     writer: OwnedWriteHalf,
     status: StatusBus,
     sessions: mpsc::UnboundedSender<Command>,
+    providers: Providers,
     greeted: bool,
     state_subscribed: bool,
     /// Every state change since subscribing, once subscribed.
@@ -41,6 +62,7 @@ async fn connection(
     stream: UnixStream,
     status: StatusBus,
     sessions: mpsc::UnboundedSender<Command>,
+    providers: Providers,
 ) {
     let (reader, writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -48,6 +70,7 @@ async fn connection(
         writer,
         status,
         sessions,
+        providers,
         greeted: false,
         state_subscribed: false,
         state_events: None,
@@ -154,6 +177,8 @@ impl Connection {
                 Ok(()) => Ok(json!({})),
                 Err(_) => Err(RpcError::new(error_code::NO_SESSION, "no Session is open")),
             },
+            "providers.status" => Ok(json!(self.providers_status().await?)),
+            "provider.check" => Ok(json!(self.check_provider(parse_params(params)?).await?)),
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method {method:?}"),
@@ -170,6 +195,56 @@ impl Connection {
         let gone = || RpcError::new(error_code::INTERNAL_ERROR, "lucyd's Session runner stopped");
         self.sessions.send(command(reply)).map_err(|_| gone())?;
         answer.await.map_err(|_| gone())
+    }
+
+    /// Health checks for every Provider in config, with no model call.
+    async fn providers_status(&self) -> Result<ProvidersStatus, RpcError> {
+        let config = self.config()?;
+        let thinking = self.providers.thinking.clone();
+        let providers = blocking(move || {
+            let tiers = |name: &str| {
+                [
+                    (Tier::Fast, lucy_ipc::Tier::Fast),
+                    (Tier::Advanced, lucy_ipc::Tier::Advanced),
+                ]
+                .into_iter()
+                .filter(|(tier, _)| config.tiers.name(*tier) == name)
+                .map(|(_, tier)| tier)
+                .collect()
+            };
+            config
+                .providers
+                .iter()
+                .map(|(name, provider)| ProviderStatus {
+                    name: name.clone(),
+                    kind: kind_name(provider.kind).to_owned(),
+                    model: provider.model.clone(),
+                    tiers: tiers(name),
+                    problem: thinking.health(provider).err(),
+                })
+                .collect()
+        })
+        .await?;
+        Ok(ProvidersStatus { providers })
+    }
+
+    /// A real "Reply OK" round trip through one Provider.
+    async fn check_provider(&self, check: ProviderCheck) -> Result<ProviderCheckResult, RpcError> {
+        let config = self.config()?;
+        let Some(provider) = config.providers.get(&check.name).cloned() else {
+            return Err(RpcError::new(
+                error_code::UNKNOWN_PROVIDER,
+                format!("config.toml has no Provider called {:?}", check.name),
+            ));
+        };
+        let thinking = self.providers.thinking.clone();
+        let problem = blocking(move || thinking.check(&provider).err()).await?;
+        Ok(ProviderCheckResult { problem })
+    }
+
+    fn config(&self) -> Result<Config, RpcError> {
+        lucy_config::load(&self.providers.config_path)
+            .map_err(|e| RpcError::new(error_code::INVALID_CONFIG, e.to_string()))
     }
 
     fn hello(&mut self, params: Value) -> Result<Value, RpcError> {
@@ -211,6 +286,24 @@ impl Connection {
         let mut line = message.to_string();
         line.push('\n');
         self.writer.write_all(line.as_bytes()).await
+    }
+}
+
+/// Runs a blocking Provider call off the async runtime.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, RpcError> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| {
+        RpcError::new(
+            error_code::INTERNAL_ERROR,
+            format!("Provider check failed: {e}"),
+        )
+    })
+}
+
+fn kind_name(kind: lucy_config::Kind) -> &'static str {
+    match kind {
+        lucy_config::Kind::Claude => "claude",
     }
 }
 

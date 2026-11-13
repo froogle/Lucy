@@ -51,13 +51,17 @@ fn calls(work: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Opens a Session, says something, hears the first sentence of the reply
-/// and ends the Session.
+/// Opens a Session, says something, hears the whole two-sentence reply
+/// (`turn1.jsonl`) and ends the Session. Returns the first sentence.
 fn talk(lucyd: &Harness) -> String {
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.say("Remember the word kiwi.");
     let heard = lucyd.tts.next_sentence();
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "I'm ready for whatever comes next."
+    );
     client.end_session().unwrap();
     heard
 }
@@ -184,4 +188,47 @@ allow_api_key = true
 
     assert_eq!(verifications(work.path()), 0);
     assert!(!calls(work.path()).iter().any(|c| c == "auth"));
+}
+
+#[test]
+fn provider_check_is_a_real_reply_ok_turn_that_verifies_the_version() {
+    let work = tempfile::tempdir().unwrap();
+    let lucyd = lucyd(work.path(), None);
+    let mut client = lucyd.client();
+
+    assert_eq!(client.check_provider("claude-fast").unwrap().problem, None);
+    assert_eq!(sent(work.path()).len(), 1);
+    assert!(sent(work.path())[0].contains(VERIFY_PROMPT));
+
+    talk(&lucyd);
+    assert_eq!(verifications(work.path()), 1, "already verified");
+}
+
+#[test]
+fn provider_check_reports_a_version_that_bills_an_api_key() {
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("turn1.jsonl"), api_key_turn()).unwrap();
+    let lucyd = lucyd(work.path(), None);
+    let mut client = lucyd.client();
+
+    let problem = client.check_provider("claude-fast").unwrap().problem;
+
+    assert!(problem.unwrap().contains("allow_api_key"));
+}
+
+#[test]
+fn providers_status_shows_a_signed_out_claude_without_a_model_call() {
+    let work = tempfile::tempdir().unwrap();
+    std::fs::write(work.path().join("auth.json"), r#"{"loggedIn":false}"#).unwrap();
+    let lucyd = lucyd(work.path(), None);
+    let mut client = lucyd.client();
+
+    let status = client.providers_status().unwrap();
+
+    assert_eq!(status.providers.len(), 2);
+    for provider in &status.providers {
+        let problem = provider.problem.as_deref().unwrap_or_default();
+        assert!(problem.contains("/login"), "{problem}");
+    }
+    assert!(sent(work.path()).is_empty());
 }

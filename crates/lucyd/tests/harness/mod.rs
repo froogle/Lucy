@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -292,6 +292,9 @@ pub struct FakeThinking {
     relay: Arc<Mutex<Option<Relay>>>,
     streamed: Arc<Mutex<Vec<String>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
+    /// Problems scripted for `health` and `check`, by model.
+    unhealthy: Arc<Mutex<HashMap<String, String>>>,
+    failing_checks: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl FakeThinking {
@@ -304,7 +307,21 @@ impl FakeThinking {
             relay: Arc::default(),
             streamed: Arc::default(),
             opened: Arc::default(),
+            unhealthy: Arc::default(),
+            failing_checks: Arc::default(),
         }
+    }
+
+    /// Health checks of a Provider using `model` report `problem`.
+    pub fn unhealthy(&self, model: &str, problem: &str) {
+        let mut unhealthy = self.unhealthy.lock().unwrap();
+        unhealthy.insert(model.to_owned(), problem.to_owned());
+    }
+
+    /// Round-trip checks of a Provider using `model` report `problem`.
+    pub fn fails_check(&self, model: &str, problem: &str) {
+        let mut failing = self.failing_checks.lock().unwrap();
+        failing.insert(model.to_owned(), problem.to_owned());
     }
 
     /// The Provider settings of each SessionModel opened, in order.
@@ -417,12 +434,23 @@ impl Thinking for FakeThinking {
         })
     }
 
-    fn health(&self, _provider: &Provider) -> Result<(), String> {
-        Ok(())
+    fn health(&self, provider: &Provider) -> Result<(), String> {
+        scripted_problem(&self.unhealthy, provider)
     }
 
-    fn check(&self, _provider: &Provider) -> Result<(), String> {
-        Ok(())
+    fn check(&self, provider: &Provider) -> Result<(), String> {
+        scripted_problem(&self.failing_checks, provider)
+    }
+}
+
+fn scripted_problem(
+    problems: &Mutex<HashMap<String, String>>,
+    provider: &Provider,
+) -> Result<(), String> {
+    let model = provider.model.as_deref().unwrap_or_default();
+    match problems.lock().unwrap().get(model) {
+        Some(problem) => Err(problem.clone()),
+        None => Ok(()),
     }
 }
 

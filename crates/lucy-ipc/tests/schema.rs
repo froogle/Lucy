@@ -30,6 +30,8 @@ fn schema_describes_every_method_and_event() {
         "subscribe",
         "session.start",
         "session.end",
+        "providers.status",
+        "provider.check",
     ] {
         assert!(
             schema["x-methods"][method].is_object(),

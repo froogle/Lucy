@@ -53,6 +53,10 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
     let (sessions, commands) = mpsc::unbounded_channel();
+    let providers = ipc::Providers {
+        thinking: adapters.thinking.clone(),
+        config_path: config_path.clone(),
+    };
     runtime.spawn(
         runner::Runner::new(
             commands,
@@ -64,7 +68,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         .run(),
     );
     runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
-    runtime.spawn(ipc::serve(listener, status, sessions));
+    runtime.spawn(ipc::serve(listener, status, sessions, providers));
 
     Ok(Daemon {
         socket_path,
