@@ -102,6 +102,38 @@ pub trait Thinking: Send + Sync {
     /// A real "Reply OK" round trip, with the subscription guard's checks
     /// on it. Blocking. The error is a reason ready to speak, with the fix.
     fn check(&self, provider: &Provider) -> Result<(), String>;
+
+    /// Starts a Delegate's model process, as `open` starts a Session's, but
+    /// with the CLI's own file and shell tools, working in `workspace.dir`,
+    /// and confined by Landlock to `workspace` plus the CLI's own program
+    /// and config. A Provider that can't run Delegates sends `Unavailable`.
+    fn open_delegate(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        workspace: Workspace,
+    ) -> Box<dyn SessionModel> {
+        let _ = (provider, relay, instructions, workspace);
+        let reason = "This Provider can't build Plugins.".to_owned();
+        let _ = events.send(ThinkingEvent::Unavailable(reason));
+        Box::new(InertSessionModel::new(events))
+    }
+}
+
+/// Where a Delegate works, and the only other places it may touch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    /// The build staging dir: its working directory, read-write.
+    pub dir: PathBuf,
+    /// Its `TMPDIR`, read-write.
+    pub tmp: PathBuf,
+    /// Other paths it may read and write, such as toolchain caches.
+    pub writable: Vec<PathBuf>,
+    /// Other paths it may only read and run, such as toolchains and the
+    /// relay.
+    pub readable: Vec<PathBuf>,
 }
 
 /// The model process of one Session.

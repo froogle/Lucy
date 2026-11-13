@@ -3,6 +3,7 @@
 
 pub mod adapters;
 pub mod audio;
+mod authoring;
 pub mod by_kind;
 pub mod claude;
 pub mod codex;
@@ -86,7 +87,16 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let (indicators, fallback) =
         notifications::fallback(&buses.status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
+    let plugins_dir = plugin_paths.user.clone();
     let plugin_host = plugins::Host::new(plugin_paths, sessions.clone(), buses.plugins.clone());
+    let authoring = authoring::Authoring::new(
+        adapters.thinking.clone(),
+        relays.clone(),
+        config_path.clone(),
+        plugins_dir,
+        plugin_host.clone(),
+        sessions.clone(),
+    );
     let providers = ipc::Providers {
         thinking: adapters.thinking.clone(),
         config_path: config_path.clone(),
@@ -102,10 +112,17 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
                 persona: persona.clone(),
                 config_path,
             },
+            authoring.building(),
         )
         .run(),
     );
-    runtime.spawn(mcp::serve(mcp_listener, relays, persona, sessions.clone()));
+    runtime.spawn(mcp::serve(
+        mcp_listener,
+        relays,
+        persona,
+        sessions.clone(),
+        authoring,
+    ));
     runtime.spawn(ipc::serve(
         listener,
         buses,

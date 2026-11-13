@@ -31,6 +31,11 @@ pub enum Input {
     AnswerTimedOut,
     /// The question is no longer asked; nothing is said.
     Withdrawn,
+    /// Lucy says this herself, after any reply text so far.
+    Say(String),
+    /// An Authoring build started (true) or ended (false). While one runs,
+    /// the Session stays open in Listening.
+    Building(bool),
 }
 
 /// Something Lucy asks the user in the middle of a tool call.
@@ -47,6 +52,8 @@ pub enum Expects {
     Yes,
     /// Any words: a mid-call question from a Plugin.
     Words,
+    /// A yes, as one of the yes-phrases, or else any words.
+    YesOrWords,
 }
 
 /// How the user answered a `Question`.
@@ -101,6 +108,8 @@ pub struct Session {
     /// What the question being asked expects, while Confirming.
     asking: Option<Expects>,
     yes_phrases: Vec<String>,
+    /// An Authoring build is running.
+    building: bool,
 }
 
 impl Session {
@@ -130,9 +139,16 @@ impl Session {
     }
 
     /// The silence timer counts only while Lucy is listening and the user
-    /// isn't speaking, including while an utterance is being transcribed.
+    /// isn't speaking, including while an utterance is being transcribed,
+    /// and no Authoring build is running.
     pub fn silence_timer_runs(&self) -> bool {
-        self.state() == State::Listening && !self.speaking
+        self.state() == State::Listening && !self.speaking && !self.building
+    }
+
+    /// Neither Lucy nor the user is speaking, and nothing they said is
+    /// still being heard or answered.
+    pub fn quiet(&self) -> bool {
+        self.state() == State::Listening && !self.speaking && !self.transcribing
     }
 
     /// The wait for an answer counts once the question has been said, and
@@ -171,10 +187,11 @@ impl Session {
                     if text.is_empty() {
                         return vec![];
                     }
+                    let yes = is_yes(text, &self.yes_phrases);
                     let answer = match expects {
-                        Expects::Yes if is_yes(text, &self.yes_phrases) => Answer::Yes,
+                        Expects::Yes | Expects::YesOrWords if yes => Answer::Yes,
                         Expects::Yes => Answer::No,
-                        Expects::Words => Answer::Said(text.to_owned()),
+                        Expects::Words | Expects::YesOrWords => Answer::Said(text.to_owned()),
                     };
                     return self.answered(answer);
                 }
@@ -254,6 +271,16 @@ impl Session {
                 self.asking = None;
                 self.turn_finished().into_iter().collect()
             }
+            Input::Say(text) => {
+                let mut outputs: Vec<Output> = self.speak_sentence().into_iter().collect();
+                self.sentence = text;
+                outputs.extend(self.speak_sentence());
+                outputs
+            }
+            Input::Building(building) => {
+                self.building = building;
+                vec![]
+            }
         }
     }
 
@@ -262,7 +289,7 @@ impl Session {
     fn unheard(&self) -> Option<Answer> {
         match self.asking {
             Some(Expects::Yes) => Some(Answer::No),
-            Some(Expects::Words) => Some(Answer::Silence),
+            Some(Expects::Words | Expects::YesOrWords) => Some(Answer::Silence),
             None => None,
         }
     }

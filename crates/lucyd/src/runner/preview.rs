@@ -62,8 +62,9 @@ impl Runner {
                     Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
                         let _ = reply.send(Err(EndError));
                     }
-                    // Dropped unanswered: there is no Session to ask in.
-                    Some(Command::Ask(_)) => {}
+                    // Dropped unanswered: there is no Session to ask or
+                    // tell in.
+                    Some(Command::Ask(_) | Command::Say(_) | Command::Turn(_)) => {}
                     Some(Command::VoicePreview(other)) => {
                         let _ = other.reply.send(Err(PreviewError::Busy));
                     }
