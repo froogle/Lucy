@@ -9,8 +9,27 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// The whole of `config.toml`. Settings arrive with the tickets that use them.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-pub struct Config {}
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub session: Session,
+}
+
+/// `[session]`
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Session {
+    /// Seconds of silence in Listening before the Session ends.
+    pub silence_timeout_secs: f64,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Session {
+            silence_timeout_secs: 20.0,
+        }
+    }
+}
 
 /// `$XDG_CONFIG_HOME/lucy/config.toml`, falling back to `~/.config`.
 pub fn default_path() -> PathBuf {
@@ -60,6 +79,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = load(&dir.path().join("config.toml")).unwrap();
         assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn silence_timeout_defaults_to_twenty_seconds_and_can_be_set() {
+        assert_eq!(Config::default().session.silence_timeout_secs, 20.0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[session]\nsilence_timeout_secs = 45\n").unwrap();
+        assert_eq!(load(&path).unwrap().session.silence_timeout_secs, 45.0);
     }
 
     #[test]

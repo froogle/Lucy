@@ -9,6 +9,7 @@ mod session;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use lucy_config::Config;
 use lucy_ipc::Status;
@@ -33,7 +34,7 @@ pub struct Daemon {
 pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
-        config: _,
+        config,
         adapters,
     } = options;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -46,7 +47,15 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         session_id: None,
     });
     let (sessions, commands) = mpsc::unbounded_channel();
-    runtime.spawn(runner::Runner::new(commands, status, adapters).run());
+    runtime.spawn(
+        runner::Runner::new(
+            commands,
+            status,
+            adapters,
+            Duration::from_secs_f64(config.session.silence_timeout_secs),
+        )
+        .run(),
+    );
     runtime.spawn(ipc::serve(listener, status_rx, sessions));
 
     Ok(Daemon {

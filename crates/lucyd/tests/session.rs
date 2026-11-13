@@ -1,6 +1,9 @@
 mod harness;
 
+use std::time::{Duration, Instant};
+
 use harness::{next_state, Harness};
+use lucy_config::Config;
 use lucy_ipc::{error_code, Error, State, StateEvent};
 
 #[test]
@@ -53,6 +56,76 @@ fn session_end_with_no_session_is_refused() {
         matches!(ended, Err(Error::Rpc { code, .. }) if code == error_code::NO_SESSION),
         "{ended:?}"
     );
+}
+
+fn with_silence_timeout(secs: f64) -> Harness {
+    let mut config = Config::default();
+    config.session.silence_timeout_secs = secs;
+    Harness::with_config(config)
+}
+
+#[test]
+fn silence_in_listening_ends_the_session_quietly() {
+    let lucyd = with_silence_timeout(0.3);
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+
+    assert_eq!(
+        next_state(&mut events),
+        StateEvent {
+            state: State::Idle,
+            session_id: None
+        }
+    );
+    assert_eq!(lucyd.tts.sentences(), Vec::<String>::new());
+}
+
+#[test]
+fn silence_timer_pauses_while_thinking_and_speaking() {
+    let lucyd = with_silence_timeout(0.5);
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    std::thread::sleep(Duration::from_millis(300));
+    lucyd.say("tell me a long story");
+    lucyd.thinking.next_turn();
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+
+    std::thread::sleep(Duration::from_secs(1));
+    lucyd.thinking.delta("Once upon a time.");
+    lucyd.thinking.turn_end();
+    assert_eq!(next_state(&mut events).state, State::Speaking);
+    std::thread::sleep(Duration::from_secs(1));
+    lucyd.tts.finish_playing();
+
+    // Still open after two timeouts' worth outside Listening. Back in
+    // Listening the timer starts over, rather than using the 200 ms left.
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    let listening = Instant::now();
+    assert_eq!(next_state(&mut events).state, State::Idle);
+    assert!(listening.elapsed() >= Duration::from_millis(400));
+}
+
+#[test]
+fn no_speech_recognised_keeps_listening_without_resetting_the_timer() {
+    let lucyd = with_silence_timeout(1.5);
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    let opened = Instant::now();
+
+    std::thread::sleep(Duration::from_secs(1));
+    lucyd.mumble();
+
+    // Straight from Listening to Idle, at the original deadline.
+    assert_eq!(next_state(&mut events).state, State::Idle);
+    assert!(
+        opened.elapsed() < Duration::from_millis(2200),
+        "{:?}",
+        opened.elapsed()
+    );
+    lucyd.thinking.assert_no_turn();
 }
 
 #[test]

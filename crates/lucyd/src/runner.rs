@@ -1,8 +1,11 @@
 //! Runs Sessions: owns the published status and does the I/O that the
 //! `session` state machine asks for.
 
+use std::time::Duration;
+
 use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 use crate::adapters::Adapters;
 use crate::session::{Input, Output, Session};
@@ -20,6 +23,7 @@ pub struct Runner {
     commands: mpsc::UnboundedReceiver<Command>,
     status: watch::Sender<Status>,
     adapters: Adapters,
+    silence_timeout: Duration,
     /// False once the speech source has gone away.
     speech_open: bool,
     sessions_started: u64,
@@ -30,11 +34,13 @@ impl Runner {
         commands: mpsc::UnboundedReceiver<Command>,
         status: watch::Sender<Status>,
         adapters: Adapters,
+        silence_timeout: Duration,
     ) -> Self {
         Runner {
             commands,
             status,
             adapters,
+            silence_timeout,
             speech_open: true,
             sessions_started: 0,
         }
@@ -75,6 +81,8 @@ impl Runner {
         let mut speaker = self.adapters.tts.open(played_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
         let mut session = Session::default();
+        let mut silence = SilenceTimer::new(self.silence_timeout);
+        silence.set_running(session.silence_timer_runs());
 
         self.publish(session.state(), Some(&id));
         let _ = started.send(Ok(id.clone()));
@@ -106,6 +114,10 @@ impl Runner {
                 Some(text) = transcripts.recv() => Input::Transcript(text),
                 Some(event) = events.recv() => Input::Thinking(event),
                 Some(()) = played.recv() => Input::Played,
+                () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
+                    self.publish(State::Idle, None);
+                    return;
+                }
             };
             for output in session.handle(input) {
                 match output {
@@ -119,9 +131,10 @@ impl Runner {
                     }
                     Output::SendTurn(text) => conversation.send_turn(text),
                     Output::Speak(sentence) => speaker.speak(sentence),
-                    Output::ResetSilenceTimer => {}
+                    Output::ResetSilenceTimer => silence.reset(),
                 }
             }
+            silence.set_running(session.silence_timer_runs());
             self.publish(session.state(), Some(&id));
         }
     }
@@ -136,5 +149,49 @@ impl Runner {
             *status = new;
             changed
         });
+    }
+}
+
+/// A countdown that can be paused and resumed.
+struct SilenceTimer {
+    timeout: Duration,
+    remaining: Duration,
+    /// When it last resumed, while running.
+    resumed: Option<Instant>,
+}
+
+impl SilenceTimer {
+    fn new(timeout: Duration) -> Self {
+        SilenceTimer {
+            timeout,
+            remaining: timeout,
+            resumed: None,
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.resumed.is_some()
+    }
+
+    fn set_running(&mut self, running: bool) {
+        match (running, self.resumed) {
+            (true, None) => self.resumed = Some(Instant::now()),
+            (false, Some(resumed)) => {
+                self.remaining = self.remaining.saturating_sub(resumed.elapsed());
+                self.resumed = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn reset(&mut self) {
+        self.remaining = self.timeout;
+        if self.is_running() {
+            self.resumed = Some(Instant::now());
+        }
+    }
+
+    fn deadline(&self) -> Instant {
+        self.resumed.unwrap_or_else(Instant::now) + self.remaining
     }
 }
