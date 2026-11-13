@@ -36,6 +36,10 @@ _Avoid_: Overlay, widget, badge
 A pluggable source of one capability (speech-to-text, thinking, or speech) that the user configures from whatever they already have.
 _Avoid_: Backend, plugin (when meaning a Provider), integration
 
+**Voice preview**:
+Lucy speaking a sentence she is given, outside any Session, so a person can hear her voice and speaker. A Session that opens cuts it short.
+_Avoid_: Say command, TTS test
+
 **Plugin**:
 A self-contained ability Lucy can use, described by a Manifest. Whether Lucy wrote it herself or a person did, it is the same thing.
 _Avoid_: Routine, skill, extension, macro

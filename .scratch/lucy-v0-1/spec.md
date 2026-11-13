@@ -232,7 +232,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 - Handshake `hello {protocol: 1, client, role}`. A major-version mismatch is refused with a clear error. Fields are only added within a major version.
 - Requests: `status`, `subscribe {topics}`, `session.start`, `session.end`, `providers.status`, `provider.check`, `plugins.list`, `plugins.set_enabled`, `approvals.list`, `approvals.revoke`, `test.mic_level`, `test.wake_word`, `test.voice_preview`.
 - Events: `state {state, session_id}` (Idle, Listening, Thinking, Speaking, Confirming, plus transient `error`), `level {rms}` at about 30 Hz for `level` subscribers only, `plugins.changed`, `notice {text}`.
-- Never carried: transcripts, spoken text, tool arguments. There is no request that grants an Approval or answers a Confirmation.
+- Never sent to a client: transcripts, spoken text, tool arguments. A client may send text in, for `test.voice_preview` to speak. There is no request that grants an Approval or answers a Confirmation.
 - TUI setup tests run inside lucyd over this socket. The TUI writes `config.toml` directly.
 
 ### MCP tool server (ADR 0005)
