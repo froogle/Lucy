@@ -6,7 +6,7 @@
 use std::fmt;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use lucy_ipc::{ApprovalInfo, ApprovalsList, PluginAuthor, PluginInfo, PluginStatus, PluginsList};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
@@ -198,49 +198,40 @@ impl Host {
     /// Leaves the Plugin `name` out of selection, keeping its files and
     /// Approval, or brings it back.
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), Refusal> {
-        {
-            let _editing = self.editing.lock().unwrap();
-            if !self.folders().contains_key(name) {
-                return Err(Refusal::NoSuchPlugin(name.to_owned()));
-            }
+        self.edit(name, || {
+            self.folder(name)?;
             let mut prefs = self.prefs();
             if enabled {
                 prefs.disabled.remove(name);
             } else {
                 prefs.disabled.insert(name.to_owned());
             }
-            self.save_prefs(&prefs).map_err(Refusal::Records)?;
-        }
-        self.changed(name).await;
-        Ok(())
+            self.save_prefs(&prefs).map_err(Refusal::Records)
+        })
+        .await
     }
 
     /// Withdraws the Approval of the Plugin `name`, and its kept previous
     /// version, so it awaits Approval again.
     pub async fn revoke(&self, name: &str) -> Result<(), Refusal> {
-        {
-            let _editing = self.editing.lock().unwrap();
+        self.edit(name, || {
             let mut approvals = self.approvals().map_err(Refusal::Records)?;
             if approvals.plugins.remove(name).is_none() {
                 return Err(Refusal::NotApproved(name.to_owned()));
             }
             self.save_approvals(&approvals).map_err(Refusal::Records)?;
             let _ = std::fs::remove_dir_all(self.paths.versions(name));
-        }
-        self.changed(name).await;
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     /// Puts back the Plugin's previous approved version and its Approval,
     /// with no new Approval: that exact content was approved before. Lucy
     /// changes only her own Plugins.
     async fn rollback(&self, name: &str) -> Result<(), Refusal> {
-        {
-            let _editing = self.editing.lock().unwrap();
-            let folder = self
-                .folders()
-                .remove(name)
-                .ok_or_else(|| Refusal::NoSuchPlugin(name.to_owned()))?;
+        self.edit(name, || {
+            let folder = self.folder(name)?;
             let current = Contents::read(name, &folder).map_err(|reason| Refusal::Broken {
                 plugin: name.to_owned(),
                 reason,
@@ -272,20 +263,15 @@ impl Host {
             restore().map_err(|e| Refusal::NotRestored(name.to_owned(), e))?;
             previous.previous = Some(Box::new(approval));
             approvals.plugins.insert(name.to_owned(), *previous);
-            self.save_approvals(&approvals).map_err(Refusal::Records)?;
-        }
-        self.changed(name).await;
-        Ok(())
+            self.save_approvals(&approvals).map_err(Refusal::Records)
+        })
+        .await
     }
 
     /// Whether the Plugin `name` can be removed: it exists and wasn't
     /// shipped with Lucy.
     fn removable(&self, name: &str) -> Result<(), Refusal> {
-        let folder = self
-            .folders()
-            .remove(name)
-            .ok_or_else(|| Refusal::NoSuchPlugin(name.to_owned()))?;
-        if self.is_shipped(&folder) {
+        if self.is_shipped(&self.folder(name)?) {
             return Err(Refusal::Shipped(name.to_owned()));
         }
         Ok(())
@@ -311,8 +297,7 @@ impl Host {
     /// Deletes the Plugin's folder, its Approval and what Lucy remembers
     /// of it.
     async fn remove(&self, name: &str) -> Result<(), Refusal> {
-        {
-            let _editing = self.editing.lock().unwrap();
+        self.edit(name, || {
             self.removable(name)?;
             let folder = self.paths.user.join(name);
             std::fs::remove_dir_all(&folder)
@@ -325,10 +310,31 @@ impl Host {
             let mut prefs = self.prefs();
             prefs.disabled.remove(name);
             prefs.mentioned.remove(name);
-            self.save_prefs(&prefs).map_err(Refusal::Records)?;
+            self.save_prefs(&prefs).map_err(Refusal::Records)
+        })
+        .await
+    }
+
+    /// Makes `change` to the Plugin `name` while holding the editing lock,
+    /// then announces it and applies it to the open Session.
+    async fn edit(
+        &self,
+        name: &str,
+        change: impl FnOnce() -> Result<(), Refusal>,
+    ) -> Result<(), Refusal> {
+        {
+            let _editing = self.editing.lock().unwrap();
+            change()?;
         }
         self.changed(name).await;
         Ok(())
+    }
+
+    /// The folder of the Plugin `name`.
+    fn folder(&self, name: &str) -> Result<PathBuf, Refusal> {
+        self.folders()
+            .remove(name)
+            .ok_or_else(|| Refusal::NoSuchPlugin(name.to_owned()))
     }
 
     /// Keeps a copy of an approved version of the Plugin `name`, to roll
