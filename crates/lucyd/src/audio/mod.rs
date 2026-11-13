@@ -63,32 +63,83 @@ impl std::error::Error for Error {}
 /// 10 ms and cuts it into utterances with `vad`. Capture stops once the
 /// returned receiver is dropped.
 pub fn listen(
-    io: &dyn AudioIo,
+    io: Box<dyn AudioIo + Send>,
     audio: &Audio,
     vad: Box<dyn Vad>,
     endpointing: &Endpointing,
-) -> Result<mpsc::UnboundedReceiver<SpeechSegment>, Error> {
+) -> Result<(Hearing, mpsc::UnboundedReceiver<SpeechSegment>), Error> {
     let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
     let capture = io.capture(&audio.mic, producer)?;
     let (speech, speech_rx) = mpsc::unbounded_channel();
+    let (changes, changes_rx) = std::sync::mpsc::channel();
     let endpointer = Endpointer::new(vad, endpointing);
     std::thread::Builder::new()
         .name("lucyd-dsp".to_owned())
-        .spawn(move || dsp(capture, consumer, endpointer, speech))
+        .spawn(move || dsp(capture, consumer, endpointer, changes_rx, speech))
         .map_err(|e| Error(format!("can't start the DSP thread: {e}")))?;
-    Ok(speech_rx)
+    let hearing = Hearing {
+        io,
+        audio: audio.clone(),
+        endpointing: endpointing.clone(),
+        changes,
+    };
+    Ok((hearing, speech_rx))
+}
+
+/// Changes the running DSP thread's microphone and endpointing.
+pub struct Hearing {
+    io: Box<dyn AudioIo + Send>,
+    audio: Audio,
+    endpointing: Endpointing,
+    changes: std::sync::mpsc::Sender<Change>,
+}
+
+/// A change the DSP thread picks up before its next frame.
+enum Change {
+    Mic(Box<dyn Send>, rtrb::Consumer<f32>),
+    Endpointing(Endpointing),
+}
+
+impl Hearing {
+    /// Applies `[audio]` and `[endpointing]` as read at a Session start.
+    /// A microphone that can't be opened leaves the current one in use.
+    pub fn configure(&mut self, audio: &Audio, endpointing: &Endpointing) {
+        // Ticket 11 re-resolves the devices and notifies about a missing
+        // pin here.
+        if *audio != self.audio {
+            let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
+            match self.io.capture(&audio.mic, producer) {
+                Ok(capture) => {
+                    let _ = self.changes.send(Change::Mic(capture, consumer));
+                    self.audio = audio.clone();
+                }
+                Err(e) => eprintln!("lucyd: can't open the microphone {}: {e}", audio.mic),
+            }
+        }
+        if *endpointing != self.endpointing {
+            let _ = self.changes.send(Change::Endpointing(endpointing.clone()));
+            self.endpointing = endpointing.clone();
+        }
+    }
 }
 
 /// The DSP thread. Echo cancellation (ticket 09) and the wake word will
 /// take each frame here before the endpointer.
 fn dsp(
-    _capture: Box<dyn Send>,
+    mut _capture: Box<dyn Send>,
     mut mic: rtrb::Consumer<f32>,
     mut endpointer: Endpointer,
+    changes: std::sync::mpsc::Receiver<Change>,
     speech: mpsc::UnboundedSender<SpeechSegment>,
 ) {
     let mut frame = [0.0; FRAME_LEN];
     while !speech.is_closed() {
+        for change in changes.try_iter() {
+            match change {
+                Change::Mic(capture, consumer) => (_capture, mic) = (capture, consumer),
+                Change::Endpointing(config) => endpointer.configure(&config),
+            }
+        }
         if mic.slots() < FRAME_LEN {
             std::thread::sleep(POLL);
             continue;

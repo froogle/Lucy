@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::adapters::{Adapters, SessionModel, SpeakerEvent, ThinkingEvent};
+use crate::desktop::Desktop;
 use crate::mcp::{Caller, Relays};
 use crate::notifications;
 use crate::persona::{self, Loaded, Persona};
@@ -123,14 +124,25 @@ impl Runner {
         plugin_tools: Arc<plugins::SessionTools>,
     ) {
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        // Revoked when the Session ends.
-        let (relay, _token) = self.relays.issue(Caller::SessionModel, plugin_tools);
         // Read afresh each Session, so hand edits apply at the next one.
         let persona = self.persona.load().unwrap_or_else(|e| {
             eprintln!("lucyd: can't load {}: {e}", self.persona.path().display());
             Loaded::fallback()
         });
         let config = lucy_config::load(&self.config_path);
+        let settings = config.as_ref().cloned().unwrap_or_default();
+        if let Some(hearing) = &mut self.adapters.hearing {
+            hearing.configure(&settings.audio, &settings.endpointing);
+        }
+        let desktop = Desktop {
+            launcher: self.adapters.launcher.clone(),
+            applications: self.adapters.applications.clone(),
+            launcher_command: settings.desktop.launcher,
+        };
+        // Revoked when the Session ends.
+        let (relay, _token) = self
+            .relays
+            .issue(Caller::SessionModel, plugin_tools, desktop);
         let provider = match &config {
             Ok(config) => config.provider(Tier::Fast),
             Err(e) => Err(format!(
@@ -149,7 +161,7 @@ impl Runner {
                 Box::new(Unopened { _events: events_tx })
             }
         };
-        let silence_timeout = config.unwrap_or_default().session.silence_timeout_secs;
+        let silence_timeout = settings.session.silence_timeout_secs;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(speaker_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();

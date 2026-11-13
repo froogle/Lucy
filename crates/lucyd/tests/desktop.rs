@@ -135,6 +135,32 @@ fn launch_app(lucyd: &Harness, name: &str) -> serde_json::Value {
 }
 
 #[test]
+fn the_configured_launcher_is_reread_at_each_session_start() {
+    let lucyd = Harness::start();
+    lucyd.desktop_entry("firefox.desktop", "Name=Firefox");
+    let mut client = lucyd.client();
+    client.start_session().unwrap();
+    launch_app(&lucyd, "firefox");
+    client.end_session().unwrap();
+
+    std::fs::write(
+        lucyd.config_path(),
+        "[desktop]\nlauncher = [\"my-launcher\", \"--flag\"]\n",
+    )
+    .unwrap();
+    client.start_session().unwrap();
+    launch_app(&lucyd, "firefox");
+
+    assert_eq!(
+        lucyd.launcher.launched_through(),
+        [
+            None,
+            Some(vec!["my-launcher".to_owned(), "--flag".to_owned()])
+        ]
+    );
+}
+
+#[test]
 fn launch_app_launches_the_one_app_whose_name_matches() {
     let lucyd = Harness::start();
     let firefox = lucyd.desktop_entry("firefox.desktop", "Name=Firefox");

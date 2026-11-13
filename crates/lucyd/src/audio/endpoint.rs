@@ -39,19 +39,33 @@ enum State {
 
 impl Endpointer {
     pub fn new(vad: Box<dyn Vad>, config: &Endpointing) -> Self {
-        let samples = |ms: u64| (ms * u64::from(SAMPLE_RATE) / 1000) as usize;
-        Endpointer {
+        let mut endpointer = Endpointer {
             vad,
-            start_threshold: config.start_threshold,
-            end_threshold: config.end_threshold,
-            start_len: samples(config.start_ms),
-            pre_roll_len: samples(config.pre_roll_ms),
-            end_silence_len: samples(config.end_silence_ms),
-            max_len: (config.max_utterance_secs * f64::from(SAMPLE_RATE)) as usize,
+            start_threshold: 0.0,
+            end_threshold: 0.0,
+            start_len: 0,
+            pre_roll_len: 0,
+            end_silence_len: 0,
+            max_len: 0,
             pending: Vec::new(),
             pre_roll: VecDeque::new(),
             state: State::Quiet,
-        }
+        };
+        endpointer.configure(config);
+        endpointer
+    }
+
+    /// Takes new settings, dropping any utterance in progress.
+    pub fn configure(&mut self, config: &Endpointing) {
+        let samples = |ms: u64| (ms * u64::from(SAMPLE_RATE) / 1000) as usize;
+        self.start_threshold = config.start_threshold;
+        self.end_threshold = config.end_threshold;
+        self.start_len = samples(config.start_ms);
+        self.pre_roll_len = samples(config.pre_roll_ms);
+        self.end_silence_len = samples(config.end_silence_ms);
+        self.max_len = (config.max_utterance_secs * f64::from(SAMPLE_RATE)) as usize;
+        self.pre_roll.clear();
+        self.state = State::Quiet;
     }
 
     /// Takes the next frame of audio, returning an utterance if it ended.

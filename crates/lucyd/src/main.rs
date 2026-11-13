@@ -8,8 +8,8 @@ use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
     let config_path = lucy_config::default_path();
-    // Read again at each Session start; the launcher, microphone, VAD
-    // endpointing and Whisper are set once, here.
+    // Read again at each Session start. Only Whisper's settings are used
+    // from this first read, since its model stays loaded.
     let config = match lucy_config::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
@@ -47,9 +47,7 @@ fn main() -> ExitCode {
     ));
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
-    adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher::new(
-        config.desktop.launcher.clone(),
-    ));
+    adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher);
     adapters.applications = lucyd::desktop_entries::xdg_dirs();
     if let Err(e) = hear(&config, &mut adapters) {
         eprintln!("lucyd: {e}; Lucy can't hear");
@@ -85,8 +83,14 @@ fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box
         .join("models");
     let whisper = Whisper::load(&config.whisper, &models)?;
     let vad = Silero::load()?;
-    let speech = audio::listen(&Cpal, &config.audio, Box::new(vad), &config.endpointing)?;
+    let (hearing, speech) = audio::listen(
+        Box::new(Cpal),
+        &config.audio,
+        Box::new(vad),
+        &config.endpointing,
+    )?;
     adapters.stt = Arc::new(whisper);
     adapters.speech = speech;
+    adapters.hearing = Some(hearing);
     Ok(())
 }

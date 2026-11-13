@@ -72,10 +72,6 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
     let levels = status::LoudnessBus::new();
-    let desktop = desktop::Desktop {
-        launcher: adapters.launcher.clone(),
-        applications: adapters.applications.clone(),
-    };
     let (sessions, commands) = mpsc::unbounded_channel();
     let (indicators, fallback) =
         notifications::fallback(&status, adapters.notifier.clone(), sessions.clone());
@@ -97,13 +93,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         )
         .run(),
     );
-    runtime.spawn(mcp::serve(
-        mcp_listener,
-        relays,
-        persona,
-        sessions.clone(),
-        desktop,
-    ));
+    runtime.spawn(mcp::serve(mcp_listener, relays, persona, sessions.clone()));
     runtime.spawn(ipc::serve(
         listener, status, levels, indicators, sessions, providers,
     ));

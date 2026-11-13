@@ -74,14 +74,26 @@ impl Harness {
     }
 
     /// Starts lucyd hearing through the fake microphone and VAD, with the
-    /// real DSP thread and endpointing in between. `config` sets the
-    /// microphone and endpointing, which lucyd reads once at startup.
-    pub fn hearing(config: Config) -> Harness {
+    /// real DSP thread and endpointing in between, and `config` as its
+    /// `config.toml`. lucyd starts listening with its microphone and
+    /// endpointing, as `main` does, and reads them again at each Session
+    /// start.
+    pub fn hearing(config: &str) -> Harness {
+        let parsed: Config = toml::from_str(config).expect("config parses");
         let mic = FakeMic::default();
-        let speech =
-            lucyd::audio::listen(&mic, &config.audio, Box::new(FakeVad), &config.endpointing)
-                .expect("the fake microphone opens");
-        Harness::launch(None, Some(PERSONA), None, Some((speech, mic)))
+        let (hearing, speech) = lucyd::audio::listen(
+            Box::new(mic.clone()),
+            &parsed.audio,
+            Box::new(FakeVad),
+            &parsed.endpointing,
+        )
+        .expect("the fake microphone opens");
+        Harness::launch(
+            Some(config),
+            Some(PERSONA),
+            None,
+            Some((speech, hearing, mic)),
+        )
     }
 
     /// `ears` is what lucyd hears through instead of `say`.
@@ -89,7 +101,11 @@ impl Harness {
         config: Option<&str>,
         persona: Option<&str>,
         real_thinking: Option<Arc<dyn Thinking>>,
-        ears: Option<(mpsc::UnboundedReceiver<SpeechSegment>, FakeMic)>,
+        ears: Option<(
+            mpsc::UnboundedReceiver<SpeechSegment>,
+            lucyd::audio::Hearing,
+            FakeMic,
+        )>,
     ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
@@ -102,11 +118,11 @@ impl Harness {
         if let Some(persona) = persona {
             std::fs::write(&persona_path, persona).unwrap();
         }
-        let (speech, speech_rx, mic) = match ears {
-            Some((speech_rx, mic)) => (None, speech_rx, mic),
+        let (speech, speech_rx, hearing, mic) = match ears {
+            Some((speech_rx, hearing, mic)) => (None, speech_rx, Some(hearing), mic),
             None => {
                 let (speech, speech_rx) = mpsc::unbounded_channel();
-                (Some(speech), speech_rx, FakeMic::default())
+                (Some(speech), speech_rx, None, FakeMic::default())
             }
         };
         let stt = FakeStt::default();
@@ -131,6 +147,7 @@ impl Harness {
             plugins: plugins.clone(),
             adapters: Adapters {
                 speech: speech_rx,
+                hearing,
                 stt: Arc::new(stt.clone()),
                 thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
                 tts: Box::new(tts.clone()),
@@ -881,6 +898,8 @@ impl Notifier for FakeNotifier {
 pub struct FakeLauncher {
     opened: Arc<Mutex<Vec<String>>>,
     launched: Arc<Mutex<Vec<PathBuf>>>,
+    /// The configured launcher command of each launch.
+    launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
 }
 
 impl FakeLauncher {
@@ -893,6 +912,12 @@ impl FakeLauncher {
     pub fn launched(&self) -> Vec<PathBuf> {
         self.launched.lock().unwrap().clone()
     }
+
+    /// The `[desktop] launcher` command each app was launched through, in
+    /// order; `None` for the default.
+    pub fn launched_through(&self) -> Vec<Option<Vec<String>>> {
+        self.launched_through.lock().unwrap().clone()
+    }
 }
 
 impl Launcher for FakeLauncher {
@@ -901,8 +926,10 @@ impl Launcher for FakeLauncher {
         Ok(())
     }
 
-    fn launch(&self, entry: &Path) -> std::io::Result<()> {
+    fn launch(&self, entry: &Path, launcher: Option<&[String]>) -> std::io::Result<()> {
         self.launched.lock().unwrap().push(entry.to_owned());
+        let launcher = launcher.map(<[String]>::to_vec);
+        self.launched_through.lock().unwrap().push(launcher);
         Ok(())
     }
 }

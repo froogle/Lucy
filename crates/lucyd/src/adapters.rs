@@ -12,6 +12,8 @@ use std::sync::Arc;
 use lucy_config::Provider;
 use tokio::sync::mpsc;
 
+use crate::audio::Hearing;
+
 /// One utterance, cut from the microphone by the VAD: 16 kHz mono.
 pub struct SpeechSegment {
     pub samples: Vec<f32>,
@@ -169,13 +171,17 @@ pub trait Notifier: Send + Sync {
 pub trait Launcher: Send + Sync {
     /// Opens an http(s) URL in the user's browser.
     fn open_url(&self, url: &str) -> io::Result<()>;
-    /// Starts the app whose desktop entry is at `entry`.
-    fn launch(&self, entry: &Path) -> io::Result<()>;
+    /// Starts the app whose desktop entry is at `entry`, through `launcher`
+    /// (`[desktop] launcher`, with the entry's path appended) if it is set.
+    fn launch(&self, entry: &Path, launcher: Option<&[String]>) -> io::Result<()>;
 }
 
 pub struct Adapters {
     /// Utterances from the microphone. Ignored while no Session is open.
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
+    /// What `speech` comes from, if it is the microphone: it takes
+    /// `[audio]` and `[endpointing]` at each Session start.
+    pub hearing: Option<Hearing>,
     pub stt: Arc<dyn Stt>,
     pub thinking: Arc<dyn Thinking>,
     pub tts: Box<dyn Tts>,
@@ -191,6 +197,7 @@ impl Adapters {
         let (_, speech) = mpsc::unbounded_channel();
         Adapters {
             speech,
+            hearing: None,
             stt: Arc::new(Inert),
             thinking: Arc::new(Inert),
             tts: Box::new(Inert),
@@ -269,7 +276,7 @@ impl Launcher for Inert {
         Ok(())
     }
 
-    fn launch(&self, _entry: &Path) -> io::Result<()> {
+    fn launch(&self, _entry: &Path, _launcher: Option<&[String]>) -> io::Result<()> {
         Ok(())
     }
 }

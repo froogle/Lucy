@@ -12,11 +12,21 @@ use harness::{Harness, SILENCE, SPEECH};
 
 /// Between the default end and start thresholds.
 const WAVERING: f32 = 0.4;
-use lucy_config::Config;
+
+/// Endpointing that cuts shorter utterances than the defaults.
+const SHORT_ENDPOINTING: &str = "
+[endpointing]
+start_threshold = 0.8
+end_threshold = 0.6
+pre_roll_ms = 200
+end_silence_ms = 300
+";
+
+const PINNED_MIC: &str = "[audio]\nmic = \"alsa_input.usb-Blue_Yeti\"\n";
 
 #[test]
 fn an_utterance_from_the_microphone_reaches_thinking() {
-    let lucyd = Harness::hearing(Config::default());
+    let lucyd = Harness::hearing("");
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.stt.script("what time is it");
@@ -30,7 +40,7 @@ fn an_utterance_from_the_microphone_reaches_thinking() {
 
 #[test]
 fn an_utterance_keeps_half_a_second_before_the_speech_and_ends_after_700_ms_of_silence() {
-    let lucyd = Harness::hearing(Config::default());
+    let lucyd = Harness::hearing("");
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.stt.script("hello");
@@ -45,7 +55,7 @@ fn an_utterance_keeps_half_a_second_before_the_speech_and_ends_after_700_ms_of_s
 
 #[test]
 fn a_sound_shorter_than_100_ms_is_not_an_utterance() {
-    let lucyd = Harness::hearing(Config::default());
+    let lucyd = Harness::hearing("");
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.stt.script("hello");
@@ -64,7 +74,7 @@ fn a_sound_shorter_than_100_ms_is_not_an_utterance() {
 
 #[test]
 fn speech_that_wavers_above_the_end_threshold_is_one_utterance() {
-    let lucyd = Harness::hearing(Config::default());
+    let lucyd = Harness::hearing("");
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.stt.script("hello");
@@ -81,7 +91,7 @@ fn speech_that_wavers_above_the_end_threshold_is_one_utterance() {
 
 #[test]
 fn pauses_shorter_than_700_ms_do_not_end_an_utterance() {
-    let lucyd = Harness::hearing(Config::default());
+    let lucyd = Harness::hearing("");
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.stt.script("hello");
@@ -100,7 +110,7 @@ fn pauses_shorter_than_700_ms_do_not_end_an_utterance() {
 
 #[test]
 fn an_utterance_is_cut_at_30_seconds() {
-    let lucyd = Harness::hearing(Config::default());
+    let lucyd = Harness::hearing("");
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.stt.script("on and on");
@@ -114,12 +124,7 @@ fn an_utterance_is_cut_at_30_seconds() {
 
 #[test]
 fn endpointing_comes_from_config() {
-    let mut config = Config::default();
-    config.endpointing.start_threshold = 0.8;
-    config.endpointing.end_threshold = 0.6;
-    config.endpointing.pre_roll_ms = 200;
-    config.endpointing.end_silence_ms = 300;
-    let lucyd = Harness::hearing(config);
+    let lucyd = Harness::hearing(SHORT_ENDPOINTING);
     let mut client = lucyd.client();
     client.start_session().unwrap();
     lucyd.stt.script("hello");
@@ -135,16 +140,38 @@ fn endpointing_comes_from_config() {
 
 #[test]
 fn the_default_microphone_is_opened_unless_one_is_pinned() {
-    let lucyd = Harness::hearing(Config::default());
+    let lucyd = Harness::hearing("");
     assert_eq!(lucyd.mic.opened().as_deref(), Some("default"));
 
-    let mut config = Config::default();
-    config.audio.mic = "alsa_input.usb-Blue_Yeti".to_owned();
-    let lucyd = Harness::hearing(config);
+    let lucyd = Harness::hearing(PINNED_MIC);
     assert_eq!(
         lucyd.mic.opened().as_deref(),
         Some("alsa_input.usb-Blue_Yeti")
     );
+}
+
+#[test]
+fn the_microphone_and_endpointing_are_reread_at_each_session_start() {
+    let lucyd = Harness::hearing("");
+    std::fs::write(
+        lucyd.config_path(),
+        format!("{PINNED_MIC}{SHORT_ENDPOINTING}"),
+    )
+    .unwrap();
+    let mut client = lucyd.client();
+
+    client.start_session().unwrap();
+
+    assert_eq!(
+        lucyd.mic.opened().as_deref(),
+        Some("alsa_input.usb-Blue_Yeti")
+    );
+    lucyd.stt.script("hello");
+    lucyd.mic.feed(SILENCE, ms(1024));
+    lucyd.mic.feed(SPEECH, ms(512));
+    lucyd.mic.feed(WAVERING, ms(1024));
+    lucyd.thinking.next_turn();
+    assert_segments(&lucyd, &[ms(200 + 512 + 300)]);
 }
 
 /// Each utterance STT was given lasted as long as `expected`, give or take

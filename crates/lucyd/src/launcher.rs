@@ -8,16 +8,7 @@ use std::process::{Command, Stdio};
 
 use crate::adapters::Launcher;
 
-pub struct SystemLauncher {
-    /// `[desktop] launcher` from config.
-    configured: Option<Vec<String>>,
-}
-
-impl SystemLauncher {
-    pub fn new(configured: Option<Vec<String>>) -> Self {
-        SystemLauncher { configured }
-    }
-}
+pub struct SystemLauncher;
 
 impl Launcher for SystemLauncher {
     fn open_url(&self, url: &str) -> io::Result<()> {
@@ -30,8 +21,8 @@ impl Launcher for SystemLauncher {
         spawn(&command)
     }
 
-    fn launch(&self, entry: &Path) -> io::Result<()> {
-        let mut command: Vec<&str> = match &self.configured {
+    fn launch(&self, entry: &Path, launcher: Option<&[String]>) -> io::Result<()> {
+        let mut command: Vec<&str> = match launcher {
             Some(configured) => configured.iter().map(String::as_str).collect(),
             None if uwsm_is_running() => vec!["uwsm", "app", "--"],
             None => vec!["gio", "launch"],
@@ -86,16 +77,19 @@ mod tests {
             "printf '%s\\n' \"$@\" > {}.tmp && mv {0}.tmp {0}",
             out.display()
         );
-        let launcher = SystemLauncher::new(Some(vec![
+        let configured = [
             "sh".to_owned(),
             "-c".to_owned(),
             record,
             "sh".to_owned(),
             "--flag".to_owned(),
-        ]));
+        ];
 
-        launcher
-            .launch(Path::new("/usr/share/applications/firefox.desktop"))
+        SystemLauncher
+            .launch(
+                Path::new("/usr/share/applications/firefox.desktop"),
+                Some(&configured),
+            )
             .unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -111,8 +105,8 @@ mod tests {
 
     #[test]
     fn an_empty_configured_launcher_is_an_error() {
-        let launcher = SystemLauncher::new(Some(vec![]));
-
-        assert!(launcher.launch(Path::new("/x.desktop")).is_err());
+        assert!(SystemLauncher
+            .launch(Path::new("/x.desktop"), Some(&[]))
+            .is_err());
     }
 }

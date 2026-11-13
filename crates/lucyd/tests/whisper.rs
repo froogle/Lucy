@@ -114,8 +114,8 @@ fn a_recording_played_into_the_microphone_is_heard() {
     let whisper = Whisper::load(&Config::default(), &models_dir()).unwrap();
     let config = lucy_config::Config::default();
     let mic = harness::FakeMic::default();
-    let mut speech = lucyd::audio::listen(
-        &mic,
+    let (_hearing, mut speech) = lucyd::audio::listen(
+        Box::new(mic.clone()),
         &config.audio,
         Box::new(lucyd::audio::Silero::load().unwrap()),
         &config.endpointing,

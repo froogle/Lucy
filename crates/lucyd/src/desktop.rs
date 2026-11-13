@@ -11,12 +11,14 @@ use crate::adapters::Launcher;
 use crate::desktop_entries::{self, Found};
 use crate::system_status;
 
-/// What the desktop tools act on.
+/// What the desktop tools act on in one Session.
 #[derive(Clone)]
 pub struct Desktop {
     pub launcher: Arc<dyn Launcher>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
+    /// `[desktop] launcher`, as read at Session start.
+    pub launcher_command: Option<Vec<String>>,
 }
 
 impl Desktop {
@@ -81,11 +83,12 @@ impl Desktop {
     async fn launch_app(&self, name: String) -> CallToolResult {
         let launcher = self.launcher.clone();
         let applications = self.applications.clone();
+        let command = self.launcher_command.clone();
         let launched = tokio::task::spawn_blocking(move || {
             let entries = desktop_entries::read_all(&applications);
             match desktop_entries::find(&entries, &name) {
                 Found::One(entry) => launcher
-                    .launch(&entry.path)
+                    .launch(&entry.path, command.as_deref())
                     .map(|()| json!({"result": "launched", "app": entry.name})),
                 Found::Several(entries) => {
                     let mut names: Vec<&str> = entries.iter().map(|e| &*e.name).collect();

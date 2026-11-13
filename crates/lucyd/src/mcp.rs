@@ -52,15 +52,24 @@ impl Relays {
         }
     }
 
-    /// A relay command for `caller`, offering the Session's `plugins`. Its
-    /// token works until the returned `Token` is dropped.
-    pub fn issue(&self, caller: Caller, plugins: Arc<SessionTools>) -> (Relay, Token) {
+    /// A relay command for `caller`, offering the Session's `plugins` and
+    /// `desktop` tools. Its token works until the returned `Token` is
+    /// dropped.
+    pub fn issue(
+        &self,
+        caller: Caller,
+        plugins: Arc<SessionTools>,
+        desktop: Desktop,
+    ) -> (Relay, Token) {
         let value = random_token();
-        self.tokens
-            .0
-            .lock()
-            .unwrap()
-            .insert(value.clone(), Grant { caller, plugins });
+        self.tokens.0.lock().unwrap().insert(
+            value.clone(),
+            Grant {
+                caller,
+                plugins,
+                desktop,
+            },
+        );
         let relay = Relay {
             program: self.program.clone(),
             args: vec![
@@ -83,6 +92,7 @@ impl Relays {
 struct Grant {
     caller: Caller,
     plugins: Arc<SessionTools>,
+    desktop: Desktop,
 }
 
 /// The tokens currently issued.
@@ -121,7 +131,6 @@ pub async fn serve(
     relays: Relays,
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
-    desktop: Desktop,
 ) {
     loop {
         match listener.accept().await {
@@ -131,7 +140,6 @@ pub async fn serve(
                     relays.tokens.clone(),
                     persona.clone(),
                     commands.clone(),
-                    desktop.clone(),
                 ));
             }
             Err(e) => eprintln!("lucyd: MCP accept failed: {e}"),
@@ -144,7 +152,6 @@ async fn connection(
     tokens: Tokens,
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
-    desktop: Desktop,
 ) {
     let Some(token) = read_token(&mut stream).await else {
         return;
@@ -161,7 +168,6 @@ async fn connection(
         tokens,
         persona,
         commands,
-        desktop,
     };
     if let Ok(service) = tools.serve(stream).await {
         let _ = service.waiting().await;
@@ -186,7 +192,6 @@ struct Tools {
     tokens: Tokens,
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
-    desktop: Desktop,
 }
 
 impl Tools {
@@ -311,7 +316,7 @@ impl ServerHandler for Tools {
             (Caller::SessionModel, "end_session") => Ok(self.end_session().await.into()),
             (Caller::SessionModel, "update_persona") => Ok(self.update_persona(&request).into()),
             (Caller::SessionModel, name) => {
-                if let Some(result) = self.desktop.call(name, &arguments).await {
+                if let Some(result) = grant.desktop.call(name, &arguments).await {
                     return Ok(result.into());
                 }
                 match grant.plugins.call(name, request.arguments).await {
