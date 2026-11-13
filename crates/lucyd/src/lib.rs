@@ -3,14 +3,19 @@
 
 pub mod adapters;
 pub mod claude;
+mod desktop;
+pub mod desktop_entries;
 mod ipc;
+pub mod launcher;
 mod mcp;
 pub mod notify;
+mod persona;
 pub mod piper;
 mod playback;
 mod runner;
 mod session;
 mod status;
+mod system_status;
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -26,6 +31,8 @@ pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
     pub config: Config,
+    /// The user's Persona; normally `persona.md` beside `config.toml`.
+    pub persona_path: PathBuf,
     /// The `lucy` binary, which model processes run as `lucy mcp-relay`.
     pub lucy_program: PathBuf,
     pub adapters: adapters::Adapters,
@@ -44,9 +51,11 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
         config,
+        persona_path,
         lucy_program,
         adapters,
     } = options;
+    let persona = persona::Persona::new(persona_path);
     let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -57,6 +66,10 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
     let levels = status::LoudnessBus::new();
+    let desktop = desktop::Desktop {
+        launcher: adapters.launcher.clone(),
+        applications: adapters.applications.clone(),
+    };
     let (sessions, commands) = mpsc::unbounded_channel();
     runtime.spawn(
         runner::Runner::new(
@@ -65,11 +78,18 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             levels.clone(),
             adapters,
             relays.clone(),
+            persona.clone(),
             Duration::from_secs_f64(config.session.silence_timeout_secs),
         )
         .run(),
     );
-    runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
+    runtime.spawn(mcp::serve(
+        mcp_listener,
+        relays,
+        persona,
+        sessions.clone(),
+        desktop,
+    ));
     runtime.spawn(ipc::serve(listener, status, levels, sessions));
 
     Ok(Daemon {
