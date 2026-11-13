@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use lucy_config::{Kind, SttKind, Tier, RECOMMENDATIONS};
+use lucy_config::{SttKind, Tier, RECOMMENDATIONS};
 use lucy_ipc::Client;
 use ratatui::backend::Backend;
 
@@ -177,10 +177,10 @@ fn tiers_step<B: Backend>(
         let (options, missing): (Vec<_>, Vec<_>) = RECOMMENDATIONS
             .iter()
             .filter(|r| r.tier == tier)
-            .partition(|r| has(cli(r.kind)));
+            .partition(|r| has(&r.kind.config_name()));
         ui.say("")?;
         if options.is_empty() {
-            let clis: Vec<&str> = missing.iter().map(|r| cli(r.kind)).collect();
+            let clis: Vec<String> = missing.iter().map(|r| r.kind.config_name()).collect();
             ui.say(format!(
                 "No thinking CLI for the {tier} tier is installed: install {}, then run lucy \
                  setup again. Until then the {tier} tier stays as config.toml has it.",
@@ -194,19 +194,13 @@ fn tiers_step<B: Backend>(
             .collect();
         let chosen = options[ui.choose(&format!("The {tier} tier thinks with:"), &labels)?];
         let model = ui.ask("Model, or any the CLI accepts:", chosen.model)?;
-        let name = format!("{}-{tier}", cli(chosen.kind));
-        config.set(&["providers", &name, "kind"], cli(chosen.kind))?;
+        let kind = chosen.kind.config_name();
+        let name = format!("{kind}-{tier}");
+        config.set(&["providers", &name, "kind"], kind)?;
         config.set(&["providers", &name, "model"], model)?;
         config.set(&["tiers", &tier.to_string()], name)?;
     }
     Ok(())
-}
-
-fn cli(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Claude => "claude",
-        Kind::Codex => "codex",
-    }
 }
 
 fn stt_step<B: Backend>(ui: &mut Ui<B>, config: &Config, env: &Env) -> Result<(), String> {
@@ -232,21 +226,20 @@ fn stt_step<B: Backend>(ui: &mut Ui<B>, config: &Config, env: &Env) -> Result<()
             kind = SttKind::Whisper;
         }
     }
-    let name = match kind {
-        SttKind::Whisper => "whisper",
-        SttKind::Superwhisper => "superwhisper",
-    };
-    config.set(&["stt", "kind"], name)?;
+    config.set(&["stt", "kind"], kind.config_name())?;
     if kind == SttKind::Whisper {
-        let models = ["small.en", "base.en"];
-        let labels = [
-            "Sized to this computer: small.en on a GPU, base.en on the CPU".to_owned(),
-            "small.en: more accurate, best on a GPU".to_owned(),
-            "base.en: faster on the CPU".to_owned(),
+        // None leaves it to lucyd.
+        let models = [
+            (
+                None,
+                "Sized to this computer: small.en on a GPU, base.en on the CPU",
+            ),
+            (Some("small.en"), "small.en: more accurate, best on a GPU"),
+            (Some("base.en"), "base.en: faster on the CPU"),
         ];
-        let chosen = ui.choose("Whisper's model:", &labels)?;
-        if chosen > 0 {
-            config.set(&["whisper", "model"], models[chosen - 1])?;
+        let labels = models.map(|(_, label)| label.to_owned());
+        if let (Some(model), _) = models[ui.choose("Whisper's model:", &labels)?] {
+            config.set(&["whisper", "model"], model)?;
         }
     }
     Ok(())
