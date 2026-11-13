@@ -217,7 +217,10 @@ pub struct Adapters {
     /// What `speech` comes from, if it is the microphone: it takes
     /// `[audio]` and `[endpointing]` at each Session start.
     pub hearing: Option<Hearing>,
+    /// The `whisper` STT Provider.
     pub stt: Arc<dyn Stt>,
+    /// The `superwhisper` STT Provider, used when `[stt]` chooses it.
+    pub superwhisper: Arc<dyn Stt>,
     pub thinking: Arc<dyn Thinking>,
     pub tts: Box<dyn Tts>,
     pub notifier: Arc<dyn Notifier>,
@@ -238,6 +241,7 @@ impl Adapters {
             speaking,
             hearing: None,
             stt: Arc::new(Inert),
+            superwhisper: Arc::new(Inert),
             thinking: Arc::new(Inert),
             tts: Box::new(Inert),
             notifier: Arc::new(Inert),

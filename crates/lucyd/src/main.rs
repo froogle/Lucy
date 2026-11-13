@@ -5,12 +5,14 @@ use std::sync::Arc;
 
 use lucyd::adapters::Adapters;
 use lucyd::audio::{self, Cpal, LiveKit, Silero, WakeWord};
+use lucyd::superwhisper::Superwhisper;
 use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
     let config_path = lucy_config::default_path();
-    // Read again at each Session start. Only Whisper's settings are used
-    // from this first read, since its model stays loaded.
+    // Read again at each Session start. Only Whisper's settings, and
+    // whether it is needed, are used from this first read, since its model
+    // stays loaded.
     let config = match lucy_config::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
@@ -49,6 +51,12 @@ fn main() -> ExitCode {
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
     adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher);
+    // Utterances go beside the socket, in the user's runtime dir.
+    let utterances = socket_path.parent().expect("the socket is in a dir");
+    adapters.superwhisper = Arc::new(Superwhisper::new(
+        "superwhisper".into(),
+        utterances.to_owned(),
+    ));
     adapters.applications = lucyd::desktop_entries::xdg_dirs();
     if let Err(e) = hear(&config, &mut adapters) {
         eprintln!("lucyd: {e}; Lucy can't hear");
@@ -78,12 +86,20 @@ fn main() -> ExitCode {
 }
 
 /// Loads Whisper and the wake word once, listens for the Wake word and cuts
-/// the microphone into utterances for Whisper.
+/// the microphone into utterances for STT. Whisper is optional while `[stt]`
+/// chooses Superwhisper.
 fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box<dyn Error>> {
     let models = lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
         .join("lucy")
         .join("models");
-    let whisper = Whisper::load(&config.whisper, &models)?;
+    let whisper = match Whisper::load(&config.whisper, &models) {
+        Ok(whisper) => Some(whisper),
+        Err(e) if config.stt.kind == lucy_config::SttKind::Superwhisper => {
+            eprintln!("lucyd: {e}; only Superwhisper can transcribe");
+            None
+        }
+        Err(e) => return Err(e.into()),
+    };
     let vad = Silero::load()?;
     let wake_word = match wake_word(&config.wake_word, &models) {
         Ok(wake_word) => Some(Box::new(wake_word) as Box<dyn WakeWord>),
@@ -99,7 +115,9 @@ fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box
         wake_word,
         &config.endpointing,
     )?;
-    adapters.stt = Arc::new(whisper);
+    if let Some(whisper) = whisper {
+        adapters.stt = Arc::new(whisper);
+    }
     adapters.speech = ears.speech;
     adapters.wake_word = ears.wake_word;
     adapters.speaking = ears.speaking;
