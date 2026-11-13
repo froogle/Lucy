@@ -1,7 +1,7 @@
 name = "news"
 version = "0.1.0"
 author = "human"
-summary = "Reads the official news feeds of the Sources the user chooses"
+summary = "Reads the official news feeds of the Sources the user chooses, including sites they name"
 command = ["./lucy-news"]
 
 [[tools]]
@@ -15,7 +15,11 @@ handles = "changing your news Sources, topics and briefing length"
 examples = ["I'm not into Fox, try something else", "add the Guardian", "more science stories"]
 
 [access]
-# The feed hosts of the readable Sources in the catalogue.
+# The feed hosts of the readable Sources in the catalogue. It also reaches
+# any site the user names that isn't in the catalogue: that site's home page
+# and usual feed paths, to find its official feed, and then that feed, which
+# may be on another host. Those hosts can't be listed ahead of time; network
+# access is declared, not enforced, in v0.1.
 network = [
     "rss.cnn.com",
     "feeds.npr.org",

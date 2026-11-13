@@ -151,20 +151,21 @@ fn an_update_gets_a_changes_only_summary_with_the_full_diff_on_screen() {
 }
 
 #[test]
-fn a_shipped_plugin_is_approved_through_the_same_spoken_flow() {
+fn a_shipped_plugin_is_offered_in_the_first_session_without_asking() {
     let lucyd = Harness::start();
     lucyd.install_shipped_plugin("notes", &manifest(false, ""));
+
     let _events = in_a_session(&lucyd);
 
-    let approval = lucyd.request_approval("notes");
-
-    assert!(lucyd
-        .tts
-        .next_sentence()
-        .starts_with("The notes Plugin needs your Approval."));
-    lucyd.say("go ahead");
-    assert_eq!(approval.outcome(), Ok(true));
     assert!(lucyd.thinking.tool_names().contains(&"notes__echo".into()));
+    let instructions = lucyd.thinking.instructions();
+    assert!(!instructions.contains("awaiting"), "{instructions}");
+    assert_eq!(lucyd.tts.sentences(), Vec::<String>::new());
+    let approvals = lucyd.client().approvals().unwrap().approvals;
+    assert!(
+        approvals.iter().any(|a| a.plugin == "notes"),
+        "{approvals:?}"
+    );
 }
 
 #[test]

@@ -13,6 +13,7 @@ const CNN: &str = "http://rss.cnn.com/rss/edition.rss";
 const NPR: &str = "https://feeds.npr.org/1001/rss.xml";
 const SKY: &str = "https://feeds.skynews.com/feeds/rss/home.xml";
 const AL_JAZEERA: &str = "https://www.aljazeera.com/xml/rss/all.xml";
+const DAILY_PLANET: &str = "https://dailyplanet.example/feeds/top.rss";
 
 fn sorted(mut urls: Vec<String>) -> Vec<String> {
     urls.sort();
@@ -280,13 +281,123 @@ fn a_source_without_a_public_feed_gets_the_honest_limit() {
 }
 
 #[test]
-fn a_source_outside_the_catalogue_is_not_added() {
+fn a_source_outside_the_catalogue_with_no_address_is_not_added() {
     let news = Plugin::start();
 
     let reply = news.call("set_preference", json!({"add": "The Daily Planet"}));
 
     assert_eq!(reply["not_in_catalogue"], json!(["The Daily Planet"]));
     assert_eq!(reply["changed"], json!([]));
+    assert_eq!(names(&reply["rotation"]), ["CNN", "NPR", "Sky News"]);
+    let tell = reply["tell_the_user"].as_str().unwrap();
+    assert!(tell.contains("web address"), "{tell}");
+    assert_eq!(news.web.requested(), Vec::<String>::new());
+}
+
+#[test]
+fn a_named_site_with_an_official_feed_is_added_unvetted_and_read_from_then_on() {
+    let news = Plugin::start();
+
+    let reply = news.call(
+        "set_preference",
+        json!({"add": "The Daily Planet", "site": "dailyplanet.example"}),
+    );
+
+    assert_eq!(
+        reply["changed"],
+        json!(["The Daily Planet is now in your news Sources."])
+    );
+    assert_eq!(
+        names(&reply["rotation"]),
+        ["CNN", "NPR", "Sky News", "The Daily Planet"]
+    );
+    assert_eq!(
+        reply["unvetted"],
+        json!([{"source": "The Daily Planet", "feed": DAILY_PLANET}])
+    );
+    let tell = reply["tell_the_user"].as_str().unwrap();
+    assert!(tell.contains("terms allow AI summaries"), "{tell}");
+    // Only its home page and the feed it declares; no article page.
+    assert_eq!(
+        news.web.requested(),
+        urls(&["https://dailyplanet.example/", DAILY_PLANET])
+    );
+
+    let next = news.restart();
+    let briefing = next.call("briefing", json!({}));
+    assert_eq!(
+        sorted(next.web.requested()),
+        urls(&[CNN, NPR, SKY, DAILY_PLANET])
+    );
+    assert_eq!(
+        from(&briefing, "The Daily Planet")[0]["headline"],
+        "Metropolis bridge reopens after storm repairs"
+    );
+    assert!(briefing["front_pages"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"source": "The Daily Planet", "url": "https://dailyplanet.example/"})));
+}
+
+#[test]
+fn the_usual_feed_paths_are_tried_when_the_home_page_declares_no_feed() {
+    let news = Plugin::start();
+
+    let reply = news.call("set_preference", json!({"add": "gazette.example"}));
+
+    assert_eq!(
+        reply["unvetted"],
+        json!([{"source": "gazette.example", "feed": "https://gazette.example/feed"}])
+    );
+    assert_eq!(
+        reply["changed"],
+        json!(["gazette.example is now in your news Sources."])
+    );
+}
+
+#[test]
+fn a_named_site_without_an_official_feed_gets_the_honest_limit() {
+    let news = Plugin::start();
+
+    let reply = news.call(
+        "set_preference",
+        json!({"add": "No Feed News", "site": "https://nofeed.example/world"}),
+    );
+
+    assert_eq!(
+        reply["no_feed"],
+        json!([{"source": "No Feed News", "front_page": "https://nofeed.example/"}])
+    );
+    assert_eq!(reply["changed"], json!([]));
+    assert_eq!(names(&reply["rotation"]), ["CNN", "NPR", "Sky News"]);
+    let tell = reply["tell_the_user"].as_str().unwrap();
+    assert!(tell.contains("no official feed"), "{tell}");
+    // Nothing but its home page and the usual feed paths.
+    for url in news.web.requested() {
+        assert!(
+            url == "https://nofeed.example/"
+                || ["/feed", "/rss", "/feed.xml", "/rss.xml", "/atom.xml"]
+                    .iter()
+                    .any(|path| url == format!("https://nofeed.example{path}")),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn a_site_the_user_added_can_be_dropped() {
+    let news = Plugin::start();
+    news.call(
+        "set_preference",
+        json!({"add": "The Daily Planet", "site": "dailyplanet.example"}),
+    );
+
+    let reply = news.call("set_preference", json!({"drop": "the daily planet"}));
+
+    assert_eq!(
+        reply["changed"],
+        json!(["The Daily Planet is out; you won't hear from it again."])
+    );
     assert_eq!(names(&reply["rotation"]), ["CNN", "NPR", "Sky News"]);
 }
 

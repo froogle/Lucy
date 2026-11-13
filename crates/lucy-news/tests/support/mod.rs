@@ -6,7 +6,8 @@
 //! Recorded responses live in `tests/fixtures/web/<host>/<path>`: the body
 //! of `https://feeds.npr.org/1001/rss.xml` is
 //! `tests/fixtures/web/feeds.npr.org/1001/rss.xml`. A URL with no recording
-//! fails, as an unreachable site would.
+//! fails, as an unreachable site would. A site's home page,
+//! `https://dailyplanet.example/`, is `dailyplanet.example/index.html`.
 //!
 //! The Plugin template copies this file; a new Plugin swaps `News` for its
 //! own server and keeps its one way out to the web behind a trait like
@@ -52,7 +53,11 @@ impl Web for Recorded {
             .split_once("://")
             .map(|(_, rest)| rest)
             .ok_or_else(|| format!("not a URL: {url}"))?;
-        std::fs::read_to_string(self.dir.join(path)).map_err(|_| format!("no recording of {url}"))
+        let file = match path.strip_suffix('/') {
+            Some(dir) => self.dir.join(dir).join("index.html"),
+            None => self.dir.join(path),
+        };
+        std::fs::read_to_string(file).map_err(|_| format!("no recording of {url}"))
     }
 }
 

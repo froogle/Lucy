@@ -30,3 +30,5 @@ Spec: Providers and configuration (TUI scope, Piper); Processes and crates (syst
 ## Comments
 
 From slice 3: `uv tool install piper-tts` lacks Flask, so `piper.http_server` won't import. Install `piper-tts[http]`, and detect Piper by importing `piper.http_server` with `PYTHONPATH` cleared. Starting a spoken Approval for shipped Plugins goes through `Daemon::request_approval` (ticket 14); the TUI needs an IPC request that starts one, never one that grants it.
+
+From the slice 4 review: setup no longer approves shipped Plugins. lucyd approves them itself when it scans them (spec, Plugins), so the "approve shipped Plugins" setup step and the IPC request to start a spoken Approval for them aren't needed.

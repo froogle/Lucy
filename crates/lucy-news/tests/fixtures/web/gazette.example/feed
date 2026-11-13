@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>The Gazette</title>
+  <link href="https://gazette.example/"/>
+  <updated>2026-11-13T08:00:00Z</updated>
+  <id>https://gazette.example/</id>
+  <entry>
+    <title>Harvest festival draws record crowds</title>
+    <link href="https://gazette.example/2026/11/13/harvest-festival"/>
+    <id>https://gazette.example/2026/11/13/harvest-festival</id>
+    <updated>2026-11-13T08:00:00Z</updated>
+    <summary>More than 20,000 people visited over the weekend.</summary>
+  </entry>
+</feed>

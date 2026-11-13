@@ -1,4 +1,4 @@
-//! The shipped news Plugin, run by lucyd: approved by voice as setup does,
+//! The shipped news Plugin, run by lucyd: approved when lucyd scans it,
 //! offered to the model, and keeping its preferences across Sessions.
 //! Nothing here reaches the network; the Plugin's own tests cover briefings
 //! against recorded feeds.
@@ -55,31 +55,17 @@ fn reply(lucyd: &Harness, arguments: Value) -> Value {
 }
 
 #[test]
-fn the_shipped_news_plugin_is_approved_by_voice_and_keeps_a_swap_into_the_next_session() {
+fn the_shipped_news_plugin_is_offered_without_asking_and_keeps_a_swap_into_the_next_session() {
     let lucyd = Harness::start();
     install_news(&lucyd);
     let mut events = lucyd.state_client();
+
     events.start_session().unwrap();
-    assert_eq!(next_state(&mut events).state, State::Listening);
-    let watch = lucyd.thinking.watch_tools();
 
-    let approval = lucyd.request_approval("news");
-
-    assert_eq!(next_state(&mut events).state, State::Confirming);
-    assert_eq!(
-        lucyd.tts.next_sentence(),
-        "The news Plugin needs your Approval. It handles the news, as a quick briefing or a \
-         detailed roundup and changing your news Sources, topics and briefing length. It can \
-         reach rss.cnn.com, feeds.npr.org, feeds.skynews.com, moxie.foxnews.com and \
-         www.aljazeera.com. It never asks you before acting. Do you approve it?"
-    );
-    lucyd.tts.finish_playing();
-    lucyd.say("yes");
-    assert_eq!(approval.outcome(), Ok(true));
-    watch.wait_for_change();
     assert_eq!(next_state(&mut events).state, State::Listening);
     let tools = lucyd.thinking.tool_names();
     assert!(tools.contains(&"news__briefing".into()), "{tools:?}");
+    assert_eq!(lucyd.tts.sentences(), Vec::<String>::new());
 
     // No Confirmation: the call answers straight away.
     let swapped = reply(&lucyd, json!({"drop": "Sky"}));

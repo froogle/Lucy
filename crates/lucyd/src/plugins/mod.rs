@@ -72,8 +72,8 @@ impl Paths {
         self.state.join("approvals.toml")
     }
 
-    /// What Lucy remembers about Plugins besides their Approvals.
-    fn remembered(&self) -> PathBuf {
+    /// The user's Plugin preferences.
+    fn prefs(&self) -> PathBuf {
         self.state.join("plugins.toml")
     }
 
@@ -93,6 +93,10 @@ impl Paths {
 struct Approvals {
     #[serde(default)]
     plugins: BTreeMap<String, Approval>,
+    /// By Plugin whose Approval was revoked: the previous version it had,
+    /// kept to roll back to once the Plugin is approved again.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    revoked: BTreeMap<String, Approval>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -110,10 +114,10 @@ struct Approval {
     previous: Option<Box<Approval>>,
 }
 
-/// `plugins.toml`: what Lucy remembers about Plugins besides their
-/// Approvals.
+/// `plugins.toml`: the user's Plugin preferences besides their Approvals,
+/// and which Plugins they've been told await Approval.
 #[derive(Default, Deserialize, Serialize)]
-struct Remembered {
+struct PluginPrefs {
     /// Plugins left out of selection, keeping their files and Approval.
     #[serde(default)]
     disabled: BTreeSet<String>,
@@ -202,18 +206,21 @@ impl Host {
         let mut usable = Vec::new();
         let mut broken = Vec::new();
         let mut awaiting = Vec::new();
-        let disabled = self.remembered().disabled;
+        let disabled = self.prefs().disabled;
         for (name, folder) in self.folders() {
             if disabled.contains(&name) {
                 continue;
             }
             match self.scan(&name, &folder) {
                 Ok(Scanned::Approved(plugin)) => usable.push(plugin),
-                // Shipped Plugins are approved at setup, not mentioned.
-                Ok(Scanned::Awaiting(contents)) if !self.is_shipped(&folder) => {
-                    awaiting.push((name, contents));
+                // Lucy ships it, so she approves it herself.
+                Ok(Scanned::Awaiting(_)) if self.is_shipped(&folder) => {
+                    match self.approve_shipped(&name).await {
+                        Ok(plugin) => usable.push(plugin),
+                        Err(reason) => broken.push(broken_message(&name, &reason)),
+                    }
                 }
-                Ok(Scanned::Awaiting(_)) => {}
+                Ok(Scanned::Awaiting(contents)) => awaiting.push((name, contents)),
                 Err(reason) => broken.push(broken_message(&name, &reason)),
             }
         }
@@ -283,6 +290,18 @@ impl Host {
         Ok(true)
     }
 
+    /// Approves the shipped Plugin `name` as it is now without asking: it
+    /// came with Lucy.
+    async fn approve_shipped(&self, name: &str) -> Result<Usable, String> {
+        let candidate = self.candidate(name).await?;
+        self.record(&candidate)?;
+        self.verdicts
+            .lock()
+            .unwrap()
+            .insert(candidate.plugin.hash.clone(), Ok(()));
+        Ok(candidate.plugin)
+    }
+
     /// The Plugin `name` as it is now, checked against its live tools and
     /// ready to approve.
     async fn candidate(&self, name: &str) -> Result<Candidate, String> {
@@ -343,10 +362,16 @@ impl Host {
             .iter()
             .map(|(tool, schema)| (tool.clone(), serde_json::to_string(&**schema).unwrap()))
             .collect();
-        let previous = approvals.plugins.remove(&plugin.name).map(|mut previous| {
-            previous.previous = None;
-            Box::new(previous)
-        });
+        let kept = approvals.revoked.remove(&plugin.name);
+        let previous = approvals
+            .plugins
+            .remove(&plugin.name)
+            .or(kept)
+            .filter(|previous| previous.hash != plugin.hash)
+            .map(|mut previous| {
+                previous.previous = None;
+                Box::new(previous)
+            });
         let kept: Vec<&str> = [Some(&*plugin.hash), previous.as_ref().map(|p| &*p.hash)]
             .into_iter()
             .flatten()
@@ -372,17 +397,17 @@ impl Host {
         save_state(&self.paths.state, &self.paths.approvals(), &text).map_err(|e| e.to_string())
     }
 
-    /// `plugins.toml`, or nothing remembered if it can't be read.
-    fn remembered(&self) -> Remembered {
-        std::fs::read_to_string(self.paths.remembered())
+    /// `plugins.toml`, or no preferences if it can't be read.
+    fn prefs(&self) -> PluginPrefs {
+        std::fs::read_to_string(self.paths.prefs())
             .ok()
             .and_then(|text| toml::from_str(&text).ok())
             .unwrap_or_default()
     }
 
-    fn save_remembered(&self, remembered: &Remembered) -> Result<(), String> {
-        let text = toml::to_string(remembered).map_err(|e| format!("plugins.toml: {e}"))?;
-        save_state(&self.paths.state, &self.paths.remembered(), &text)
+    fn save_prefs(&self, prefs: &PluginPrefs) -> Result<(), String> {
+        let text = toml::to_string(prefs).map_err(|e| format!("plugins.toml: {e}"))?;
+        save_state(&self.paths.state, &self.paths.prefs(), &text)
             .map_err(|e| format!("plugins.toml couldn't be saved: {e}"))
     }
 
@@ -391,20 +416,20 @@ impl Host {
     /// they now have.
     fn mention_once(&self, awaiting: Vec<(String, Contents)>) -> Vec<String> {
         let _editing = self.editing.lock().unwrap();
-        let mut remembered = self.remembered();
+        let mut prefs = self.prefs();
         let mut lines = Vec::new();
         for (name, contents) in awaiting {
-            if remembered.mentioned.get(&name) == Some(&contents.hash) {
+            if prefs.mentioned.get(&name) == Some(&contents.hash) {
                 continue;
             }
             lines.push(format!(
                 "The {name} Plugin ({}) is awaiting the user's Approval.",
                 contents.manifest.summary
             ));
-            remembered.mentioned.insert(name, contents.hash);
+            prefs.mentioned.insert(name, contents.hash);
         }
         if !lines.is_empty() {
-            if let Err(e) = self.save_remembered(&remembered) {
+            if let Err(e) = self.save_prefs(&prefs) {
                 eprintln!("lucyd: {e}");
             }
             self.changes.publish();
