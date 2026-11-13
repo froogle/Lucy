@@ -4,6 +4,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -84,23 +86,34 @@ impl Thinking for Claude {
                 return Box::new(ClaudeConversation {
                     process: None,
                     events,
+                    in_turn: Arc::default(),
                 });
             }
         };
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         let reader_events = events.clone();
+        let in_turn = Arc::new(AtomicBool::new(false));
+        let reader_in_turn = in_turn.clone();
         std::thread::spawn(move || {
             let mut stream = Stream::default();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 for event in stream.line(&line) {
+                    if event == ThinkingEvent::TurnEnd {
+                        reader_in_turn.store(false, Ordering::SeqCst);
+                    }
                     let _ = reader_events.send(event);
                 }
+            }
+            // claude died: don't leave the Session waiting on the Turn.
+            if reader_in_turn.swap(false, Ordering::SeqCst) {
+                let _ = reader_events.send(ThinkingEvent::TurnEnd);
             }
         });
         Box::new(ClaudeConversation {
             process: Some((child, stdin)),
             events,
+            in_turn,
         })
     }
 }
@@ -108,12 +121,15 @@ impl Thinking for Claude {
 struct ClaudeConversation {
     process: Option<(Child, ChildStdin)>,
     events: mpsc::UnboundedSender<ThinkingEvent>,
+    /// A Turn was sent and its `TurnEnd` hasn't been.
+    in_turn: Arc<AtomicBool>,
 }
 
 impl Conversation for ClaudeConversation {
     fn send_turn(&mut self, text: String) {
         let message =
             serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
+        self.in_turn.store(true, Ordering::SeqCst);
         let sent = match &mut self.process {
             Some((_, stdin)) => writeln!(stdin, "{message}").and_then(|()| stdin.flush()),
             None => Err(std::io::ErrorKind::NotFound.into()),
@@ -121,7 +137,9 @@ impl Conversation for ClaudeConversation {
         if let Err(e) = sent {
             // Don't leave the Session waiting on a reply that can't come.
             eprintln!("lucyd: can't reach claude: {e}");
-            let _ = self.events.send(ThinkingEvent::TurnEnd);
+            if self.in_turn.swap(false, Ordering::SeqCst) {
+                let _ = self.events.send(ThinkingEvent::TurnEnd);
+            }
         }
     }
 }

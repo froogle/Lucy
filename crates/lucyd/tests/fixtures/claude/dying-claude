@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stands in for a `claude -p` that dies mid-Turn: answers the first stdin
+# line with the start of turn1.jsonl, no `result`, then exits.
+here=$(dirname "$0")
+IFS= read -r line
+head -n 8 "$here/turn1.jsonl"

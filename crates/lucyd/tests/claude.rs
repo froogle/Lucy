@@ -124,6 +124,19 @@ fn one_process_is_prespawned_and_serves_every_turn() {
 }
 
 #[test]
+fn claude_dying_mid_turn_ends_the_turn() {
+    let work = tempfile::tempdir().unwrap();
+    let claude = Claude::new(fixtures().join("dying-claude"), work.path().to_owned());
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut conversation = claude.open(tx, relay());
+
+    conversation.send_turn("Remember the word kiwi.".into());
+
+    let (text, _) = read_turn(&mut events, WAIT);
+    assert_eq!(text, "Got it, I'll remember the word kiw");
+}
+
+#[test]
 fn runs_with_an_isolated_config_naming_only_the_relay() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
