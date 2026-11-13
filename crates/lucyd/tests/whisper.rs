@@ -1,8 +1,10 @@
 //! The `whisper` STT Provider.
 
+mod harness;
 mod recording;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use lucy_config::Whisper as Config;
 use lucyd::adapters::{SpeechSegment, Stt};
@@ -101,4 +103,30 @@ fn a_long_utterance_on_the_cpu_is_transcribed_to_the_end() {
     let heard = whisper.transcribe(SpeechSegment { samples });
 
     assert_eq!(heard.to_lowercase().matches("lucy").count(), 3, "{heard:?}");
+}
+
+/// The whole hearing path with the real VAD and Whisper: the recording,
+/// played into the microphone between silences, comes out as one utterance
+/// that Whisper transcribes.
+#[test]
+#[ignore = "needs the small.en model and a Vulkan GPU"]
+fn a_recording_played_into_the_microphone_is_heard() {
+    let whisper = Whisper::load(&Config::default(), &models_dir()).unwrap();
+    let config = lucy_config::Config::default();
+    let mic = harness::FakeMic::default();
+    let mut speech = lucyd::audio::listen(
+        &mic,
+        &config.audio,
+        Box::new(lucyd::audio::Silero::load().unwrap()),
+        &config.endpointing,
+    )
+    .unwrap();
+
+    mic.feed(harness::SILENCE, Duration::from_secs(1));
+    mic.play(&recording::speech());
+    mic.feed(harness::SILENCE, Duration::from_secs(1));
+
+    let segment = speech.blocking_recv().expect("an utterance");
+    let heard = whisper.transcribe(segment);
+    assert!(heard.to_lowercase().contains("lucy"), "{heard:?}");
 }

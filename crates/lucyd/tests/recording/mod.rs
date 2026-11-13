@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 /// The voice-loop prototype's recording, used unless `LUCY_SPEECH_WAV` names
-/// another. It says "Hello! I'm Lucy. How can I help you today?"
+/// another. It says "Hello! I am Lucy! It is lovely to finally meet you..."
 const PROTOTYPE_WAV: &str = ".scratch/lucy-v0-1/prototypes/voice-loop/hello.wav";
 
 pub fn speech() -> Vec<f32> {

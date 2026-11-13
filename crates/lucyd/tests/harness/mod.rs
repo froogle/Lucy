@@ -507,18 +507,23 @@ pub struct FakeMic {
 impl FakeMic {
     /// Feeds `duration` of samples at `level`, waiting while the ring is full.
     pub fn feed(&self, level: f32, duration: Duration) {
-        let mut left = (duration.as_secs_f64() * 16_000.0).round() as usize;
-        while left > 0 {
+        let len = (duration.as_secs_f64() * 16_000.0).round() as usize;
+        self.play(&vec![level; len]);
+    }
+
+    /// Feeds `samples`, waiting while the ring is full.
+    pub fn play(&self, mut samples: &[f32]) {
+        while !samples.is_empty() {
             let written = {
                 let mut ring = self.ring.lock().unwrap();
                 let ring = ring.as_mut().expect("lucyd opened the microphone");
-                let n = left.min(ring.slots());
-                for _ in 0..n {
-                    ring.push(level).unwrap();
+                let n = samples.len().min(ring.slots());
+                for &sample in &samples[..n] {
+                    ring.push(sample).unwrap();
                 }
                 n
             };
-            left -= written;
+            samples = &samples[written..];
             if written == 0 {
                 std::thread::sleep(Duration::from_millis(1));
             }
