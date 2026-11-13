@@ -552,7 +552,14 @@ fn fixture_plugin() -> PathBuf {
 fn install(dir: &Path, manifest: &str) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
-    std::fs::copy(fixture_plugin(), dir.join("fixture-plugin")).unwrap();
+    // `cp` copies it so that no write fd here leaks into a child another
+    // test forks and makes running it fail with "Text file busy".
+    let copied = Command::new("cp")
+        .arg(fixture_plugin())
+        .arg(dir.join("fixture-plugin"))
+        .status()
+        .unwrap();
+    assert!(copied.success());
     dir.to_owned()
 }
 
