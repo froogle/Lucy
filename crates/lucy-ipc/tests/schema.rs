@@ -37,4 +37,5 @@ fn schema_describes_every_method_and_event() {
         );
     }
     assert!(schema["x-events"]["state"].is_object());
+    assert!(schema["x-events"]["level"].is_object());
 }

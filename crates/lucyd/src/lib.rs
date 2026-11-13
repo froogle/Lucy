@@ -53,11 +53,13 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
+    let levels = status::LoudnessBus::new();
     let (sessions, commands) = mpsc::unbounded_channel();
     runtime.spawn(
         runner::Runner::new(
             commands,
             status.clone(),
+            levels.clone(),
             adapters,
             relays.clone(),
             Duration::from_secs_f64(config.session.silence_timeout_secs),
@@ -65,7 +67,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         .run(),
     );
     runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
-    runtime.spawn(ipc::serve(listener, status, sessions));
+    runtime.spawn(ipc::serve(listener, status, levels, sessions));
 
     Ok(Daemon {
         socket_path,

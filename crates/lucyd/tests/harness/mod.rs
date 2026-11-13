@@ -184,6 +184,14 @@ impl Harness {
         }
     }
 
+    /// The recorder, subscribed to `state` only, never received a `level`
+    /// event. Call it after `assert_nothing_private_on_bus`.
+    pub fn assert_no_level_on_bus(&self) {
+        let bus = self.bus.lock().unwrap();
+        let level = bus.iter().find(|line| line.contains(r#""method":"level""#));
+        assert!(level.is_none(), "a state-only subscriber got {level:?}");
+    }
+
     /// The recorder has seen a Session and then Idle again.
     fn bus_is_idle(&self) -> bool {
         let bus = self.bus.lock().unwrap();
@@ -196,6 +204,7 @@ impl Harness {
 pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {
         Event::State(state) => state,
+        other => panic!("expected a state event, got {other:?}"),
     }
 }
 
@@ -440,6 +449,11 @@ impl FakeTts {
     /// The oldest queued sentence finishes playing.
     pub fn finish_playing(&self) {
         self.send(SpeakerEvent::Played);
+    }
+
+    /// Playback reports its level.
+    pub fn level(&self, rms: f32) {
+        self.send(SpeakerEvent::Level(rms));
     }
 
     /// From now on, every sentence fails to synthesise.

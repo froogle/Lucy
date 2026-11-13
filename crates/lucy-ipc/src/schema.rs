@@ -3,7 +3,9 @@
 use schemars::generate::SchemaSettings;
 use serde_json::{json, Value};
 
-use crate::{Hello, HelloResult, SessionStarted, StateEvent, Status, Subscribe, PROTOCOL};
+use crate::{
+    Hello, HelloResult, LoudnessEvent, SessionStarted, StateEvent, Status, Subscribe, PROTOCOL,
+};
 
 /// The schema committed as `schema/lucy-ipc.schema.json`. `x-methods` maps
 /// each request to its params and result; `x-events` maps each event to its
@@ -15,6 +17,7 @@ pub fn schema() -> Value {
     let status = generator.subschema_for::<Status>();
     let subscribe = generator.subschema_for::<Subscribe>();
     let state_event = generator.subschema_for::<StateEvent>();
+    let level_event = generator.subschema_for::<LoudnessEvent>();
     let session_started = generator.subschema_for::<SessionStarted>();
 
     json!({
@@ -31,6 +34,7 @@ pub fn schema() -> Value {
         },
         "x-events": {
             "state": {"params": state_event},
+            "level": {"params": level_event},
         },
         "$defs": generator.take_definitions(true),
     })

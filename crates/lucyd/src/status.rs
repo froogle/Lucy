@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use lucy_ipc::{State, Status};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 #[derive(Clone)]
 pub struct StatusBus(Arc<Mutex<Inner>>);
@@ -47,5 +47,26 @@ impl StatusBus {
         inner
             .subscribers
             .retain(|subscriber| subscriber.send(status.clone()).is_ok());
+    }
+}
+
+/// Lucy's voice level while she speaks. A subscriber that falls behind skips
+/// the levels it missed: only the latest ones matter to a meter.
+#[derive(Clone)]
+pub struct LoudnessBus(broadcast::Sender<f32>);
+
+impl LoudnessBus {
+    pub fn new() -> Self {
+        // About a second of levels.
+        LoudnessBus(broadcast::channel(32).0)
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<f32> {
+        self.0.subscribe()
+    }
+
+    pub fn publish(&self, rms: f32) {
+        // No subscribers is fine.
+        let _ = self.0.send(rms);
     }
 }

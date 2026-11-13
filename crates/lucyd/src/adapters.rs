@@ -86,7 +86,8 @@ pub trait SessionModel: Send {
 /// A TTS Provider together with playback.
 pub trait Tts: Send + Sync {
     /// Opens playback for a new Session. Each sentence sends one `Played` or
-    /// `Failed` on `events`, in order. Dropping the Speaker stops playback.
+    /// `Failed` on `events`, in order, and `Level` about 30 times a second
+    /// while it plays. Dropping the Speaker stops playback.
     fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker>;
 }
 
@@ -103,6 +104,8 @@ pub enum SpeakerEvent {
     /// The oldest queued sentence couldn't be synthesised or played. Carries
     /// its text.
     Failed(String),
+    /// RMS of the samples just played, from 0.0 to 1.0.
+    Level(f32),
 }
 
 /// Desktop notifications.

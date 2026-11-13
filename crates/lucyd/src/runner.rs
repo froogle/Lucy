@@ -11,7 +11,7 @@ use tokio::time::Instant;
 use crate::adapters::{Adapters, SpeakerEvent};
 use crate::mcp::{Caller, Relays};
 use crate::session::{Input, Output, Session};
-use crate::status::StatusBus;
+use crate::status::{LoudnessBus, StatusBus};
 
 /// A request from the public socket or the MCP server.
 pub enum Command {
@@ -38,6 +38,7 @@ pub struct EndError;
 pub struct Runner {
     commands: mpsc::UnboundedReceiver<Command>,
     status: StatusBus,
+    levels: LoudnessBus,
     adapters: Adapters,
     relays: Relays,
     silence_timeout: Duration,
@@ -50,6 +51,7 @@ impl Runner {
     pub fn new(
         commands: mpsc::UnboundedReceiver<Command>,
         status: StatusBus,
+        levels: LoudnessBus,
         adapters: Adapters,
         relays: Relays,
         silence_timeout: Duration,
@@ -57,6 +59,7 @@ impl Runner {
         Runner {
             commands,
             status,
+            levels,
             adapters,
             relays,
             silence_timeout,
@@ -144,6 +147,10 @@ impl Runner {
                     SpeakerEvent::Failed(sentence) => {
                         self.adapters.notifier.notify(&sentence);
                         Input::Played
+                    }
+                    SpeakerEvent::Level(rms) => {
+                        self.levels.publish(rms);
+                        continue;
                     }
                 },
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
