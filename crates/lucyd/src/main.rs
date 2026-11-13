@@ -30,6 +30,15 @@ fn main() -> ExitCode {
             .join("lucy")
             .join("work"),
     ));
+    // Ticket 09 feeds `take_reference()` to the echo canceller.
+    adapters.tts = Box::new(lucyd::piper::Piper::start(
+        None,
+        lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
+            .join("lucy")
+            .join("voices"),
+        lucyd::piper::DEFAULT_VOICE,
+    ));
+    adapters.notifier = Box::new(lucyd::notify::NotifySend);
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,

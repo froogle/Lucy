@@ -14,6 +14,12 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 rmcp = { workspace = true, features = ["server"] }
+cpal = { version = "0.18.2", features = ["pipewire", "pulseaudio"] }
+hound = "3.5"
+rubato = "5.1.0"
+rtrb = "0.4.1"
+ureq = { version = "3", default-features = false }
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
