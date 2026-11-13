@@ -222,7 +222,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 - **`lucy`** is a thin CLI and TUI: no arguments opens the TUI; `setup`, `status`, `listen`, `end`, `events`, and a hidden `mcp-relay`.
 - **`lucy-indicator`** is a separate client of the public socket (layer-shell plus a 2D rasteriser). With no layer-shell it exits cleanly.
 - **Libraries:** `lucy-ipc` (protocol types, small client, generated JSON Schema; published) and `lucy-config` (config types, defaults, comment-preserving writer).
-- Inside lucyd these are modules, not crates: `audio`, `providers`, `plugins`, `tools`, `session`. `session` is a pure, I/O-free state machine driven by events. A module becomes a crate only for a concrete reason. `lucy` and `lucy-indicator` must never link whisper, webrtc-audio-processing or ort.
+- Inside lucyd these are modules, not crates: `audio`, `providers`, `plugins`, `tools`, `session`. `session` is a pure, I/O-free state machine driven by events. A module becomes a crate only for a concrete reason. `lucy` and `lucy-indicator` must never link whisper, the echo canceller or ort.
 - **systemd user units:** `lucyd.service` (part of and wanted by `graphical-session.target`, after PipeWire, restart on failure, no socket activation) and `lucy-indicator.service`.
 - lucyd falls back to desktop notifications whenever no client holds the `indicator` role.
 
@@ -247,7 +247,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
   | `open_url` | `url` (http/https only) → ok | no |
   | `launch_app` | `name` → launched / `candidates[]` / `not_found` | no |
   | `system_status` | `topic` ∈ battery, disk, memory/CPU, network, volume, time, uptime → facts | no |
-  | `request_plugin` | `goal`, `clarifications` → starts Authoring | no |
+  | `request_plugin` | `name` (short lowercase Plugin name, used for `.build/<name>/`), `goal`, `clarifications`, `request` (the user's words, answered once the Plugin is approved) → starts Authoring | no |
   | `manage_plugin` | `plugin`, `action` ∈ enable, disable, rollback, remove → result | remove only |
   | `update_persona` | `persona` (full new text of `persona.md`) → saved; applies in full from the next Session | no |
   | `end_session` | → ends the Session after current speech | no |
@@ -284,7 +284,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 
 - cpal 0.18 (PipeWire → PulseAudio → ALSA), with both streams in one PipeWire node group for drift correction, behind an `AudioIo` seam. Lucy shows in mixers as `cpal-capture-<pid>` until an upstream cpal naming PR lands (no fork).
 - Internally 16 kHz mono f32. TTS plays at the voice's native rate. A rubato downsampled copy is the AEC render reference. Callbacks only push into lock-free rings. One DSP thread reframes to 10 ms and runs AEC, then fans out to wake word, VAD and STT.
-- **AEC:** in-process WebRTC AEC3 (`webrtc-audio-processing` 2.x) behind an `EchoCanceller` seam. It cancels only Lucy's own voice. PipeWire's echo-cancel module is opt-in (point the mic at it and disable in-process AEC).
+- **AEC:** in-process WebRTC AEC3 behind an `EchoCanceller` seam, through `sonora` (a pure-Rust AEC3 port, BSD-3) rather than the C++ `webrtc-audio-processing` 2.x, which needs a system package or meson to build (user decision, slice 5; wayfinder 23 compares the two on real speakers). It cancels only Lucy's own voice. PipeWire's echo-cancel module is opt-in (point the mic at it and disable in-process AEC).
 - **Wake word:** `livekit-wakeword` v2 (pinned git rev until it is on crates.io), one fixed engine with a swappable `.onnx` path. It is not a Provider. Models: `hey_lucy` (default) and `lucy`, committed with their training config.
 - **VAD:** Silero v6.2 in 32 ms chunks behind a `Vad` trait. End of utterance: start threshold 0.5, end threshold 0.35, 100 ms to start, 500 ms pre-roll, 700 ms silence to end, 30 s cap. Barge-in gate: p ≥ 0.7 for 300 ms; p ≥ 0.85 for 500 ms while AEC is unconverged (ERLE < 10 dB or the first 2 s). The window covers TTS plus a 300 ms tail, and TTS ducks on the first frame above threshold. All values are tunable starting points.
 - ONNX through the `ort` API on the pure-Rust tract backend by default. Native ORT via dynamic load of the system library is allowed for Silero only, if tract fails. Nothing is downloaded from a CDN.
