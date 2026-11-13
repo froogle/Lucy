@@ -1,6 +1,8 @@
 //! The public socket: newline-delimited JSON-RPC 2.0 (ADR 0006).
 
-use lucy_ipc::{error_code, Hello, HelloResult, Status, PROTOCOL};
+use lucy_ipc::{
+    error_code, Event, Hello, HelloResult, StateEvent, Status, Subscribe, Topic, PROTOCOL,
+};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
@@ -22,6 +24,7 @@ struct Connection {
     writer: OwnedWriteHalf,
     status: watch::Receiver<Status>,
     greeted: bool,
+    state_subscribed: bool,
 }
 
 async fn connection(stream: UnixStream, status: watch::Receiver<Status>) {
@@ -31,9 +34,20 @@ async fn connection(stream: UnixStream, status: watch::Receiver<Status>) {
         writer,
         status,
         greeted: false,
+        state_subscribed: false,
     };
-    while let Ok(Some(line)) = lines.next_line().await {
-        if conn.handle_line(&line).await.is_err() {
+    loop {
+        let sent = tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => conn.handle_line(&line).await,
+                _ => return,
+            },
+            changed = conn.status.changed(), if conn.state_subscribed => match changed {
+                Ok(()) => conn.send_state().await,
+                Err(_) => return,
+            },
+        };
+        if sent.is_err() {
             return;
         }
     }
@@ -69,8 +83,25 @@ impl Connection {
             return self.respond(id, Err(error)).await;
         };
         let params = request.get("params").cloned().unwrap_or(Value::Null);
+        let was_subscribed = self.state_subscribed;
         let outcome = self.dispatch(method, params);
-        self.respond(id, outcome).await
+        self.respond(id, outcome).await?;
+        if self.state_subscribed && !was_subscribed {
+            self.send_state().await?;
+        }
+        Ok(())
+    }
+
+    /// Sends the current state as a `state` event.
+    async fn send_state(&mut self) -> std::io::Result<()> {
+        let status = self.status.borrow_and_update().clone();
+        let event = Event::State(StateEvent {
+            state: status.state,
+            session_id: status.session_id,
+        });
+        let mut message = json!(event);
+        message["jsonrpc"] = json!("2.0");
+        self.send(message).await
     }
 
     fn dispatch(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
@@ -85,6 +116,13 @@ impl Connection {
         }
         match method {
             "status" => Ok(json!(*self.status.borrow())),
+            "subscribe" => {
+                let subscribe: Subscribe = parse_params(params)?;
+                if subscribe.topics.contains(&Topic::State) {
+                    self.state_subscribed = true;
+                }
+                Ok(json!({}))
+            }
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method {method:?}"),

@@ -1,7 +1,7 @@
 mod harness;
 
 use harness::Harness;
-use lucy_ipc::State;
+use lucy_ipc::{Event, State, StateEvent, Topic};
 
 #[test]
 fn fresh_lucyd_reports_idle_status_after_handshake() {
@@ -12,6 +12,41 @@ fn fresh_lucyd_reports_idle_status_after_handshake() {
 
     assert_eq!(status.state, State::Idle);
     assert_eq!(status.session_id, None);
+}
+
+#[test]
+fn subscribing_to_state_sends_the_current_state() {
+    let lucyd = Harness::start();
+    let mut client = lucyd.client();
+
+    client.subscribe(&[Topic::State]).unwrap();
+
+    assert_eq!(
+        client.next_event().unwrap(),
+        Event::State(StateEvent {
+            state: State::Idle,
+            session_id: None
+        })
+    );
+}
+
+#[test]
+fn state_events_are_json_rpc_notifications() {
+    let lucyd = Harness::start();
+    let mut client = lucyd.client();
+    client.subscribe(&[Topic::State]).unwrap();
+
+    let line = client.next_event_line().unwrap();
+
+    let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(
+        event,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "state",
+            "params": {"state": "idle", "session_id": null},
+        })
+    );
 }
 
 #[test]
