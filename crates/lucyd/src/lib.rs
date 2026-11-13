@@ -19,6 +19,7 @@ mod runner;
 mod session;
 mod status;
 mod system_status;
+mod wake;
 pub mod whisper;
 
 use std::io;

@@ -17,6 +17,8 @@ pub enum Input {
     Played,
     /// The model called `end_session`.
     EndRequested,
+    /// The Wake word was heard during the Session.
+    WakeWord,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -113,6 +115,9 @@ impl Session {
                 self.closing = true;
                 self.turn_finished().into_iter().collect()
             }
+            // Ordinary speech: its utterance arrives as `Speech`. During
+            // Speaking it will be an instant Barge-in (ticket 09).
+            Input::WakeWord => vec![],
         }
     }
 

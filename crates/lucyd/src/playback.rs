@@ -17,7 +17,7 @@ use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Speaker, SpeakerEvent};
+use crate::adapters::{Sound, Speaker, SpeakerEvent};
 
 /// Lucy's internal rate, which the echo canceller works at.
 pub const REFERENCE_RATE: u32 = 16_000;
@@ -27,6 +27,13 @@ const LEVEL_PERIOD: Duration = Duration::from_millis(33);
 
 /// Seconds of audio the playback ring holds before the player keeps the rest.
 const RING_SECS: usize = 10;
+
+/// The rate cues are made at when nothing is open yet: that of the default
+/// voice, so the stream rarely has to reopen for speech.
+const SOUND_RATE: u32 = 22_050;
+
+/// The longest a cue keeps playing after the Speaker is dropped.
+const PLAY_OUT: Duration = Duration::from_secs(1);
 
 /// One synthesised sentence: mono samples from -1.0 to 1.0.
 pub struct Pcm {
@@ -47,16 +54,19 @@ pub fn speaker(
     events: mpsc::UnboundedSender<SpeakerEvent>,
     reference: Reference,
 ) -> Box<dyn Speaker> {
-    let (sentences, sentences_rx) = std_mpsc::channel::<String>();
+    let (sentences, sentences_rx) = std_mpsc::channel::<Request>();
     let (items, items_rx) = std_mpsc::channel();
     std::thread::spawn(move || {
-        for sentence in sentences_rx {
-            let item = match synthesise(&sentence) {
-                Ok(pcm) => Item::Audio(pcm, sentence),
-                Err(e) => {
-                    eprintln!("lucyd: TTS failed: {e}");
-                    Item::Failed(sentence)
-                }
+        for request in sentences_rx {
+            let item = match request {
+                Request::Sound(sound) => Item::Sound(sound),
+                Request::Sentence(sentence) => match synthesise(&sentence) {
+                    Ok(pcm) => Item::Audio(pcm, sentence),
+                    Err(e) => {
+                        eprintln!("lucyd: TTS failed: {e}");
+                        Item::Failed(sentence)
+                    }
+                },
             };
             if items.send(item).is_err() {
                 return;
@@ -68,12 +78,22 @@ pub fn speaker(
 }
 
 struct PlaybackSpeaker {
-    sentences: std_mpsc::Sender<String>,
+    sentences: std_mpsc::Sender<Request>,
+}
+
+/// What the Speaker queues, in order.
+enum Request {
+    Sentence(String),
+    Sound(Sound),
 }
 
 impl Speaker for PlaybackSpeaker {
     fn speak(&mut self, sentence: String) {
-        let _ = self.sentences.send(sentence);
+        let _ = self.sentences.send(Request::Sentence(sentence));
+    }
+
+    fn sound(&mut self, sound: Sound) {
+        let _ = self.sentences.send(Request::Sound(sound));
     }
 }
 
@@ -81,6 +101,7 @@ enum Item {
     /// A sentence's audio, and its text in case it can't be played.
     Audio(Pcm, String),
     Failed(String),
+    Sound(Sound),
 }
 
 /// The output stream and what the player shares with its callback.
@@ -107,6 +128,8 @@ struct Player {
     rms: Arc<AtomicU32>,
     /// Each sentence's end position, with its text if it failed.
     pending: VecDeque<(u64, Option<String>)>,
+    /// The last item queued was a cue.
+    sound_last: bool,
 }
 
 impl Player {
@@ -120,10 +143,12 @@ impl Player {
             consumed: Arc::default(),
             rms: Arc::default(),
             pending: VecDeque::new(),
+            sound_last: false,
         }
     }
 
-    /// Plays until the Speaker is dropped, which stops playback at once.
+    /// Plays until the Speaker is dropped, which stops playback at once,
+    /// unless the last thing queued was a cue: that plays out.
     fn run(mut self, items: std_mpsc::Receiver<Item>) {
         let mut next_tick = Instant::now() + LEVEL_PERIOD;
         loop {
@@ -133,12 +158,29 @@ impl Player {
                     self.tick();
                     next_tick = Instant::now() + LEVEL_PERIOD;
                 }
-                Err(std_mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    if self.sound_last {
+                        self.play_out();
+                    }
+                    return;
+                }
             }
         }
     }
 
+    fn play_out(&mut self) {
+        let deadline = Instant::now() + PLAY_OUT;
+        while self.output.is_some()
+            && self.consumed.load(Ordering::Acquire) < self.written
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(LEVEL_PERIOD);
+            self.tick();
+        }
+    }
+
     fn queue(&mut self, item: Item) {
+        self.sound_last = matches!(item, Item::Sound(_));
         match item {
             Item::Audio(pcm, sentence) => match self.output_at(pcm.sample_rate) {
                 Ok(()) => {
@@ -152,15 +194,32 @@ impl Player {
                 }
             },
             Item::Failed(sentence) => self.pending.push_back((self.written, Some(sentence))),
+            Item::Sound(sound) => {
+                let rate = self.output.as_ref().map_or(SOUND_RATE, |o| o.sample_rate);
+                match self.output_at(rate) {
+                    Ok(()) => {
+                        let samples = cue(sound, rate);
+                        self.written += samples.len() as u64;
+                        self.backlog.extend(samples);
+                    }
+                    Err(e) => eprintln!("lucyd: can't play a sound: {e}"),
+                }
+            }
         }
         self.tick();
     }
 
     /// Opens the output stream at `sample_rate`, unless it is already open.
+    /// A stream at another rate is reopened once it has played everything.
     fn output_at(&mut self, sample_rate: u32) -> Result<(), String> {
+        let idle = self.backlog.is_empty() && self.consumed.load(Ordering::Acquire) >= self.written;
         if let Some(output) = &self.output {
             if output.sample_rate == sample_rate {
                 return Ok(());
+            }
+            if idle {
+                self.output = None;
+                return self.output_at(sample_rate);
             }
             return Err(format!(
                 "the voice changed rate from {} to {sample_rate} Hz",
@@ -212,6 +271,28 @@ impl Player {
             });
         }
     }
+}
+
+/// A cue as mono samples at `rate`: two short notes, rising to open a
+/// Session and falling, softer, to close one.
+fn cue(sound: Sound, rate: u32) -> Vec<f32> {
+    let (notes, gain): (&[(f32, f32)], f32) = match sound {
+        Sound::Start => (&[(660.0, 0.09), (880.0, 0.12)], 0.25),
+        Sound::Closing => (&[(880.0, 0.09), (587.0, 0.16)], 0.12),
+    };
+    let rate = rate as f32;
+    notes
+        .iter()
+        .flat_map(|&(hz, secs)| {
+            let len = (rate * secs) as usize;
+            (0..len).map(move |i| {
+                // A sine envelope, so each note starts and ends without a click.
+                let envelope = (std::f32::consts::PI * i as f32 / len as f32).sin();
+                let phase = 2.0 * std::f32::consts::PI * hz * i as f32 / rate;
+                gain * envelope * phase.sin()
+            })
+        })
+        .collect()
 }
 
 fn open_output(
