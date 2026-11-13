@@ -22,8 +22,12 @@ pub struct SpeechSegment {
 /// Speech-to-text. Blocking; lucyd calls it off the async runtime.
 pub trait Stt: Send + Sync {
     /// The words heard, or an empty string if no speech was recognised.
-    fn transcribe(&self, segment: SpeechSegment) -> String;
+    fn transcribe(&self, segment: SpeechSegment) -> Result<String, SttError>;
 }
+
+/// Why STT couldn't transcribe an utterance, for the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SttError(pub String);
 
 /// What the model streams back during a Turn.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +43,9 @@ pub enum ThinkingEvent {
     /// The Provider can't be used. The text says why and how to fix it,
     /// ready to speak; the Session says it and ends.
     Unavailable(String),
+    /// The model process ended while the SessionModel was still open. Lucy
+    /// opens a new one once and resends the Turn in progress.
+    Died,
 }
 
 /// A `rate_limit_event` from `claude`.
@@ -105,10 +112,12 @@ pub trait SessionModel: Send {
 
 /// A TTS Provider together with playback.
 pub trait Tts: Send + Sync {
-    /// Opens playback for a new Session. Each sentence sends one `Played` or
-    /// `Failed` on `events`, in order, and `Level` about 30 times a second
-    /// while it plays. Dropping the Speaker stops playback.
-    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker>;
+    /// Opens playback on `speaker` (`"default"` or a pinned node name) for a
+    /// new Session. Each sentence sends one `Played` or `Failed` on `events`,
+    /// in order, and `Level` about 30 times a second while it plays. If the
+    /// device goes away it sends `DeviceLost`. Dropping the Speaker stops
+    /// playback.
+    fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker>;
 }
 
 pub trait Speaker: Send {
@@ -126,6 +135,8 @@ pub enum SpeakerEvent {
     Failed(String),
     /// RMS of the samples just played, from 0.0 to 1.0.
     Level(f32),
+    /// The output device went away; the Session ends.
+    DeviceLost,
 }
 
 /// A desktop notification.
@@ -147,6 +158,9 @@ pub enum NotificationKind {
     /// A reply Lucy couldn't speak. It replaces nothing, so the End button
     /// stays.
     Reply,
+    /// Something went wrong, such as a lost device or Provider. It replaces
+    /// nothing, so the Session end that may follow doesn't hide it.
+    Problem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,8 +225,8 @@ impl Adapters {
 struct Inert;
 
 impl Stt for Inert {
-    fn transcribe(&self, _segment: SpeechSegment) -> String {
-        String::new()
+    fn transcribe(&self, _segment: SpeechSegment) -> Result<String, SttError> {
+        Ok(String::new())
     }
 }
 
@@ -255,7 +269,11 @@ impl SessionModel for InertSessionModel {
 }
 
 impl Tts for Inert {
-    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
+    fn open(
+        &self,
+        _speaker: &str,
+        events: mpsc::UnboundedSender<SpeakerEvent>,
+    ) -> Box<dyn Speaker> {
         Box::new(InertSpeaker { events })
     }
 }

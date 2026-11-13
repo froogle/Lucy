@@ -68,9 +68,11 @@ fn models_dir() -> PathBuf {
 
 fn transcribe(config: Config) -> String {
     let whisper = Whisper::load(&config, &models_dir()).expect("the model loads");
-    whisper.transcribe(SpeechSegment {
-        samples: recording::speech(),
-    })
+    whisper
+        .transcribe(SpeechSegment {
+            samples: recording::speech(),
+        })
+        .expect("Whisper transcribes")
 }
 
 #[test]
@@ -111,7 +113,7 @@ fn a_long_utterance_on_the_cpu_is_transcribed_to_the_end() {
         "longer than the CPU's 7.68 s context"
     );
 
-    let heard = whisper.transcribe(SpeechSegment { samples });
+    let heard = whisper.transcribe(SpeechSegment { samples }).unwrap();
 
     assert_eq!(heard.to_lowercase().matches("lucy").count(), 3, "{heard:?}");
 }
@@ -138,6 +140,6 @@ fn a_recording_played_into_the_microphone_is_heard() {
     mic.feed(harness::SILENCE, Duration::from_secs(1));
 
     let segment = speech.blocking_recv().expect("an utterance");
-    let heard = whisper.transcribe(segment);
+    let heard = whisper.transcribe(segment).unwrap();
     assert!(heard.to_lowercase().contains("lucy"), "{heard:?}");
 }

@@ -12,6 +12,8 @@ pub enum Input {
     Speech,
     /// STT finished the utterance it was given.
     Transcript(String),
+    /// STT failed on the utterance it was given.
+    TranscribeFailed,
     Thinking(ThinkingEvent),
     /// TTS finished playing one sentence.
     Played,
@@ -27,9 +29,13 @@ pub enum Output {
     Speak(String),
     /// Start the silence timer over.
     ResetSilenceTimer,
+    /// Something went wrong: flash the transient error state.
+    Error,
     /// End the Session.
     End,
 }
+
+const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
 
 /// An open Session.
 #[derive(Default)]
@@ -42,6 +48,10 @@ pub struct Session {
     sentence: String,
     /// `end_session` was called; end once back in Listening.
     closing: bool,
+    /// STT failed on the last utterance.
+    stt_failed: bool,
+    /// What started the current or last Turn.
+    turn: String,
 }
 
 impl Session {
@@ -55,6 +65,11 @@ impl Session {
         }
     }
 
+    /// What started the Turn in progress, if there is one.
+    pub fn pending_turn(&self) -> Option<&str> {
+        self.turn_in_progress.then_some(self.turn.as_str())
+    }
+
     /// The silence timer counts only while Lucy is listening, including while
     /// an utterance is being transcribed.
     pub fn silence_timer_runs(&self) -> bool {
@@ -65,6 +80,7 @@ impl Session {
         match input {
             Input::Opening(text) => {
                 self.turn_in_progress = true;
+                self.turn.clone_from(&text);
                 vec![Output::SendTurn(text)]
             }
             Input::Speech if self.state() == State::Listening && !self.transcribing => {
@@ -75,13 +91,24 @@ impl Session {
             Input::Speech => vec![],
             Input::Transcript(text) => {
                 self.transcribing = false;
+                self.stt_failed = false;
                 let text = text.trim();
                 if text.is_empty() {
                     // No speech recognised: keep listening, timer not reset.
                     return vec![];
                 }
                 self.turn_in_progress = true;
+                self.turn = text.to_owned();
                 vec![Output::SendTurn(text.to_owned())]
+            }
+            // Say sorry; a second failure in a row ends the Session.
+            Input::TranscribeFailed => {
+                self.transcribing = false;
+                self.closing |= std::mem::replace(&mut self.stt_failed, true);
+                self.sentence = DIDNT_CATCH_THAT.to_owned();
+                let mut outputs = vec![Output::Error];
+                outputs.extend(self.speak_sentence());
+                outputs
             }
             Input::Thinking(ThinkingEvent::Delta(text)) => {
                 self.sentence.push_str(&text);
@@ -96,14 +123,18 @@ impl Session {
                 outputs.extend(self.turn_finished());
                 outputs
             }
-            // Ticket 11 tells the user when they near their limit.
+            // A limit that has been hit arrives as `Unavailable`.
             Input::Thinking(ThinkingEvent::RateLimit(_)) => vec![],
+            // The runner opens the model again, or says it's lost.
+            Input::Thinking(ThinkingEvent::Died) => vec![],
             // Say why, instead of any reply in progress, then end.
             Input::Thinking(ThinkingEvent::Unavailable(reason)) => {
                 self.sentence = reason;
                 self.turn_in_progress = false;
                 self.closing = true;
-                self.speak_sentence().into_iter().collect()
+                let mut outputs = vec![Output::Error];
+                outputs.extend(self.speak_sentence());
+                outputs
             }
             Input::Played => {
                 self.queued = self.queued.saturating_sub(1);

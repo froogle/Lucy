@@ -5,7 +5,7 @@ use std::sync::mpsc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use super::{AudioIo, Error, SAMPLE_RATE};
+use super::{AudioIo, Direction, Error, SAMPLE_RATE};
 
 /// The sound card, through cpal.
 pub struct Cpal;
@@ -13,13 +13,15 @@ pub struct Cpal;
 impl AudioIo for Cpal {
     fn capture(&self, mic: &str, ring: rtrb::Producer<f32>) -> Result<Box<dyn Send>, Error> {
         // A cpal stream may not move between threads, so one thread owns it
-        // until the handle (the sender) is dropped.
+        // until the handle is dropped or the device goes away. Dropping the
+        // stream drops the ring.
         let (opened_tx, opened) = mpsc::channel();
         let (stop, stopped) = mpsc::channel::<()>();
+        let lost = stop.clone();
         let mic = mic.to_owned();
         std::thread::Builder::new()
             .name("lucyd-capture".to_owned())
-            .spawn(move || match open(&mic, ring) {
+            .spawn(move || match open(&mic, ring, lost) {
                 Ok(stream) => {
                     let _ = opened_tx.send(Ok(()));
                     let _ = stopped.recv();
@@ -33,11 +35,64 @@ impl AudioIo for Cpal {
         opened
             .recv()
             .map_err(|_| Error("capture stopped while opening".to_owned()))??;
-        Ok(Box::new(stop))
+        Ok(Box::new(StopOnDrop(stop)))
+    }
+
+    fn has_device(&self, direction: Direction, name: &str) -> bool {
+        let host = cpal::default_host();
+        let devices = match direction {
+            Direction::Input => host.input_devices(),
+            Direction::Output => host.output_devices(),
+        };
+        devices.is_ok_and(|mut devices| devices.any(|device| is_named(&device, name)))
     }
 }
 
-fn open(mic: &str, mut ring: rtrb::Producer<f32>) -> Result<cpal::Stream, Error> {
+/// Stops capture when dropped.
+struct StopOnDrop(mpsc::Sender<()>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+/// Whether a stream error means its device has gone away.
+pub(crate) fn is_device_lost(e: &cpal::Error) -> bool {
+    matches!(
+        e.kind(),
+        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::HostUnavailable
+    )
+}
+
+fn is_named(device: &cpal::Device, name: &str) -> bool {
+    device.id().is_ok_and(|id| id.id() == name)
+}
+
+/// The default output, or the one whose node name is pinned. A pinned
+/// speaker that isn't there falls back to the default.
+pub(crate) fn find_output(name: &str) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    if name != "default" {
+        let pinned = host
+            .output_devices()
+            .map_err(|e| format!("can't list speakers: {e}"))?
+            .find(|device| is_named(device, name));
+        match pinned {
+            Some(device) => return Ok(device),
+            None => eprintln!("lucyd: speaker {name} not found; using the default"),
+        }
+    }
+    host.default_output_device()
+        .ok_or_else(|| "there is no speaker".to_owned())
+}
+
+/// `lost` hears once the device goes away.
+fn open(
+    mic: &str,
+    mut ring: rtrb::Producer<f32>,
+    lost: mpsc::Sender<()>,
+) -> Result<cpal::Stream, Error> {
     let host = cpal::default_host();
     let device = find(&host, mic)?;
     // Mono 16 kHz whatever the device records; the sound server converts.
@@ -58,7 +113,12 @@ fn open(mic: &str, mut ring: rtrb::Producer<f32>) -> Result<cpal::Stream, Error>
                     }
                 }
             },
-            |e| eprintln!("lucyd: microphone error: {e}"),
+            move |e| {
+                eprintln!("lucyd: microphone error: {e}");
+                if is_device_lost(&e) {
+                    let _ = lost.send(());
+                }
+            },
             None,
         )
         .map_err(|e| Error(format!("can't open the microphone: {e}")))?;
@@ -75,7 +135,7 @@ fn find(host: &cpal::Host, mic: &str) -> Result<cpal::Device, Error> {
         let pinned = host
             .input_devices()
             .map_err(|e| Error(format!("can't list microphones: {e}")))?
-            .find(|device| device.id().is_ok_and(|id| id.id() == mic));
+            .find(|device| is_named(device, mic));
         match pinned {
             Some(device) => return Ok(device),
             None => eprintln!("lucyd: microphone {mic} not found; using the default"),

@@ -4,13 +4,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lucy_config::{Config, Tier};
+use lucy_config::{Config, Provider, Tier};
 use tokio::sync::mpsc;
 
 use super::Runner;
-use crate::adapters::{InertSessionModel, SessionModel, ThinkingEvent};
+use crate::adapters::{InertSessionModel, Relay, SessionModel, ThinkingEvent};
+use crate::audio::Devices;
 use crate::desktop::Desktop;
 use crate::mcp::{Caller, Token};
+use crate::notifications;
 use crate::persona::{Loaded, Persona};
 use crate::plugins::SessionTools;
 
@@ -30,6 +32,16 @@ pub struct Started {
     pub settings: Config,
     /// The user hasn't been introduced to Lucy yet.
     pub first_run: bool,
+    /// What the model was opened with, if it could be.
+    pub opened: Option<Opened>,
+    pub devices: Devices,
+}
+
+/// What a Session's model was opened with, to open it again if it dies.
+pub struct Opened {
+    pub provider: Provider,
+    pub relay: Relay,
+    pub instructions: String,
 }
 
 impl Runner {
@@ -48,8 +60,12 @@ impl Runner {
         });
         let config = lucy_config::load(&self.files.config_path);
         let settings = config.as_ref().cloned().unwrap_or_default();
-        if let Some(hearing) = &mut self.adapters.hearing {
-            hearing.configure(&settings.audio, &settings.endpointing);
+        let devices = match &mut self.adapters.hearing {
+            Some(hearing) => hearing.configure(&settings.audio, &settings.endpointing),
+            None => Devices::as_configured(&settings.audio),
+        };
+        if !devices.missing.is_empty() {
+            self.notify(notifications::devices_missing(&devices.missing));
         }
         let desktop = Desktop {
             launcher: self.adapters.launcher.clone(),
@@ -70,15 +86,20 @@ impl Runner {
                 e.to_string().lines().next().unwrap_or_default()
             )),
         };
-        let model = match provider {
-            Ok(provider) => self
-                .adapters
-                .thinking
-                .open(provider, events, relay, instructions),
+        let (model, opened) = match provider {
+            Ok(provider) => {
+                let opened = Opened {
+                    provider: provider.clone(),
+                    relay,
+                    instructions,
+                };
+                (self.open_model(&opened, events), Some(opened))
+            }
             Err(reason) => {
                 eprintln!("lucyd: {reason}");
                 let _ = events.send(ThinkingEvent::Unavailable(reason));
-                Box::new(InertSessionModel::new(events))
+                let model: Box<dyn SessionModel> = Box::new(InertSessionModel::new(events));
+                (model, None)
             }
         };
         Started {
@@ -86,6 +107,22 @@ impl Runner {
             token,
             settings,
             first_run: persona.first_run,
+            opened,
+            devices,
         }
+    }
+
+    /// Opens the model as `opened` says, streaming into `events`.
+    pub(super) fn open_model(
+        &self,
+        opened: &Opened,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+    ) -> Box<dyn SessionModel> {
+        self.adapters.thinking.open(
+            &opened.provider,
+            events,
+            opened.relay.clone(),
+            opened.instructions.clone(),
+        )
     }
 }

@@ -11,7 +11,11 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::{Adapters, SpeakerEvent, ThinkingEvent};
+use crate::adapters::{
+    Adapters, Notification, RateLimitStatus, SpeakerEvent, SttError, ThinkingEvent,
+};
+use crate::audio::{Direction, Hearing};
+use crate::limits;
 use crate::mcp::Relays;
 use crate::notifications;
 use crate::persona;
@@ -123,10 +127,17 @@ impl Runner {
             token: _token,
             settings,
             first_run,
-        } = self.start(plugin_tools, events_tx);
+            opened,
+            devices,
+        } = self.start(plugin_tools, events_tx.clone());
+        let provider_name = opened.as_ref().map_or("the Thinking Provider", |opened| {
+            opened.provider.kind.name()
+        });
+        // The model has died and been opened again since the last Turn ended.
+        let mut respawned = false;
         let silence_timeout = settings.session.silence_timeout_secs;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
-        let mut speaker = self.adapters.tts.open(speaker_tx);
+        let mut speaker = self.adapters.tts.open(&devices.speaker, speaker_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
         let mut session = Session::default();
         let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
@@ -174,7 +185,13 @@ impl Runner {
                         continue;
                     }
                 },
-                Some(text) = transcripts.recv() => Input::Transcript(text),
+                Some(transcript) = transcripts.recv() => match transcript {
+                    Ok(text) => Input::Transcript(text),
+                    Err(SttError(e)) => {
+                        eprintln!("lucyd: {e}");
+                        Input::TranscribeFailed
+                    }
+                },
                 Some(event) = events.recv() => Input::Thinking(event),
                 Some(event) = speaker_events.recv() => match event {
                     SpeakerEvent::Played => Input::Played,
@@ -187,13 +204,50 @@ impl Runner {
                         self.buses.levels.publish(rms);
                         continue;
                     }
+                    SpeakerEvent::DeviceLost => {
+                        self.end_on_lost_device(Direction::Output, id);
+                        return;
+                    }
                 },
+                () = mic_lost(&mut self.adapters.hearing) => {
+                    self.end_on_lost_device(Direction::Input, id);
+                    return;
+                }
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
                     self.publish(State::Idle, None);
                     return;
                 }
                 }
             };
+            let input = match input {
+                Input::Thinking(ThinkingEvent::Died) => match opened.as_ref() {
+                    Some(opened) if !respawned => {
+                        eprintln!("lucyd: the model process died; opening it again");
+                        respawned = true;
+                        model = self.open_model(opened, events_tx.clone());
+                        if let Some(turn) = session.pending_turn() {
+                            model.send_turn(turn.to_owned());
+                        }
+                        continue;
+                    }
+                    _ => {
+                        eprintln!("lucyd: the model process died again");
+                        self.notify(notifications::thinking_lost(provider_name));
+                        let lost = format!("I've lost my connection to {provider_name}.");
+                        Input::Thinking(ThinkingEvent::Unavailable(lost))
+                    }
+                },
+                Input::Thinking(ThinkingEvent::RateLimit(limit))
+                    if limit.status == RateLimitStatus::Rejected =>
+                {
+                    let said = limits::spoken(&limit, provider_name);
+                    Input::Thinking(ThinkingEvent::Unavailable(said))
+                }
+                input => input,
+            };
+            if matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
+                respawned = false;
+            }
             if introducing && matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
                 introducing = false;
                 if let Err(e) = self.files.persona.introduced() {
@@ -223,6 +277,7 @@ impl Runner {
                     Output::SendTurn(text) => model.send_turn(text),
                     Output::Speak(sentence) => speaker.speak(sentence),
                     Output::ResetSilenceTimer => silence.reset(),
+                    Output::Error => self.publish(State::Error, Some(id)),
                     Output::End => {
                         self.publish(State::Idle, None);
                         return;
@@ -234,11 +289,32 @@ impl Runner {
         }
     }
 
+    /// Ends the Session because a device went away.
+    fn end_on_lost_device(&self, direction: Direction, id: SessionId) {
+        self.notify(notifications::device_lost(direction));
+        self.publish(State::Error, Some(id));
+        self.publish(State::Idle, None);
+    }
+
+    /// Shows a notification that offers no action.
+    fn notify(&self, notification: Notification) {
+        let (actions, _) = mpsc::unbounded_channel();
+        self.adapters.notifier.notify(notification, actions);
+    }
+
     fn publish(&self, state: State, session_id: Option<SessionId>) {
         self.buses.status.publish(Status {
             state,
             session_id: session_id.map(|id| id.to_string()),
         });
+    }
+}
+
+/// Resolves once the microphone has gone away, if Lucy hears through one.
+async fn mic_lost(hearing: &mut Option<Hearing>) {
+    match hearing {
+        Some(hearing) => hearing.lost().await,
+        None => std::future::pending().await,
     }
 }
 

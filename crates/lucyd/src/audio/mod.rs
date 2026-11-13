@@ -2,15 +2,16 @@
 //! the VAD's endpointing, which together turn the microphone into
 //! utterances for STT.
 
-mod cpal;
+pub(crate) mod cpal;
 mod endpoint;
 mod silero;
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use lucy_config::{Audio, Endpointing};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 pub use self::cpal::Cpal;
 use crate::adapters::SpeechSegment;
@@ -34,8 +35,51 @@ const POLL: Duration = Duration::from_millis(5);
 pub trait AudioIo {
     /// Starts capturing `mic` (`"default"` or a pinned node name) as 16 kHz
     /// mono, pushing samples into `ring` without blocking. Capture runs until
-    /// the returned handle is dropped.
+    /// the returned handle is dropped. If the device goes away, capture
+    /// stops and drops `ring`.
     fn capture(&self, mic: &str, ring: rtrb::Producer<f32>) -> Result<Box<dyn Send>, Error>;
+
+    /// Whether a device with the node name `name` is there now.
+    fn has_device(&self, direction: Direction, name: &str) -> bool;
+}
+
+/// Which way a device's audio goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// A microphone.
+    Input,
+    /// A speaker.
+    Output,
+}
+
+/// The devices a Session uses, resolved by name at its start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Devices {
+    /// Where Lucy speaks: `"default"` or a pinned node name.
+    pub speaker: String,
+    /// The pinned devices that aren't there, so the default stands in.
+    pub missing: Vec<(Direction, String)>,
+}
+
+impl Devices {
+    /// The devices `audio` names, taken as they are.
+    pub fn as_configured(audio: &Audio) -> Devices {
+        Devices {
+            speaker: audio.speaker.clone(),
+            missing: vec![],
+        }
+    }
+}
+
+const DEFAULT: &str = "default";
+
+/// `name`, or the default if it is pinned and not there.
+fn resolve(io: &dyn AudioIo, direction: Direction, name: &str) -> Result<String, String> {
+    if name == DEFAULT || io.has_device(direction, name) {
+        Ok(name.to_owned())
+    } else {
+        Err(name.to_owned())
+    }
 }
 
 /// A voice-activity detector.
@@ -68,20 +112,29 @@ pub fn listen(
     vad: Box<dyn Vad>,
     endpointing: &Endpointing,
 ) -> Result<(Hearing, mpsc::UnboundedReceiver<SpeechSegment>), Error> {
+    let mic = resolve(io.as_ref(), Direction::Input, &audio.mic).unwrap_or_else(|missing| {
+        eprintln!("lucyd: microphone {missing} not found; using the default");
+        DEFAULT.to_owned()
+    });
     let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
-    let capture = io.capture(&audio.mic, producer)?;
+    let capture = io.capture(&mic, producer)?;
     let (speech, speech_rx) = mpsc::unbounded_channel();
     let (changes, changes_rx) = std::sync::mpsc::channel();
+    let (lost, lost_rx) = watch::channel(false);
+    let lost = Arc::new(lost);
     let endpointer = Endpointer::new(vad, endpointing);
+    let dsp_lost = lost.clone();
     std::thread::Builder::new()
         .name("lucyd-dsp".to_owned())
-        .spawn(move || dsp(capture, consumer, endpointer, changes_rx, speech))
+        .spawn(move || dsp(capture, consumer, endpointer, changes_rx, speech, &dsp_lost))
         .map_err(|e| Error(format!("can't start the DSP thread: {e}")))?;
     let hearing = Hearing {
         io,
-        audio: audio.clone(),
+        mic,
         endpointing: endpointing.clone(),
         changes,
+        lost,
+        lost_rx,
     };
     Ok((hearing, speech_rx))
 }
@@ -89,9 +142,13 @@ pub fn listen(
 /// Changes the running DSP thread's microphone and endpointing.
 pub struct Hearing {
     io: Box<dyn AudioIo + Send>,
-    audio: Audio,
+    /// The microphone open now.
+    mic: String,
     endpointing: Endpointing,
     changes: std::sync::mpsc::Sender<Change>,
+    /// True once the open microphone has gone away.
+    lost: Arc<watch::Sender<bool>>,
+    lost_rx: watch::Receiver<bool>,
 }
 
 /// A change the DSP thread picks up before its next frame.
@@ -101,25 +158,42 @@ enum Change {
 }
 
 impl Hearing {
-    /// Applies `[audio]` and `[endpointing]` as read at a Session start.
-    /// A microphone that can't be opened leaves the current one in use.
-    pub fn configure(&mut self, audio: &Audio, endpointing: &Endpointing) {
-        // Ticket 11 re-resolves the devices and notifies about a missing
-        // pin here.
-        if *audio != self.audio {
+    /// Applies `[audio]` and `[endpointing]` as read at a Session start,
+    /// resolving the devices by name. A pinned device that isn't there gives
+    /// way to the default, and the pin stays for the next Session. A
+    /// microphone that can't be opened leaves the current one in use.
+    pub fn configure(&mut self, audio: &Audio, endpointing: &Endpointing) -> Devices {
+        let mut missing = vec![];
+        let mut pick = |direction, name| {
+            resolve(self.io.as_ref(), direction, name).unwrap_or_else(|name| {
+                missing.push((direction, name));
+                DEFAULT.to_owned()
+            })
+        };
+        let mic = pick(Direction::Input, &audio.mic);
+        let speaker = pick(Direction::Output, &audio.speaker);
+        if mic != self.mic || *self.lost.borrow() {
             let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
-            match self.io.capture(&audio.mic, producer) {
+            match self.io.capture(&mic, producer) {
                 Ok(capture) => {
                     let _ = self.changes.send(Change::Mic(capture, consumer));
-                    self.audio = audio.clone();
+                    self.lost.send_replace(false);
+                    self.mic = mic;
                 }
-                Err(e) => eprintln!("lucyd: can't open the microphone {}: {e}", audio.mic),
+                Err(e) => eprintln!("lucyd: can't open the microphone {mic}: {e}"),
             }
         }
         if *endpointing != self.endpointing {
             let _ = self.changes.send(Change::Endpointing(endpointing.clone()));
             self.endpointing = endpointing.clone();
         }
+        Devices { speaker, missing }
+    }
+
+    /// Resolves once the open microphone has gone away.
+    pub async fn lost(&mut self) {
+        // The sender lives as long as `self`.
+        let _ = self.lost_rx.wait_for(|lost| *lost).await;
     }
 }
 
@@ -131,14 +205,25 @@ fn dsp(
     mut endpointer: Endpointer,
     changes: std::sync::mpsc::Receiver<Change>,
     speech: mpsc::UnboundedSender<SpeechSegment>,
+    lost: &watch::Sender<bool>,
 ) {
     let mut frame = [0.0; FRAME_LEN];
+    // The open microphone has gone away and that has been reported.
+    let mut reported = false;
     while !speech.is_closed() {
         for change in changes.try_iter() {
             match change {
-                Change::Mic(capture, consumer) => (_capture, mic) = (capture, consumer),
+                Change::Mic(capture, consumer) => {
+                    (_capture, mic) = (capture, consumer);
+                    reported = false;
+                }
                 Change::Endpointing(config) => endpointer.configure(&config),
             }
+        }
+        if mic.is_abandoned() && mic.slots() < FRAME_LEN && !reported {
+            eprintln!("lucyd: the microphone has gone away");
+            lost.send_replace(true);
+            reported = true;
         }
         if mic.slots() < FRAME_LEN {
             std::thread::sleep(POLL);

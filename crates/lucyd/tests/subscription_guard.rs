@@ -72,6 +72,7 @@ fn refused(lucyd: &Harness) -> String {
     events.start_session().unwrap();
     assert_eq!(next_state(&mut events).state, State::Listening);
     let said = lucyd.tts.next_sentence();
+    assert_eq!(next_state(&mut events).state, State::Error);
     assert_eq!(next_state(&mut events).state, State::Speaking);
     lucyd.tts.finish_playing();
     assert_eq!(next_state(&mut events).state, State::Idle);
