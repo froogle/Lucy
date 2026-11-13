@@ -180,9 +180,13 @@ pub enum Sound {
 pub enum SpeakerEvent {
     /// The oldest queued sentence finished playing.
     Played,
-    /// The oldest queued sentence couldn't be synthesised or played. Carries
-    /// its text.
-    Failed(String),
+    /// The oldest queued sentence couldn't be synthesised or played.
+    Failed {
+        /// Its text.
+        sentence: String,
+        /// Why, e.g. "Piper isn't installed".
+        reason: String,
+    },
     /// RMS of the samples just played, from 0.0 to 1.0.
     Level(f32),
     /// The output device went away; the Session ends.

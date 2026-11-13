@@ -43,6 +43,12 @@ pub mod error_code {
     pub const UNKNOWN_PLUGIN: i64 = -32007;
     /// `approvals.revoke` named a Plugin that has no Approval.
     pub const NOT_APPROVED: i64 = -32008;
+    /// `test.voice_preview` while another Voice preview plays.
+    pub const BUSY: i64 = -32009;
+    /// A Session opened partway through the Voice preview and cut it short.
+    pub const INTERRUPTED: i64 = -32010;
+    /// The Voice preview couldn't be spoken. The message says why.
+    pub const TTS_FAILED: i64 = -32011;
 }
 
 /// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
@@ -276,6 +282,17 @@ pub struct ApprovalInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RevokeApproval {
     pub plugin: String,
+}
+
+/// Params of `test.voice_preview`: Lucy speaks `text` in her running voice
+/// on the configured speaker, outside any Session, between the Start and
+/// Closing sounds. It replies once playback has finished. Refused while a
+/// Session is open or another Voice preview plays; a Session that opens
+/// cuts it short.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VoicePreview {
+    /// The sentence to say. Not empty.
+    pub text: String,
 }
 
 /// Params of the `plugins.changed` event: something in `plugins.list` or

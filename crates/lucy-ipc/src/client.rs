@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use crate::{
     ApprovalsList, Event, Hello, HelloResult, PluginsList, ProviderCheck, ProviderCheckResult,
     ProvidersStatus, RevokeApproval, Role, SessionStarted, SetPluginEnabled, Status, Subscribe,
-    Topic, PROTOCOL,
+    Topic, VoicePreview, PROTOCOL,
 };
 
 pub struct Client {
@@ -114,6 +114,15 @@ impl Client {
             plugin: plugin.to_owned(),
         };
         let _: Value = self.call("approvals.revoke", json!(params))?;
+        Ok(())
+    }
+
+    /// Has Lucy say `text` outside any Session, and waits until she has.
+    pub fn voice_preview(&mut self, text: &str) -> Result<(), Error> {
+        let params = VoicePreview {
+            text: text.to_owned(),
+        };
+        let _: Value = self.call("test.voice_preview", json!(params))?;
         Ok(())
     }
 
