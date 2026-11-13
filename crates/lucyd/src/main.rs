@@ -38,7 +38,8 @@ fn main() -> ExitCode {
             .join("voices"),
         lucyd::piper::DEFAULT_VOICE,
     ));
-    adapters.notifier = Box::new(lucyd::notify::NotifySend);
+    adapters.notifier =
+        std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
     adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher::new(
         config.desktop.launcher.clone(),
     ));

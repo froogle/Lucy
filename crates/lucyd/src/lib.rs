@@ -8,7 +8,8 @@ pub mod desktop_entries;
 mod ipc;
 pub mod launcher;
 mod mcp;
-pub mod notify;
+mod notifications;
+pub mod notify_send;
 mod persona;
 pub mod piper;
 mod playback;
@@ -75,6 +76,9 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         applications: adapters.applications.clone(),
     };
     let (sessions, commands) = mpsc::unbounded_channel();
+    let (indicators, fallback) =
+        notifications::fallback(&status, adapters.notifier.clone(), sessions.clone());
+    runtime.spawn(fallback);
     runtime.spawn(
         runner::Runner::new(
             commands,
@@ -95,7 +99,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         sessions.clone(),
         desktop,
     ));
-    runtime.spawn(ipc::serve(listener, status, levels, sessions));
+    runtime.spawn(ipc::serve(listener, status, levels, indicators, sessions));
 
     Ok(Daemon {
         socket_path,

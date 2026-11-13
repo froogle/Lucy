@@ -48,6 +48,8 @@ fn playback_level_goes_only_to_level_subscribers() {
 #[test]
 fn when_tts_fails_the_reply_becomes_notification_text_and_the_session_continues() {
     let lucyd = Harness::start();
+    // An Indicator keeps the notification fallback quiet.
+    let _indicator = lucyd.indicator("lucy-indicator");
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
@@ -60,8 +62,11 @@ fn when_tts_fails_the_reply_becomes_notification_text_and_the_session_continues(
     lucyd.thinking.delta(" Time for tea");
     lucyd.thinking.turn_end();
 
-    assert_eq!(lucyd.notifier.next_notification(), "It's three o'clock.");
-    assert_eq!(lucyd.notifier.next_notification(), "Time for tea");
+    assert_eq!(
+        lucyd.notifier.next_notification().body,
+        "It's three o'clock."
+    );
+    assert_eq!(lucyd.notifier.next_notification().body, "Time for tea");
     while next_state(&mut events).state != State::Listening {}
 
     // The Session carries on with the next Turn.

@@ -1,8 +1,8 @@
 //! The public socket: newline-delimited JSON-RPC 2.0 (ADR 0006).
 
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, LoudnessEvent, SessionStarted, Status, Subscribe, Topic,
-    PROTOCOL,
+    error_code, Event, Hello, HelloResult, LoudnessEvent, Role, SessionStarted, Status, Subscribe,
+    Topic, PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -10,6 +10,7 @@ use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use crate::notifications::{IndicatorClaim, Indicators};
 use crate::runner::Command;
 use crate::status::{LoudnessBus, StatusBus};
 
@@ -17,6 +18,7 @@ pub async fn serve(
     listener: UnixListener,
     status: StatusBus,
     levels: LoudnessBus,
+    indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
 ) {
     loop {
@@ -26,6 +28,7 @@ pub async fn serve(
                     stream,
                     status.clone(),
                     levels.clone(),
+                    indicators.clone(),
                     sessions.clone(),
                 ));
             }
@@ -38,8 +41,11 @@ struct Connection {
     writer: OwnedWriteHalf,
     status: StatusBus,
     levels: LoudnessBus,
+    indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     greeted: bool,
+    /// Held while this client holds the `indicator` role.
+    indicator: Option<IndicatorClaim>,
     state_subscribed: bool,
     /// Every state change since subscribing, once subscribed.
     state_events: Option<mpsc::UnboundedReceiver<Status>>,
@@ -51,6 +57,7 @@ async fn connection(
     stream: UnixStream,
     status: StatusBus,
     levels: LoudnessBus,
+    indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
 ) {
     let (reader, writer) = stream.into_split();
@@ -59,8 +66,10 @@ async fn connection(
         writer,
         status,
         levels,
+        indicators,
         sessions,
         greeted: false,
+        indicator: None,
         state_subscribed: false,
         state_events: None,
         level_events: None,
@@ -222,6 +231,10 @@ impl Connection {
             ));
         }
         self.greeted = true;
+        self.indicator = match hello.role {
+            Some(Role::Indicator) => Some(self.indicators.claim()),
+            None => None,
+        };
         Ok(json!(HelloResult {
             protocol: PROTOCOL,
             server: format!("lucyd {}", env!("CARGO_PKG_VERSION")),

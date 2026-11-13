@@ -73,6 +73,8 @@ fn status() -> Result<(), lucy_ipc::Error> {
         State::Listening => "Listening",
         State::Thinking => "Thinking",
         State::Speaking => "Speaking",
+        State::Confirming => "Confirming",
+        State::Error => "Error",
     };
     println!("State: {state}");
     if let Some(session_id) = status.session_id {

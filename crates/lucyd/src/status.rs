@@ -11,7 +11,8 @@ pub struct StatusBus(Arc<Mutex<Inner>>);
 
 struct Inner {
     status: Status,
-    subscribers: Vec<mpsc::UnboundedSender<Status>>,
+    /// Each returns false once its subscriber has gone.
+    subscribers: Vec<Box<dyn Fn(Status) -> bool + Send>>,
 }
 
 impl StatusBus {
@@ -32,9 +33,16 @@ impl StatusBus {
     /// The current status, and a queue of every change after it.
     pub fn subscribe(&self) -> (Status, mpsc::UnboundedReceiver<Status>) {
         let (tx, rx) = mpsc::unbounded_channel();
+        let status = self.subscribe_with(move |status| tx.send(status).is_ok());
+        (status, rx)
+    }
+
+    /// The current status; `deliver` is then called with every change, in
+    /// order, until it returns false.
+    pub fn subscribe_with(&self, deliver: impl Fn(Status) -> bool + Send + 'static) -> Status {
         let mut inner = self.0.lock().unwrap();
-        inner.subscribers.push(tx);
-        (inner.status.clone(), rx)
+        inner.subscribers.push(Box::new(deliver));
+        inner.status.clone()
     }
 
     /// Sets the status and, if it changed, tells every subscriber.
@@ -44,9 +52,7 @@ impl StatusBus {
             return;
         }
         inner.status = status.clone();
-        inner
-            .subscribers
-            .retain(|subscriber| subscriber.send(status.clone()).is_ok());
+        inner.subscribers.retain(|deliver| deliver(status.clone()));
     }
 }
 

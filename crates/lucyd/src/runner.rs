@@ -9,7 +9,7 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::{Adapters, SpeakerEvent};
+use crate::adapters::{Adapters, Notification, SpeakerEvent};
 use crate::mcp::{Caller, Relays};
 use crate::persona::{self, Loaded, Persona};
 use crate::plugins;
@@ -180,7 +180,14 @@ impl Runner {
                     SpeakerEvent::Played => Input::Played,
                     // Lucy can't say it, so she shows it.
                     SpeakerEvent::Failed(sentence) => {
-                        self.adapters.notifier.notify(&sentence);
+                        let notification = Notification {
+                            summary: "Lucy".into(),
+                            body: sentence,
+                            action: None,
+                        };
+                        // It offers no action, so nothing listens for one.
+                        let (actions, _) = mpsc::unbounded_channel();
+                        self.adapters.notifier.notify(notification, actions);
                         Input::Played
                     }
                     SpeakerEvent::Level(rms) => {

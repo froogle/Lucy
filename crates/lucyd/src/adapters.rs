@@ -111,9 +111,30 @@ pub enum SpeakerEvent {
     Level(f32),
 }
 
-/// Desktop notifications.
+/// A desktop notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    pub summary: String,
+    pub body: String,
+    /// An action button, if the notification offers one.
+    pub action: Option<NotificationAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationAction {
+    /// "End": ends the Session.
+    EndSession,
+}
+
+/// Desktop notifications (`org.freedesktop.Notifications`).
 pub trait Notifier: Send + Sync {
-    fn notify(&self, body: &str);
+    /// Shows `notification` without blocking. If the user picks its action,
+    /// the action is sent on `actions`.
+    fn notify(
+        &self,
+        notification: Notification,
+        actions: mpsc::UnboundedSender<NotificationAction>,
+    );
 }
 
 /// Starts things on the user's desktop. Blocking; lucyd calls it off the
@@ -131,7 +152,7 @@ pub struct Adapters {
     pub stt: Arc<dyn Stt>,
     pub thinking: Box<dyn Thinking>,
     pub tts: Box<dyn Tts>,
-    pub notifier: Box<dyn Notifier>,
+    pub notifier: Arc<dyn Notifier>,
     pub launcher: Arc<dyn Launcher>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
@@ -146,7 +167,7 @@ impl Adapters {
             stt: Arc::new(Inert),
             thinking: Box::new(Inert),
             tts: Box::new(Inert),
-            notifier: Box::new(Inert),
+            notifier: Arc::new(Inert),
             launcher: Arc::new(Inert),
             applications: vec![],
         }
@@ -197,7 +218,12 @@ impl Speaker for InertSpeaker {
 }
 
 impl Notifier for Inert {
-    fn notify(&self, _body: &str) {}
+    fn notify(
+        &self,
+        _notification: Notification,
+        _actions: mpsc::UnboundedSender<NotificationAction>,
+    ) {
+    }
 }
 
 impl Launcher for Inert {
