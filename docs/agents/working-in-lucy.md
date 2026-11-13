@@ -31,6 +31,10 @@ New methods, events and enum variants go in `crates/lucy-ipc/src/schema.rs`. Reg
 
 Automated tests use the fake `claude` and the recorded fixtures in `crates/lucyd/tests/fixtures/claude/`. The fake reads its `--version`, `auth status` and turn overrides from its working directory; its header says how. `Harness::with_thinking` runs lucyd with the real adapter against it (`tests/subscription_guard.rs`). The live check is `cargo test -p lucyd --test claude -- --ignored`, and it spends the user's subscription, so run it only when a ticket needs a real round trip.
 
+## Real `codex`
+
+`fixtures/codex/fake-codex` stands in for `codex app-server`. Its turns are written from the protocol's generated types (`codex app-server generate-ts`), not recorded. Its header says what it reads from its working directory. `tests/codex_session.rs` runs Sessions through it. `codex app-server --print-startup-config` checks `-c` settings without a model call. The live check is `cargo test -p lucyd --test codex -- --ignored`. It spends the user's ChatGPT subscription.
+
 ## Real Piper
 
 lucyd runs `python -m piper.http_server`, which needs the `http` extra: install with `uv tool install 'piper-tts[http]'`. Clear `PYTHONPATH` when running Piper by hand (`env -u PYTHONPATH ...`): a `PYTHONPATH` pointing at the system site-packages loads the wrong numpy and Piper fails to import. Voices live in `$XDG_DATA_HOME/lucy/voices/` (`en_GB-cori-medium.onnx`, its `.onnx.json` and `MODEL_CARD`); `piper -m <voice>.onnx -f out.wav` synthesises a line to check.
