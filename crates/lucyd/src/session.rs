@@ -239,6 +239,8 @@ impl Session {
                 self.turn_in_progress = true;
                 self.heard.clear();
                 self.turn = match self.interrupted.take() {
+                    // Cut off before anything played.
+                    Some(heard) if heard.is_empty() => format!("[You were interrupted]\n{text}"),
                     Some(heard) => {
                         format!("[You were interrupted; the user heard up to: \"{heard}\"]\n{text}")
                     }
@@ -450,6 +452,21 @@ mod tests {
             [Output::SendTurn(
                 "[You were interrupted; the user heard up to: \"One.\"]\ngo on".into()
             )]
+        );
+    }
+
+    #[test]
+    fn a_barge_in_before_anything_played_says_only_that_lucy_was_interrupted() {
+        let mut session = Session::new(yes_phrases());
+        session.barge_in_by_speech(true);
+        session.handle(Input::Speech);
+        session.handle(Input::Transcript("count".into()));
+        session.handle(Input::Thinking(ThinkingEvent::Delta("One".into())));
+        session.handle(Input::Speech);
+
+        assert_eq!(
+            session.handle(Input::Transcript("stop".into())),
+            [Output::SendTurn("[You were interrupted]\nstop".into())]
         );
     }
 
