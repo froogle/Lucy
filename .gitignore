@@ -10,3 +10,6 @@ target/
 
 # Prototypes are throwaway, often nested repos
 .scratch/**/prototypes/
+
+# Agent worktrees
+.claude/worktrees/

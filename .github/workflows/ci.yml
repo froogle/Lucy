@@ -16,16 +16,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      # Includes the JSON Schema drift check (crates/lucy-ipc/tests/schema.rs).
-      - run: cargo test --locked --workspace
-      - run: scripts/check-client-deps.sh
-
-  licences:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: taiki-e/install-action@v2
         with:
-          command: check licenses
+          tool: cargo-deny
+      # The gates live in one place, shared with the pre-commit hook.
+      - run: scripts/check.sh
