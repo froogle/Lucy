@@ -5,7 +5,7 @@ use std::sync::mpsc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use super::{AudioIo, Direction, Error, SAMPLE_RATE};
+use super::{AudioIo, Direction, Error, DEFAULT, SAMPLE_RATE};
 
 /// The sound card, through cpal.
 pub struct Cpal;
@@ -69,32 +69,13 @@ fn is_named(device: &cpal::Device, name: &str) -> bool {
     device.id().is_ok_and(|id| id.id() == name)
 }
 
-/// The default output, or the one whose node name is pinned. A pinned
-/// speaker that isn't there falls back to the default.
-pub(crate) fn find_output(name: &str) -> Result<cpal::Device, String> {
-    let host = cpal::default_host();
-    if name != "default" {
-        let pinned = host
-            .output_devices()
-            .map_err(|e| format!("can't list speakers: {e}"))?
-            .find(|device| is_named(device, name));
-        match pinned {
-            Some(device) => return Ok(device),
-            None => eprintln!("lucyd: speaker {name} not found; using the default"),
-        }
-    }
-    host.default_output_device()
-        .ok_or_else(|| "there is no speaker".to_owned())
-}
-
 /// `lost` hears once the device goes away.
 fn open(
     mic: &str,
     mut ring: rtrb::Producer<f32>,
     lost: mpsc::Sender<()>,
 ) -> Result<cpal::Stream, Error> {
-    let host = cpal::default_host();
-    let device = find(&host, mic)?;
+    let device = find(Direction::Input, mic).map_err(Error)?;
     // Mono 16 kHz whatever the device records; the sound server converts.
     let config = cpal::StreamConfig {
         channels: 1,
@@ -128,19 +109,30 @@ fn open(
     Ok(stream)
 }
 
-/// The default input, or the one whose node name is pinned. A pinned
-/// microphone that isn't there falls back to the default.
-fn find(host: &cpal::Host, mic: &str) -> Result<cpal::Device, Error> {
-    if mic != "default" {
-        let pinned = host
-            .input_devices()
-            .map_err(|e| Error(format!("can't list microphones: {e}")))?
-            .find(|device| is_named(device, mic));
+/// The default device for `direction`, or the one whose node name is
+/// pinned. A pinned device that isn't there falls back to the default.
+pub(crate) fn find(direction: Direction, name: &str) -> Result<cpal::Device, String> {
+    let host = cpal::default_host();
+    let (what, devices, default) = match direction {
+        Direction::Input => (
+            "microphone",
+            host.input_devices(),
+            host.default_input_device(),
+        ),
+        Direction::Output => (
+            "speaker",
+            host.output_devices(),
+            host.default_output_device(),
+        ),
+    };
+    if name != DEFAULT {
+        let pinned = devices
+            .map_err(|e| format!("can't list {what}s: {e}"))?
+            .find(|device| is_named(device, name));
         match pinned {
             Some(device) => return Ok(device),
-            None => eprintln!("lucyd: microphone {mic} not found; using the default"),
+            None => eprintln!("lucyd: {what} {name} not found; using the default"),
         }
     }
-    host.default_input_device()
-        .ok_or_else(|| Error("there is no microphone".to_owned()))
+    default.ok_or_else(|| format!("there is no {what}"))
 }

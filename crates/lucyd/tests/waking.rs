@@ -39,7 +39,7 @@ fn the_wake_word_and_a_request_in_one_breath_send_only_the_request() {
 
     assert_eq!(next_state(&mut events).state, State::Listening);
     assert_eq!(lucyd.thinking.next_turn(), "what's the time?");
-    // The whole utterance, wake phrase and pre-roll included, reached STT.
+    // The whole utterance, Wake word and pre-roll included, reached STT.
     let segments = lucyd.stt.segments();
     assert_eq!(segments.len(), 1);
     let expected = ms(500 + 512 + 1024 + 700);
@@ -89,7 +89,7 @@ fn ending_a_session_on_request_plays_no_closing_sound() {
 }
 
 #[test]
-fn the_wake_word_while_listening_is_ordinary_speech_with_the_phrase_stripped() {
+fn the_wake_word_while_listening_is_ordinary_speech_with_the_wake_word_stripped() {
     let lucyd = Harness::with_config(HEY_LUCY);
     let mut events = lucyd.state_client();
     lucyd.wake();
@@ -108,7 +108,7 @@ fn the_wake_word_while_listening_is_ordinary_speech_with_the_phrase_stripped() {
 }
 
 #[test]
-fn only_a_leading_wake_phrase_is_stripped() {
+fn only_a_leading_wake_word_is_stripped() {
     let lucyd = Harness::with_config(HEY_LUCY);
     let mut client = lucyd.client();
     client.start_session().unwrap();
@@ -122,7 +122,7 @@ fn only_a_leading_wake_phrase_is_stripped() {
 }
 
 #[test]
-fn the_wake_phrase_alone_is_no_speech() {
+fn the_wake_word_alone_is_no_speech() {
     let lucyd = Harness::with_config(HEY_LUCY);
     let mut client = lucyd.client();
     client.start_session().unwrap();

@@ -74,7 +74,8 @@ impl Devices {
     }
 }
 
-const DEFAULT: &str = "default";
+/// The name that stands for the default device.
+pub(crate) const DEFAULT: &str = "default";
 
 /// `name`, or the default if it is pinned and not there.
 fn resolve(io: &dyn AudioIo, direction: Direction, name: &str) -> Result<String, String> {

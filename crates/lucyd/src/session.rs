@@ -179,12 +179,7 @@ impl Session {
             Input::TranscribeFailed => {
                 self.transcribing = false;
                 // An answer that couldn't be heard isn't a yes.
-                let unheard = match self.asking {
-                    Some(Expects::Yes) => Some(Answer::No),
-                    Some(Expects::Words) => Some(Answer::Silence),
-                    None => None,
-                };
-                if let Some(answer) = unheard {
+                if let Some(answer) = self.unheard() {
                     let mut outputs = vec![Output::Error];
                     outputs.extend(self.answered(answer));
                     return outputs;
@@ -240,11 +235,20 @@ impl Session {
                 self.asking = Some(question.expects);
                 outputs
             }
-            Input::AnswerTimedOut => match &self.asking {
-                Some(Expects::Yes) => self.answered(Answer::No),
-                Some(Expects::Words) => self.answered(Answer::Silence),
+            Input::AnswerTimedOut => match self.unheard() {
+                Some(answer) => self.answered(answer),
                 None => vec![],
             },
+        }
+    }
+
+    /// The answer to the question being asked, if any, when no answer was
+    /// heard.
+    fn unheard(&self) -> Option<Answer> {
+        match self.asking {
+            Some(Expects::Yes) => Some(Answer::No),
+            Some(Expects::Words) => Some(Answer::Silence),
+            None => None,
         }
     }
 

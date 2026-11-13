@@ -181,7 +181,7 @@ impl Runner {
         // The model has died and been opened again since the last Turn ended.
         let mut respawned = false;
         let silence_timeout = settings.session.silence_timeout_secs;
-        let wake_phrase = wake::phrase(&settings.wake_word);
+        let wake_word = wake::word(&settings.wake_word);
         let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(&devices.speaker, speaker_tx);
@@ -220,9 +220,7 @@ impl Runner {
                 input
             } else if let Some(ask) = answer_to.is_none().then(|| questions.pop_front()).flatten() {
                 if let Some(shown) = ask.shown {
-                    // It offers no action, so nothing listens for one.
-                    let (actions, _) = mpsc::unbounded_channel();
-                    self.adapters.notifier.notify(shown, actions);
+                    self.notify(shown);
                 }
                 answer_to = Some(ask.reply);
                 answer_timer.reset();
@@ -271,7 +269,7 @@ impl Runner {
                     }
                 },
                 Some(transcript) = transcripts.recv() => match transcript {
-                    Ok(text) => Input::Transcript(wake::strip(&text, &wake_phrase).to_owned()),
+                    Ok(text) => Input::Transcript(wake::strip(&text, &wake_word).to_owned()),
                     Err(SttError(e)) => {
                         eprintln!("lucyd: {e}");
                         Input::TranscribeFailed
@@ -347,10 +345,7 @@ impl Runner {
             // Once the reply is over, one notification shows what of it
             // couldn't be said.
             if !unspoken.is_empty() && session.state() == State::Listening {
-                let notification = notifications::unspoken(&std::mem::take(&mut unspoken));
-                // It offers no action, so nothing listens for one.
-                let (actions, _) = mpsc::unbounded_channel();
-                self.adapters.notifier.notify(notification, actions);
+                self.notify(notifications::unspoken(&std::mem::take(&mut unspoken)));
             }
             for output in outputs {
                 match output {

@@ -314,7 +314,7 @@ fn a_mid_call_question_met_with_silence_goes_unanswered() {
 }
 
 #[test]
-fn in_a_session_opened_by_the_wake_word_a_yes_after_the_wake_phrase_counts() {
+fn in_a_session_opened_by_the_wake_word_a_yes_after_the_wake_word_counts() {
     let lucyd = with_files_plugin("[wake_word]\nmodel = \"/models/hey_lucy.onnx\"\n");
     let mut events = lucyd.state_client();
     lucyd.wake();
