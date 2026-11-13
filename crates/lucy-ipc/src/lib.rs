@@ -39,6 +39,10 @@ pub mod error_code {
     pub const UNKNOWN_PROVIDER: i64 = -32005;
     /// `config.toml` can't be read or parsed. The message says why.
     pub const INVALID_CONFIG: i64 = -32006;
+    /// `plugins.set_enabled` named a Plugin that isn't installed.
+    pub const UNKNOWN_PLUGIN: i64 = -32007;
+    /// `approvals.revoke` named a Plugin that has no Approval.
+    pub const NOT_APPROVED: i64 = -32008;
 }
 
 /// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
@@ -183,6 +187,8 @@ pub enum Topic {
     State,
     /// `level` events, about 30 a second while Lucy is speaking.
     Level,
+    /// `plugins.changed` events.
+    Plugins,
 }
 
 /// Params of the `state` event: the new status.
@@ -195,10 +201,94 @@ pub struct LevelEvent {
     pub rms: f32,
 }
 
+/// Result of `plugins.list`: every installed Plugin, a user one overriding
+/// a shipped one of the same name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PluginsList {
+    /// Sorted by name.
+    pub plugins: Vec<PluginInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PluginInfo {
+    /// Its folder's name.
+    pub name: String,
+    /// From its Manifest, if that can be read.
+    pub version: Option<String>,
+    pub author: Option<PluginAuthor>,
+    pub summary: Option<String>,
+    /// Shipped with Lucy: it can be disabled but not removed.
+    pub shipped: bool,
+    /// False once disabled. A disabled Plugin keeps its files and Approval.
+    pub enabled: bool,
+    pub status: PluginStatus,
+    /// Why it is broken, when it is.
+    pub problem: Option<String>,
+}
+
+/// Who wrote a Plugin. Lucy changes only her own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginAuthor {
+    Lucy,
+    Human,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginStatus {
+    /// Its exact content is approved.
+    Approved,
+    /// New or changed since its last Approval. Only the user's spoken yes
+    /// approves it.
+    AwaitingApproval,
+    /// It can't be used; `problem` says why.
+    Broken,
+}
+
+/// Params of `plugins.set_enabled`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SetPluginEnabled {
+    /// The Plugin's name.
+    pub name: String,
+    pub enabled: bool,
+}
+
+/// Result of `approvals.list`: every Approval Lucy holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovalsList {
+    /// Sorted by Plugin name.
+    pub approvals: Vec<ApprovalInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovalInfo {
+    pub plugin: String,
+    /// The approved hash of its Manifest plus executable.
+    pub hash: String,
+    /// The previous approved hash, which it can be rolled back to with no
+    /// new Approval.
+    pub previous_hash: Option<String>,
+}
+
+/// Params of `approvals.revoke`. The Plugin's tools go at once, even
+/// mid-Session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RevokeApproval {
+    pub plugin: String,
+}
+
+/// Params of the `plugins.changed` event: something in `plugins.list` or
+/// `approvals.list` changed. Fetch them again to see what.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PluginsChanged {}
+
 /// An event: a JSON-RPC notification from lucyd.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Event {
     State(StateEvent),
     Level(LevelEvent),
+    #[serde(rename = "plugins.changed")]
+    PluginsChanged(PluginsChanged),
 }

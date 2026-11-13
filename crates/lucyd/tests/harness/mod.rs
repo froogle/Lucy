@@ -61,22 +61,28 @@ impl Harness {
     /// Starts lucyd with no config file and a socket in a fresh runtime dir,
     /// for a user who already has a Persona.
     pub fn start() -> Harness {
-        Harness::launch(None, Some(PERSONA), None, None)
+        Harness::launch(None, Some(PERSONA), None, None, None)
     }
 
     /// Starts lucyd with `config` as its `config.toml`.
     pub fn with_config(config: &str) -> Harness {
-        Harness::launch(Some(config), Some(PERSONA), None, None)
+        Harness::launch(Some(config), Some(PERSONA), None, None, None)
     }
 
     /// Starts lucyd for a user who has never had a Session: no `persona.md`.
     pub fn first_run() -> Harness {
-        Harness::launch(None, None, None, None)
+        Harness::launch(None, None, None, None, None)
     }
 
     /// Starts lucyd with a real Thinking adapter in place of the fake.
     pub fn with_thinking(config: Option<&str>, thinking: Arc<dyn Thinking>) -> Harness {
-        Harness::launch(config, Some(PERSONA), Some(thinking), None)
+        Harness::launch(config, Some(PERSONA), Some(thinking), None, None)
+    }
+
+    /// Starts lucyd with `superwhisper` as its `superwhisper` STT Provider
+    /// and `config` as its `config.toml`.
+    pub fn with_superwhisper(config: &str, superwhisper: Arc<dyn Stt>) -> Harness {
+        Harness::launch(Some(config), Some(PERSONA), None, None, Some(superwhisper))
     }
 
     /// Starts lucyd hearing through the fake microphone, VAD and wake word,
@@ -95,7 +101,7 @@ impl Harness {
             &parsed.endpointing,
         )
         .expect("the fake microphone opens");
-        Harness::launch(Some(config), Some(PERSONA), None, Some((ears, mic)))
+        Harness::launch(Some(config), Some(PERSONA), None, Some((ears, mic)), None)
     }
 
     /// `ears` is what lucyd hears through instead of `say`.
@@ -104,6 +110,7 @@ impl Harness {
         persona: Option<&str>,
         real_thinking: Option<Arc<dyn Thinking>>,
         ears: Option<(lucyd::audio::Ears, FakeMic)>,
+        superwhisper: Option<Arc<dyn Stt>>,
     ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
@@ -170,6 +177,7 @@ impl Harness {
                 speaking: speaking_rx,
                 hearing,
                 stt: Arc::new(stt.clone()),
+                superwhisper: superwhisper.unwrap_or_else(|| Arc::new(FakeStt::default())),
                 thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
                 tts: Box::new(tts.clone()),
                 notifier: Arc::new(notifier.clone()),
@@ -552,7 +560,14 @@ fn fixture_plugin() -> PathBuf {
 fn install(dir: &Path, manifest: &str) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
-    std::fs::copy(fixture_plugin(), dir.join("fixture-plugin")).unwrap();
+    // `cp` copies it so that no write fd here leaks into a child another
+    // test forks and makes running it fail with "Text file busy".
+    let copied = Command::new("cp")
+        .arg(fixture_plugin())
+        .arg(dir.join("fixture-plugin"))
+        .status()
+        .unwrap();
+    assert!(copied.success());
     dir.to_owned()
 }
 

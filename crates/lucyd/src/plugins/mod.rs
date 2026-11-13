@@ -3,10 +3,11 @@
 //! Session, forwarding the model's calls to it over MCP stdio.
 
 mod approval;
+mod manage;
 mod manifest;
 mod sandbox;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -29,10 +30,16 @@ use crate::adapters::{Notification, NotificationKind};
 use crate::mcp;
 use crate::runner::{self, Command};
 use crate::session::{Answer, Expects, Question};
+use crate::status::ChangeBus;
+pub use manage::{manage_plugin_tool, Refusal};
 use manifest::{Manifest, ToolEntry};
 
 /// How many mid-call questions one call may ask before it counts as broken.
 const MAX_QUESTIONS: usize = 10;
+
+/// What the model hears when the user didn't confirm a call.
+const DECLINED: &str = "declined: the user didn't say yes, so nothing was done, and you've \
+                        already told them so.";
 
 /// How long a Plugin gets to start and answer `tools/list`.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -65,6 +72,17 @@ impl Paths {
         self.state.join("approvals.toml")
     }
 
+    /// What Lucy remembers about Plugins besides their Approvals.
+    fn remembered(&self) -> PathBuf {
+        self.state.join("plugins.toml")
+    }
+
+    /// Where the approved versions of the Plugin `plugin` are kept, one
+    /// folder per hash, for rolling back to.
+    fn versions(&self, plugin: &str) -> PathBuf {
+        self.state.join("versions").join(plugin)
+    }
+
     fn state_dir(&self, plugin: &str) -> PathBuf {
         self.state.join("plugins").join(plugin)
     }
@@ -86,6 +104,23 @@ struct Approval {
     /// The Manifest as approved, so an update can be told apart from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     manifest: Option<String>,
+    /// The Approval this one replaced, which the Plugin can be rolled back
+    /// to with no new Approval. It has no `previous` of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous: Option<Box<Approval>>,
+}
+
+/// `plugins.toml`: what Lucy remembers about Plugins besides their
+/// Approvals.
+#[derive(Default, Deserialize, Serialize)]
+struct Remembered {
+    /// Plugins left out of selection, keeping their files and Approval.
+    #[serde(default)]
+    disabled: BTreeSet<String>,
+    /// By Plugin: the hash it had when Lucy last told the user it was
+    /// awaiting Approval.
+    #[serde(default)]
+    mentioned: BTreeMap<String, String>,
 }
 
 /// Lives as long as lucyd. Remembers which approved Plugin contents work.
@@ -98,6 +133,43 @@ pub struct Host {
     verdicts: Mutex<HashMap<String, Result<(), String>>>,
     /// The open Session's tools, which an Approval adds to.
     session: Mutex<Weak<SessionTools>>,
+    /// Told whenever a Plugin or Approval changes.
+    changes: ChangeBus,
+    /// Held while changing `approvals.toml`, `plugins.toml` or a Plugin's
+    /// files, so one change never undoes another.
+    editing: Mutex<()>,
+}
+
+/// A Plugin's Manifest and executable as they are now.
+struct Contents {
+    text: String,
+    manifest: Manifest,
+    executable: Vec<u8>,
+    hash: String,
+}
+
+impl Contents {
+    fn read(name: &str, folder: &Path) -> Result<Contents, String> {
+        let text = std::fs::read_to_string(folder.join("manifest.toml"))
+            .map_err(|e| format!("its Manifest can't be read: {e}"))?;
+        let manifest = Manifest::parse(&text, name)?;
+        let executable = std::fs::read(folder.join(manifest.executable()))
+            .map_err(|e| format!("its executable can't be read: {e}"))?;
+        let hash = content_hash(text.as_bytes(), &executable);
+        Ok(Contents {
+            text,
+            manifest,
+            executable,
+            hash,
+        })
+    }
+}
+
+/// What a scan found of one Plugin.
+enum Scanned {
+    Approved(Usable),
+    /// New or changed since its last Approval.
+    Awaiting(Contents),
 }
 
 /// An approved Plugin, ready to start.
@@ -110,12 +182,18 @@ struct Usable {
 }
 
 impl Host {
-    pub fn new(paths: Paths, commands: mpsc::UnboundedSender<Command>) -> Arc<Host> {
+    pub fn new(
+        paths: Paths,
+        commands: mpsc::UnboundedSender<Command>,
+        changes: ChangeBus,
+    ) -> Arc<Host> {
         Arc::new(Host {
             paths,
             commands,
             verdicts: Mutex::default(),
             session: Mutex::default(),
+            changes,
+            editing: Mutex::default(),
         })
     }
 
@@ -123,13 +201,23 @@ impl Host {
     pub async fn open_session(self: &Arc<Self>) -> Arc<SessionTools> {
         let mut usable = Vec::new();
         let mut broken = Vec::new();
+        let mut awaiting = Vec::new();
+        let disabled = self.remembered().disabled;
         for (name, folder) in self.folders() {
-            match self.approved(&name, &folder) {
-                Ok(Some(plugin)) => usable.push(plugin),
-                Ok(None) => {}
+            if disabled.contains(&name) {
+                continue;
+            }
+            match self.scan(&name, &folder) {
+                Ok(Scanned::Approved(plugin)) => usable.push(plugin),
+                // Shipped Plugins are approved at setup, not mentioned.
+                Ok(Scanned::Awaiting(contents)) if !self.is_shipped(&folder) => {
+                    awaiting.push((name, contents));
+                }
+                Ok(Scanned::Awaiting(_)) => {}
                 Err(reason) => broken.push(broken_message(&name, &reason)),
             }
         }
+        let awaiting = self.mention_once(awaiting);
         let mut working = Vec::new();
         for plugin in usable {
             match self.check(&plugin).await {
@@ -144,6 +232,7 @@ impl Host {
             host: self.clone(),
             plugins: RwLock::new(working.into_iter().map(Arc::new).collect()),
             broken,
+            awaiting,
             running: tokio::sync::Mutex::default(),
             watchers: Mutex::default(),
         });
@@ -201,12 +290,12 @@ impl Host {
             .folders()
             .remove(name)
             .ok_or_else(|| format!("there's no Plugin called {name}"))?;
-        let text = std::fs::read_to_string(folder.join("manifest.toml"))
-            .map_err(|e| format!("its Manifest can't be read: {e}"))?;
-        let manifest = Manifest::parse(&text, name)?;
-        let executable = std::fs::read(folder.join(manifest.executable()))
-            .map_err(|e| format!("its executable can't be read: {e}"))?;
-        let hash = content_hash(text.as_bytes(), &executable);
+        let Contents {
+            text,
+            manifest,
+            executable,
+            hash,
+        } = Contents::read(name, &folder)?;
         let previous = match self.approvals()?.plugins.remove(name) {
             Some(approval) if approval.hash == hash => {
                 return Err(format!("the {name} Plugin is already approved"))
@@ -230,39 +319,97 @@ impl Host {
         Ok(Candidate {
             plugin,
             text,
+            executable,
             previous,
         })
     }
 
-    /// Writes the Approval of `candidate` to `approvals.toml`.
+    /// Writes the Approval of `candidate` to `approvals.toml`, keeping the
+    /// one it replaces as the version to roll back to, and keeps a copy of
+    /// what was approved.
     fn record(&self, candidate: &Candidate) -> Result<(), String> {
         let plugin = &candidate.plugin;
+        let _editing = self.editing.lock().unwrap();
+        self.keep_version(
+            &plugin.name,
+            &plugin.hash,
+            &candidate.text,
+            &candidate.executable,
+        )
+        .map_err(|e| format!("its approved version couldn't be kept: {e}"))?;
         let mut approvals = self.approvals()?;
         let schemas = plugin
             .schemas
             .iter()
             .map(|(tool, schema)| (tool.clone(), serde_json::to_string(&**schema).unwrap()))
             .collect();
+        let previous = approvals.plugins.remove(&plugin.name).map(|mut previous| {
+            previous.previous = None;
+            Box::new(previous)
+        });
+        let kept: Vec<&str> = [Some(&*plugin.hash), previous.as_ref().map(|p| &*p.hash)]
+            .into_iter()
+            .flatten()
+            .collect();
+        self.prune_versions(&plugin.name, &kept);
         approvals.plugins.insert(
             plugin.name.clone(),
             Approval {
                 hash: plugin.hash.clone(),
                 schemas,
                 manifest: Some(candidate.text.clone()),
+                previous,
             },
         );
-        let text = toml::to_string(&approvals).map_err(|e| format!("approvals.toml: {e}"))?;
-        let write = || -> std::io::Result<()> {
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(&self.paths.state)?;
-            let path = self.paths.approvals();
-            let temp = path.with_extension("toml.new");
-            std::fs::write(&temp, text)?;
-            std::fs::rename(&temp, &path)
-        };
-        write().map_err(|e| format!("its Approval couldn't be saved: {e}"))
+        self.save_approvals(&approvals)
+            .map_err(|e| format!("its Approval couldn't be saved: {e}"))?;
+        self.changes.publish();
+        Ok(())
+    }
+
+    fn save_approvals(&self, approvals: &Approvals) -> Result<(), String> {
+        let text = toml::to_string(approvals).map_err(|e| format!("approvals.toml: {e}"))?;
+        save_state(&self.paths.state, &self.paths.approvals(), &text).map_err(|e| e.to_string())
+    }
+
+    /// `plugins.toml`, or nothing remembered if it can't be read.
+    fn remembered(&self) -> Remembered {
+        std::fs::read_to_string(self.paths.remembered())
+            .ok()
+            .and_then(|text| toml::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_remembered(&self, remembered: &Remembered) -> Result<(), String> {
+        let text = toml::to_string(remembered).map_err(|e| format!("plugins.toml: {e}"))?;
+        save_state(&self.paths.state, &self.paths.remembered(), &text)
+            .map_err(|e| format!("plugins.toml couldn't be saved: {e}"))
+    }
+
+    /// For the model's instructions: a line for each Plugin in `awaiting`
+    /// that the user hasn't been told about as it is now, remembering that
+    /// they now have.
+    fn mention_once(&self, awaiting: Vec<(String, Contents)>) -> Vec<String> {
+        let _editing = self.editing.lock().unwrap();
+        let mut remembered = self.remembered();
+        let mut lines = Vec::new();
+        for (name, contents) in awaiting {
+            if remembered.mentioned.get(&name) == Some(&contents.hash) {
+                continue;
+            }
+            lines.push(format!(
+                "The {name} Plugin ({}) is awaiting the user's Approval.",
+                contents.manifest.summary
+            ));
+            remembered.mentioned.insert(name, contents.hash);
+        }
+        if !lines.is_empty() {
+            if let Err(e) = self.save_remembered(&remembered) {
+                eprintln!("lucyd: {e}");
+            }
+            self.changes.publish();
+        }
+        lines
     }
 
     /// Offers the newly approved `plugin` in the open Session, if any.
@@ -302,19 +449,22 @@ impl Host {
         folders
     }
 
-    /// The Plugin, if its exact content is approved.
-    fn approved(&self, name: &str, folder: &Path) -> Result<Option<Usable>, String> {
-        let text = std::fs::read_to_string(folder.join("manifest.toml"))
-            .map_err(|e| format!("its Manifest can't be read: {e}"))?;
-        let manifest = Manifest::parse(&text, name)?;
-        let executable = std::fs::read(folder.join(manifest.executable()))
-            .map_err(|e| format!("its executable can't be read: {e}"))?;
-        let hash = content_hash(text.as_bytes(), &executable);
+    fn is_shipped(&self, folder: &Path) -> bool {
+        folder.starts_with(&self.paths.shipped)
+    }
 
+    /// The Plugin as it is now: usable if its exact content is approved.
+    fn scan(&self, name: &str, folder: &Path) -> Result<Scanned, String> {
+        let contents = Contents::read(name, folder)?;
         let approvals = self.approvals()?;
-        let Some(approval) = approvals.plugins.get(name).filter(|a| a.hash == hash) else {
-            return Ok(None);
+        let Some(approval) = approvals
+            .plugins
+            .get(name)
+            .filter(|a| a.hash == contents.hash)
+        else {
+            return Ok(Scanned::Awaiting(contents));
         };
+        let Contents { manifest, hash, .. } = contents;
         let mut schemas = HashMap::new();
         for tool in &manifest.tools {
             let schema = approval
@@ -324,7 +474,7 @@ impl Host {
                 .ok_or_else(|| format!("its Approval has no input schema for {}", tool.name))?;
             schemas.insert(tool.name.clone(), Arc::new(schema));
         }
-        Ok(Some(Usable {
+        Ok(Scanned::Approved(Usable {
             name: name.to_owned(),
             folder: folder.to_owned(),
             manifest,
@@ -424,6 +574,7 @@ struct Candidate {
     plugin: Usable,
     /// Its Manifest.
     text: String,
+    executable: Vec<u8>,
     /// The Manifest it had when last approved, if it was and that was
     /// kept.
     previous: Option<String>,
@@ -441,6 +592,17 @@ fn matches_manifest(manifest: &Manifest, listed: &[Tool]) -> Result<(), String> 
         ));
     }
     Ok(())
+}
+
+/// Writes `text` to `path` in Lucy's state dir `state`, all at once.
+fn save_state(state: &Path, path: &Path, text: &str) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(state)?;
+    let temp = path.with_extension("toml.new");
+    std::fs::write(&temp, text)?;
+    std::fs::rename(&temp, path)
 }
 
 /// What Lucy is told about a broken Plugin, ready to pass on to the user.
@@ -478,6 +640,9 @@ pub struct SessionTools {
     plugins: RwLock<Vec<Arc<Usable>>>,
     /// Why each Plugin the scan left out was left out.
     broken: Vec<String>,
+    /// A line for each Plugin awaiting Approval that the user hasn't been
+    /// told about yet.
+    awaiting: Vec<String>,
     running: tokio::sync::Mutex<HashMap<String, RunningService<RoleClient, ()>>>,
     /// The model's connections, told when the tools change.
     watchers: Mutex<Vec<Peer<RoleServer>>>,
@@ -485,13 +650,25 @@ pub struct SessionTools {
 
 impl SessionTools {
     /// For the model's instructions: which Plugins the scan left out and
-    /// why, if any.
+    /// why, and which new ones await Approval, if any.
     pub fn scan_report(&self) -> Option<String> {
-        (!self.broken.is_empty()).then(|| {
-            format!(
-                "## Broken Plugins (not part of your Persona)\n\n{}\n\nTell the user about this once, \
-                 briefly, in your first reply.",
+        let mut sections = Vec::new();
+        if !self.broken.is_empty() {
+            sections.push(format!(
+                "## Broken Plugins (not part of your Persona)\n\n{}",
                 self.broken.join("\n")
+            ));
+        }
+        if !self.awaiting.is_empty() {
+            sections.push(format!(
+                "## Plugins awaiting Approval (not part of your Persona)\n\n{}",
+                self.awaiting.join("\n")
+            ));
+        }
+        (!sections.is_empty()).then(|| {
+            format!(
+                "{}\n\nTell the user about this once, briefly, in your first reply.",
+                sections.join("\n\n")
             )
         })
     }
@@ -513,6 +690,11 @@ impl SessionTools {
         if let Some(client) = self.running.lock().await.remove(&name) {
             let _ = client.cancel().await;
         }
+        self.tools_changed().await;
+    }
+
+    /// Tells the watchers with `tools/list_changed`.
+    async fn tools_changed(&self) {
         let watchers: Vec<_> = {
             let mut watchers = self.watchers.lock().unwrap();
             watchers.retain(|peer| !peer.is_transport_closed());
@@ -521,6 +703,16 @@ impl SessionTools {
         for peer in watchers {
             let _ = peer.notify_tool_list_changed().await;
         }
+    }
+
+    /// Stops offering the Plugin `name`, stopping it, and tells the
+    /// watchers.
+    async fn remove(&self, name: &str) {
+        self.plugins.write().unwrap().retain(|p| p.name != name);
+        if let Some(client) = self.running.lock().await.remove(name) {
+            let _ = client.cancel().await;
+        }
+        self.tools_changed().await;
     }
 
     /// Every tool of every working Plugin, as `<plugin>__<tool>`.
@@ -551,10 +743,7 @@ impl SessionTools {
         let plugin = self.working().into_iter().find(|p| p.name == plugin_name)?;
         let entry = plugin.manifest.tools.iter().find(|t| t.name == tool)?;
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
-            return Some(mcp::text(
-                "declined: the user didn't say yes, so nothing was done, and you've already \
-                 told them so.",
-            ));
+            return Some(mcp::text(DECLINED));
         }
         let outcome = async {
             let peer = {

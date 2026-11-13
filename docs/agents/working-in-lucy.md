@@ -13,6 +13,12 @@ Facts about the codebase that aren't obvious from reading it.
 - **Config:** `Harness::with_config(toml)` writes the `config.toml` lucyd reads at each Session start; `Harness::start()` has none, so defaults apply.
 - **Real binaries:** the harness runs the `lucy` binary cargo builds next to the test binary. `cargo test -p lucyd` on its own needs `cargo build -p lucy` first; `cargo test --workspace` handles this.
 - **Fixture Plugin:** `crates/lucyd/examples/fixture-plugin.rs`, a tiny MCP stdio server. `Harness::install_plugin` copies it into a Plugin folder and `Harness::approve` pre-seeds `approvals.toml`. `cargo test -p lucyd` builds it, but `--test <name>` alone doesn't: run `cargo build -p lucyd --examples` first.
+- **News Plugin in lucyd:** `tests/news.rs` installs the real `lucy-news` binary as a shipped Plugin; `cargo test -p lucyd` on its own needs `cargo build -p lucy-news` first.
+
+## Plugins
+
+- **News Plugin:** `crates/lucy-news` is the shipped reference Plugin; `manifest.toml` beside it is the Manifest Lucy ships. Its Source catalogue (feeds and "AI summary allowed" flags) is `src/catalogue.rs`; re-check the flags before each release, and keep `[access] network` matching the readable feeds' hosts (a unit test checks).
+- **Fixtures test harness:** `crates/lucy-news/tests/support/mod.rs` runs a Plugin's MCP server in-process through a real MCP client and answers its web requests from `tests/fixtures/web/<host>/<path>`. The Plugin template copies it. Plugin tests never touch the network.
 - **Confirming:** Confirmations, Approvals and Plugin mid-call questions all go through `runner::ask`, which queues a `Command::Ask` for the open Session. Tests shorten the 8 s wait with `[confirmation] timeout_secs`. `Harness::request_approval` starts a spoken Approval (`Daemon::request_approval`; nothing on IPC or MCP reaches it), and `FakeThinking::watch_tools` holds a relay open to see `tools/list_changed`. The fixture Plugin's `ask` tool asks a question through `input_required`.
 - **Fake executables:** write them from a child process (see `fake_notify_send` in `notify_send.rs`). A fd this process holds open for writing can leak into a child another test forks, and running the file then fails with "Text file busy".
 - **Private data:** after a Session ends, `assert_nothing_private_on_bus()` checks that nothing private reached the public socket.

@@ -1,5 +1,44 @@
 {
   "$defs": {
+    "ApprovalInfo": {
+      "properties": {
+        "hash": {
+          "description": "The approved hash of its Manifest plus executable.",
+          "type": "string"
+        },
+        "plugin": {
+          "type": "string"
+        },
+        "previous_hash": {
+          "description": "The previous approved hash, which it can be rolled back to with no\nnew Approval.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "plugin",
+        "hash"
+      ],
+      "type": "object"
+    },
+    "ApprovalsList": {
+      "description": "Result of `approvals.list`: every Approval Lucy holds.",
+      "properties": {
+        "approvals": {
+          "description": "Sorted by Plugin name.",
+          "items": {
+            "$ref": "#/$defs/ApprovalInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "approvals"
+      ],
+      "type": "object"
+    },
     "Hello": {
       "description": "Params of `hello`, the first request on every connection.",
       "properties": {
@@ -63,6 +102,109 @@
       },
       "required": [
         "rms"
+      ],
+      "type": "object"
+    },
+    "PluginAuthor": {
+      "description": "Who wrote a Plugin. Lucy changes only her own.",
+      "enum": [
+        "lucy",
+        "human"
+      ],
+      "type": "string"
+    },
+    "PluginInfo": {
+      "properties": {
+        "author": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PluginAuthor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "description": "False once disabled. A disabled Plugin keeps its files and Approval.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Its folder's name.",
+          "type": "string"
+        },
+        "problem": {
+          "description": "Why it is broken, when it is.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "shipped": {
+          "description": "Shipped with Lucy: it can be disabled but not removed.",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/PluginStatus"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "description": "From its Manifest, if that can be read.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "shipped",
+        "enabled",
+        "status"
+      ],
+      "type": "object"
+    },
+    "PluginStatus": {
+      "oneOf": [
+        {
+          "const": "approved",
+          "description": "Its exact content is approved.",
+          "type": "string"
+        },
+        {
+          "const": "awaiting_approval",
+          "description": "New or changed since its last Approval. Only the user's spoken yes\napproves it.",
+          "type": "string"
+        },
+        {
+          "const": "broken",
+          "description": "It can't be used; `problem` says why.",
+          "type": "string"
+        }
+      ]
+    },
+    "PluginsChanged": {
+      "description": "Params of the `plugins.changed` event: something in `plugins.list` or\n`approvals.list` changed. Fetch them again to see what.",
+      "type": "object"
+    },
+    "PluginsList": {
+      "description": "Result of `plugins.list`: every installed Plugin, a user one overriding\na shipped one of the same name.",
+      "properties": {
+        "plugins": {
+          "description": "Sorted by name.",
+          "items": {
+            "$ref": "#/$defs/PluginInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "plugins"
       ],
       "type": "object"
     },
@@ -155,6 +297,18 @@
       ],
       "type": "object"
     },
+    "RevokeApproval": {
+      "description": "Params of `approvals.revoke`. The Plugin's tools go at once, even\nmid-Session.",
+      "properties": {
+        "plugin": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin"
+      ],
+      "type": "object"
+    },
     "Role": {
       "oneOf": [
         {
@@ -173,6 +327,23 @@
       },
       "required": [
         "session_id"
+      ],
+      "type": "object"
+    },
+    "SetPluginEnabled": {
+      "description": "Params of `plugins.set_enabled`.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "description": "The Plugin's name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "enabled"
       ],
       "type": "object"
     },
@@ -264,6 +435,11 @@
           "const": "level",
           "description": "`level` events, about 30 a second while Lucy is speaking.",
           "type": "string"
+        },
+        {
+          "const": "plugins",
+          "description": "`plugins.changed` events.",
+          "type": "string"
         }
       ]
     }
@@ -277,6 +453,11 @@
         "$ref": "#/$defs/LevelEvent"
       }
     },
+    "plugins.changed": {
+      "params": {
+        "$ref": "#/$defs/PluginsChanged"
+      }
+    },
     "state": {
       "params": {
         "$ref": "#/$defs/Status"
@@ -284,12 +465,38 @@
     }
   },
   "x-methods": {
+    "approvals.list": {
+      "result": {
+        "$ref": "#/$defs/ApprovalsList"
+      }
+    },
+    "approvals.revoke": {
+      "params": {
+        "$ref": "#/$defs/RevokeApproval"
+      },
+      "result": {
+        "type": "object"
+      }
+    },
     "hello": {
       "params": {
         "$ref": "#/$defs/Hello"
       },
       "result": {
         "$ref": "#/$defs/HelloResult"
+      }
+    },
+    "plugins.list": {
+      "result": {
+        "$ref": "#/$defs/PluginsList"
+      }
+    },
+    "plugins.set_enabled": {
+      "params": {
+        "$ref": "#/$defs/SetPluginEnabled"
+      },
+      "result": {
+        "type": "object"
       }
     },
     "provider.check": {

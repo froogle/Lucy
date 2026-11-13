@@ -1,0 +1,25 @@
+name = "news"
+version = "0.1.0"
+author = "human"
+summary = "Reads the official news feeds of the Sources the user chooses"
+command = ["./lucy-news"]
+
+[[tools]]
+name = "briefing"
+handles = "the news, as a quick briefing or a detailed roundup"
+examples = ["what's the news?", "give me a detailed summary", "anything happening in the world?"]
+
+[[tools]]
+name = "set_preference"
+handles = "changing your news Sources, topics and briefing length"
+examples = ["I'm not into Fox, try something else", "add the Guardian", "more science stories"]
+
+[access]
+# The feed hosts of the readable Sources in the catalogue.
+network = [
+    "rss.cnn.com",
+    "feeds.npr.org",
+    "feeds.skynews.com",
+    "moxie.foxnews.com",
+    "www.aljazeera.com",
+]

@@ -1,0 +1,25 @@
+[package]
+name = "lucy-news"
+description = "The news Plugin: Lucy's shipped, hand-written reference Plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+tokio = { workspace = true, features = ["rt"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+roxmltree = "0.21"
+# Rustls on ring with the system's roots: webpki-roots isn't on the licence
+# allow-list.
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "_ring"] }
+rustls-native-certs = "0.8"
+libc = "0.2"
+
+[dev-dependencies]
+rmcp = { workspace = true, features = ["client"] }
+tempfile.workspace = true

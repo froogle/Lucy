@@ -1,0 +1,99 @@
+//! The shipped news Plugin, run by lucyd: approved by voice as setup does,
+//! offered to the model, and keeping its preferences across Sessions.
+//! Nothing here reaches the network; the Plugin's own tests cover briefings
+//! against recorded feeds.
+
+mod harness;
+
+use std::path::{Path, PathBuf};
+
+use harness::{next_state, Harness};
+use lucy_ipc::State;
+use serde_json::{json, Value};
+
+/// The `lucy-news` binary cargo builds beside the test binary.
+fn news_binary() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let binary = exe
+        .ancestors()
+        .skip(1)
+        .map(|dir| dir.join("lucy-news"))
+        .find(|path| path.is_file());
+    binary.expect("lucy-news not found; run `cargo build -p lucy-news` or `cargo test --workspace`")
+}
+
+/// Installs the news Plugin as Lucy ships it: its Manifest and executable.
+fn install_news(lucyd: &Harness) -> PathBuf {
+    let manifest = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../lucy-news/manifest.toml"),
+    )
+    .unwrap();
+    let folder = lucyd.install_shipped_plugin("news", &manifest);
+    // Copied by a child process, so this one holds no write fd on an
+    // executable another test's child could inherit ("Text file busy").
+    let copied = std::process::Command::new("cp")
+        .arg(news_binary())
+        .arg(folder.join("lucy-news"))
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    folder
+}
+
+fn reply(lucyd: &Harness, arguments: Value) -> Value {
+    let result = lucyd
+        .thinking
+        .call_tool_with("news__set_preference", arguments)
+        .unwrap();
+    let text: String = result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|text| text.text.clone()))
+        .collect();
+    assert_eq!(result.is_error, Some(false), "{text}");
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn the_shipped_news_plugin_is_approved_by_voice_and_keeps_a_swap_into_the_next_session() {
+    let lucyd = Harness::start();
+    install_news(&lucyd);
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    let watch = lucyd.thinking.watch_tools();
+
+    let approval = lucyd.request_approval("news");
+
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "The news Plugin needs your Approval. It handles the news, as a quick briefing or a \
+         detailed roundup and changing your news Sources, topics and briefing length. It can \
+         reach rss.cnn.com, feeds.npr.org, feeds.skynews.com, moxie.foxnews.com and \
+         www.aljazeera.com. It never asks you before acting. Do you approve it?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    assert_eq!(approval.outcome(), Ok(true));
+    watch.wait_for_change();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    let tools = lucyd.thinking.tool_names();
+    assert!(tools.contains(&"news__briefing".into()), "{tools:?}");
+
+    // No Confirmation: the call answers straight away.
+    let swapped = reply(&lucyd, json!({"drop": "Sky"}));
+    assert_eq!(
+        swapped["changed"],
+        json!(["Sky News is out; you won't hear from it again."])
+    );
+    events.end_session().unwrap();
+
+    events.start_session().unwrap();
+    let next = reply(&lucyd, json!({}));
+    assert_eq!(next["rotation"], json!(["CNN", "NPR"]));
+    assert!(lucyd
+        .state_dir()
+        .join("plugins/news/preferences.toml")
+        .exists());
+}
