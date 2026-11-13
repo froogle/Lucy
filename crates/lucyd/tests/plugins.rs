@@ -188,3 +188,148 @@ fn a_plugin_whose_manifest_does_not_match_its_live_tools_is_left_out() {
     assert!(!offered(&lucyd, "fixture__echo"));
     assert!(!offered(&lucyd, "fixture__pid"));
 }
+
+#[test]
+fn a_plugin_that_fails_a_call_is_broken_says_so_and_is_left_out() {
+    let lucyd = Harness::start();
+    lucyd.install_plugin("fixture", &manifest("fixture", &["echo", "crash"], ""));
+    lucyd.approve("fixture");
+    let mut client = lucyd.client();
+    client.start_session().unwrap();
+
+    let result = lucyd
+        .thinking
+        .call_tool_with("fixture__crash", json!({}))
+        .unwrap();
+
+    assert_eq!(result.is_error, Some(true));
+    let said = text(&result);
+    assert!(
+        said.contains("fixture") && said.contains("broken"),
+        "{said}"
+    );
+    assert!(!lucyd
+        .thinking
+        .tool_names()
+        .contains(&"fixture__echo".to_owned()));
+    client.end_session().unwrap();
+    assert!(!offered(&lucyd, "fixture__echo"));
+}
+
+#[test]
+fn landlock_confines_a_plugin_to_its_declared_paths() {
+    let lucyd = Harness::start();
+    let scratch = lucyd.scratch();
+    let (readable, writable, private) = (
+        scratch.join("readable"),
+        scratch.join("writable"),
+        scratch.join("private"),
+    );
+    for dir in [&readable, &writable, &private] {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("note"), "contents").unwrap();
+    }
+    let access = format!(
+        "read = [{:?}]\nwrite = [{:?}]",
+        readable.display().to_string(),
+        writable.display().to_string()
+    );
+    lucyd.install_plugin(
+        "fixture",
+        &manifest("fixture", &["read_file", "write_file"], &access),
+    );
+    lucyd.approve("fixture");
+    lucyd.client().start_session().unwrap();
+    let read = |path: &std::path::Path| {
+        lucyd
+            .thinking
+            .call_tool_with("fixture__read_file", json!({"path": path}))
+            .unwrap()
+    };
+    let write = |path: &std::path::Path| {
+        lucyd
+            .thinking
+            .call_tool_with("fixture__write_file", json!({"path": path, "text": "x"}))
+            .unwrap()
+    };
+
+    assert_eq!(text(&read(&readable.join("note"))), "contents");
+    assert_eq!(read(&private.join("note")).is_error, Some(true));
+    assert_eq!(
+        read(&lucyd.state_dir().join("approvals.toml")).is_error,
+        Some(true)
+    );
+
+    assert_eq!(write(&writable.join("new")).is_error, Some(false));
+    assert_eq!(write(&readable.join("new")).is_error, Some(true));
+    assert_eq!(write(&private.join("new")).is_error, Some(true));
+    assert_eq!(
+        write(&lucyd.state_dir().join("approvals.toml")).is_error,
+        Some(true)
+    );
+    assert!(!readable.join("new").exists() && !private.join("new").exists());
+}
+
+#[test]
+fn each_plugin_gets_a_private_writable_state_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    let lucyd = Harness::start();
+    lucyd.install_plugin("fixture", &manifest("fixture", &["save_state"], ""));
+    lucyd.approve("fixture");
+    lucyd.client().start_session().unwrap();
+
+    let result = lucyd
+        .thinking
+        .call_tool_with("fixture__save_state", json!({"text": "my preference"}))
+        .unwrap();
+
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let dir = lucyd.state_dir().join("plugins/fixture");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("saved")).unwrap(),
+        "my preference"
+    );
+    let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
+
+#[test]
+fn plugins_are_stopped_when_the_session_ends() {
+    let lucyd = Harness::start();
+    lucyd.install_plugin("fixture", &manifest("fixture", &["pid"], ""));
+    lucyd.approve("fixture");
+    let mut client = lucyd.client();
+    client.start_session().unwrap();
+    let pid = text(
+        &lucyd
+            .thinking
+            .call_tool_with("fixture__pid", json!({}))
+            .unwrap(),
+    );
+    assert!(running(&pid), "the Plugin runs during the Session");
+
+    client.end_session().unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while running(&pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the Plugin still runs"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Whether process `pid` exists and isn't a zombie.
+fn running(pid: &str) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // The state follows the parenthesised command name.
+        Ok(stat) => !stat
+            .rsplit(')')
+            .next()
+            .unwrap()
+            .trim_start()
+            .starts_with('Z'),
+        Err(_) => false,
+    }
+}
