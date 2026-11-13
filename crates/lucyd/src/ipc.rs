@@ -5,8 +5,9 @@ use std::sync::Arc;
 
 use lucy_config::{Config, Tier};
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, LevelEvent, ProviderCheck, ProviderCheckResult,
-    ProviderStatus, ProvidersStatus, Role, SessionStarted, Status, Subscribe, Topic, PROTOCOL,
+    error_code, Event, Hello, HelloResult, LevelEvent, PluginsChanged, ProviderCheck,
+    ProviderCheckResult, ProviderStatus, ProvidersStatus, RevokeApproval, Role, SessionStarted,
+    SetPluginEnabled, Status, Subscribe, Topic, PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -16,6 +17,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::adapters::Thinking;
 use crate::notifications::{IndicatorClaim, Indicators};
+use crate::plugins::{self, Host};
 use crate::runner::Command;
 use crate::status::Buses;
 
@@ -33,6 +35,7 @@ pub async fn serve(
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
+    plugins: Arc<Host>,
 ) {
     loop {
         match listener.accept().await {
@@ -43,6 +46,7 @@ pub async fn serve(
                     indicators.clone(),
                     sessions.clone(),
                     providers.clone(),
+                    plugins.clone(),
                 ));
             }
             Err(e) => eprintln!("lucyd: accept failed: {e}"),
@@ -56,6 +60,7 @@ struct Connection {
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
+    plugins: Arc<Host>,
     greeted: bool,
     /// Held while this client holds the `indicator` role.
     indicator: Option<IndicatorClaim>,
@@ -64,6 +69,8 @@ struct Connection {
     state_events: Option<mpsc::UnboundedReceiver<Status>>,
     /// Playback levels, once subscribed.
     level_events: Option<broadcast::Receiver<f32>>,
+    /// A queue of `plugins.changed`, once subscribed.
+    plugin_events: Option<mpsc::UnboundedReceiver<()>>,
 }
 
 async fn connection(
@@ -72,6 +79,7 @@ async fn connection(
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
+    plugins: Arc<Host>,
 ) {
     let (reader, writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -81,11 +89,13 @@ async fn connection(
         indicators,
         sessions,
         providers,
+        plugins,
         greeted: false,
         indicator: None,
         state_subscribed: false,
         state_events: None,
         level_events: None,
+        plugin_events: None,
     };
     loop {
         let sent = tokio::select! {
@@ -96,6 +106,9 @@ async fn connection(
             Some(status) = next_state(&mut conn.state_events) => conn.send_state(status).await,
             Some(rms) = next_level(&mut conn.level_events) => {
                 conn.send_event(Event::Level(LevelEvent { rms })).await
+            }
+            Some(()) = next_change(&mut conn.plugin_events) => {
+                conn.send_event(Event::PluginsChanged(PluginsChanged {})).await
             }
         };
         if sent.is_err() {
@@ -124,6 +137,14 @@ async fn next_level(level_events: &mut Option<broadcast::Receiver<f32>>) -> Opti
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return None,
         }
+    }
+}
+
+/// The next change, or never if not subscribed.
+async fn next_change(changes: &mut Option<mpsc::UnboundedReceiver<()>>) -> Option<()> {
+    match changes {
+        Some(changes) => changes.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -198,6 +219,9 @@ impl Connection {
                 if subscribe.topics.contains(&Topic::Level) && self.level_events.is_none() {
                     self.level_events = Some(self.buses.levels.subscribe());
                 }
+                if subscribe.topics.contains(&Topic::Plugins) && self.plugin_events.is_none() {
+                    self.plugin_events = Some(self.buses.plugins.subscribe());
+                }
                 Ok(json!({}))
             }
             "session.start" => match self.ask(Command::Start).await? {
@@ -215,6 +239,21 @@ impl Connection {
             },
             "providers.status" => Ok(json!(self.providers_status().await?)),
             "provider.check" => Ok(json!(self.check_provider(parse_params(params)?).await?)),
+            "plugins.list" => Ok(json!(self.plugins.list())),
+            "plugins.set_enabled" => {
+                let SetPluginEnabled { name, enabled } = parse_params(params)?;
+                self.plugins
+                    .set_enabled(&name, enabled)
+                    .await
+                    .map_err(plugin_error)?;
+                Ok(json!({}))
+            }
+            "approvals.list" => Ok(json!(self.plugins.approval_list().map_err(plugin_error)?)),
+            "approvals.revoke" => {
+                let RevokeApproval { plugin } = parse_params(params)?;
+                self.plugins.revoke(&plugin).await.map_err(plugin_error)?;
+                Ok(json!({}))
+            }
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method {method:?}"),
@@ -336,6 +375,15 @@ async fn blocking<T: Send + 'static>(
             format!("Provider check failed: {e}"),
         )
     })
+}
+
+fn plugin_error(e: plugins::Refusal) -> RpcError {
+    let code = match e {
+        plugins::Refusal::NoSuchPlugin(_) => error_code::UNKNOWN_PLUGIN,
+        plugins::Refusal::NotApproved(_) => error_code::NOT_APPROVED,
+        plugins::Refusal::Other(_) => error_code::INTERNAL_ERROR,
+    };
+    RpcError::new(code, e.to_string())
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcError> {

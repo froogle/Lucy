@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use lucy_config::SttKind;
 use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -194,6 +195,10 @@ impl Runner {
         });
         // The model has died and been opened again since the last Turn ended.
         let mut respawned = false;
+        let stt = match settings.stt.kind {
+            SttKind::Whisper => self.adapters.stt.clone(),
+            SttKind::Superwhisper => self.adapters.superwhisper.clone(),
+        };
         let silence_timeout = settings.session.silence_timeout_secs;
         let wake_word = wake::word(&settings.wake_word);
         let confirmation = settings.confirmation;
@@ -387,7 +392,7 @@ impl Runner {
                 match output {
                     Output::Transcribe => {
                         let segment = segment.take().expect("Transcribe follows Speech");
-                        let stt = self.adapters.stt.clone();
+                        let stt = stt.clone();
                         let transcripts = transcripts_tx.clone();
                         tokio::task::spawn_blocking(move || {
                             let _ = transcripts.send(stt.transcribe(segment));

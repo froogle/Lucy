@@ -32,6 +32,10 @@ fn schema_describes_every_method_and_event() {
         "session.end",
         "providers.status",
         "provider.check",
+        "plugins.list",
+        "plugins.set_enabled",
+        "approvals.list",
+        "approvals.revoke",
     ] {
         assert!(
             schema["x-methods"][method].is_object(),
@@ -40,4 +44,5 @@ fn schema_describes_every_method_and_event() {
     }
     assert!(schema["x-events"]["state"].is_object());
     assert!(schema["x-events"]["level"].is_object());
+    assert!(schema["x-events"]["plugins.changed"].is_object());
 }
