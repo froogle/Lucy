@@ -244,21 +244,18 @@ impl Connection {
         let thinking = self.providers.thinking.clone();
         let providers = blocking(move || {
             let tiers = |name: &str| {
-                [
-                    (Tier::Fast, lucy_ipc::Tier::Fast),
-                    (Tier::Advanced, lucy_ipc::Tier::Advanced),
-                ]
-                .into_iter()
-                .filter(|(tier, _)| config.tiers.name(*tier) == name)
-                .map(|(_, tier)| tier)
-                .collect()
+                [Tier::Fast, Tier::Advanced]
+                    .into_iter()
+                    .filter(|tier| config.tiers.name(*tier) == name)
+                    .map(Into::into)
+                    .collect()
             };
             config
                 .providers
                 .iter()
                 .map(|(name, provider)| ProviderStatus {
                     name: name.clone(),
-                    kind: kind_name(provider.kind).to_owned(),
+                    kind: provider.kind.into(),
                     model: provider.model.clone(),
                     tiers: tiers(name),
                     problem: thinking.health(provider).err(),
@@ -344,12 +341,6 @@ async fn blocking<T: Send + 'static>(
             format!("Provider check failed: {e}"),
         )
     })
-}
-
-fn kind_name(kind: lucy_config::Kind) -> &'static str {
-    match kind {
-        lucy_config::Kind::Claude => "claude",
-    }
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcError> {

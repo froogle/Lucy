@@ -84,6 +84,23 @@ pub enum Tier {
     Advanced,
 }
 
+impl From<Kind> for lucy_ipc::ProviderKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::Claude => lucy_ipc::ProviderKind::Claude,
+        }
+    }
+}
+
+impl From<Tier> for lucy_ipc::Tier {
+    fn from(tier: Tier) -> Self {
+        match tier {
+            Tier::Fast => lucy_ipc::Tier::Fast,
+            Tier::Advanced => lucy_ipc::Tier::Advanced,
+        }
+    }
+}
+
 impl fmt::Display for Tier {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

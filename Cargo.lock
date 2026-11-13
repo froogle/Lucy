@@ -1221,6 +1221,7 @@ dependencies = [
 name = "lucy-config"
 version = "0.1.0"
 dependencies = [
+ "lucy-ipc",
  "serde",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",

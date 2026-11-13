@@ -92,11 +92,18 @@
       },
       "type": "object"
     },
+    "ProviderKind": {
+      "description": "Which CLI a Thinking Provider drives.",
+      "enum": [
+        "claude"
+      ],
+      "type": "string"
+    },
     "ProviderStatus": {
       "properties": {
         "kind": {
-          "description": "The CLI it drives, e.g. `claude`.",
-          "type": "string"
+          "$ref": "#/$defs/ProviderKind",
+          "description": "The CLI it drives."
         },
         "model": {
           "description": "The model passed to the CLI; `None` means the CLI's default.",

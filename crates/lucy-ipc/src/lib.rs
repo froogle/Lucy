@@ -129,14 +129,21 @@ pub struct ProvidersStatus {
 pub struct ProviderStatus {
     /// Its `[providers.<name>]` name.
     pub name: String,
-    /// The CLI it drives, e.g. `claude`.
-    pub kind: String,
+    /// The CLI it drives.
+    pub kind: ProviderKind,
     /// The model passed to the CLI; `None` means the CLI's default.
     pub model: Option<String>,
     /// The Model tiers that use it.
     pub tiers: Vec<Tier>,
     /// What's wrong and how to fix it, or `None` if it is healthy.
     pub problem: Option<String>,
+}
+
+/// Which CLI a Thinking Provider drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    Claude,
 }
 
 /// A Model tier.

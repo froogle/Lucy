@@ -4,7 +4,7 @@
 mod harness;
 
 use harness::Harness;
-use lucy_ipc::{error_code, Error, ProviderStatus, Tier};
+use lucy_ipc::{error_code, Error, ProviderKind, ProviderStatus, Tier};
 
 const TWO_PROVIDERS: &str = r#"
 [providers.quick]
@@ -35,14 +35,14 @@ fn providers_status_lists_each_provider_with_its_tier_and_health() {
         [
             ProviderStatus {
                 name: "deep".into(),
-                kind: "claude".into(),
+                kind: ProviderKind::Claude,
                 model: Some("opus".into()),
                 tiers: vec![Tier::Advanced],
                 problem: Some("Claude Code isn't signed in.".into()),
             },
             ProviderStatus {
                 name: "quick".into(),
-                kind: "claude".into(),
+                kind: ProviderKind::Claude,
                 model: Some("haiku".into()),
                 tiers: vec![Tier::Fast],
                 problem: None,
