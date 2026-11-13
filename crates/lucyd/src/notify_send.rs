@@ -80,7 +80,6 @@ impl Notifier for NotifySend {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     use super::*;
@@ -88,18 +87,29 @@ mod tests {
 
     /// A stand-in `notify-send` that appends each call's arguments to
     /// `calls`, one call per line, and prints `output`.
+    ///
+    /// A child process writes it: had this process held it open for
+    /// writing, a child another test forks meanwhile could inherit that fd
+    /// until it execs, and running the script would fail with "Text file
+    /// busy".
     fn fake_notify_send(dir: &Path, output: &str) -> PathBuf {
         let program = dir.join("notify-send");
         let calls = dir.join("calls");
-        std::fs::write(
-            &program,
-            format!(
-                "#!/bin/sh\n(IFS='|'; echo \"$*\") >> '{}'\nprintf '{output}'\n",
-                calls.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let script = format!(
+            "#!/bin/sh\n(IFS='|'; echo \"$*\") >> '{}'\nprintf '{output}'\n",
+            calls.display()
+        );
+        let written = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+                "sh",
+            ])
+            .arg(script)
+            .arg(&program)
+            .status()
+            .unwrap();
+        assert!(written.success());
         program
     }
 
