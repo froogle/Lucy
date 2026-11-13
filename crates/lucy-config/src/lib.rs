@@ -217,7 +217,7 @@ impl Default for Endpointing {
 }
 
 /// `[whisper]`: the `whisper` STT Provider.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Whisper {
     /// Run on the GPU through Vulkan. Unset means on the GPU if Vulkan
@@ -227,15 +227,6 @@ pub struct Whisper {
     /// `$XDG_DATA_HOME/lucy/models`. Unset means `small.en` on the GPU and
     /// `base.en` on the CPU.
     pub model: Option<String>,
-}
-
-impl Default for Whisper {
-    fn default() -> Self {
-        Whisper {
-            gpu: None,
-            model: None,
-        }
-    }
 }
 
 /// `[session]`
