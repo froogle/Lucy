@@ -11,9 +11,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::{
-    ApprovalsList, Event, Hello, HelloResult, PluginsList, ProviderCheck, ProviderCheckResult,
-    ProvidersStatus, RevokeApproval, Role, SessionStarted, SetPluginEnabled, Status, Subscribe,
-    Topic, VoicePreview, PROTOCOL,
+    ApprovalsList, Event, Hello, HelloResult, MicLevel, PluginsList, ProviderCheck,
+    ProviderCheckResult, ProvidersStatus, RevokeApproval, Role, SessionStarted, SetPluginEnabled,
+    Status, Subscribe, Topic, VoicePreview, WakeWordTest, WakeWordTestResult, PROTOCOL,
 };
 
 pub struct Client {
@@ -119,11 +119,28 @@ impl Client {
 
     /// Has Lucy say `text` outside any Session, and waits until she has.
     pub fn voice_preview(&mut self, text: &str) -> Result<(), Error> {
+        self.voice_preview_in(text, None)
+    }
+
+    /// Has Lucy say `text` in the Piper voice `voice` (or her running voice
+    /// if `None`), and waits until she has.
+    pub fn voice_preview_in(&mut self, text: &str, voice: Option<&str>) -> Result<(), Error> {
         let params = VoicePreview {
             text: text.to_owned(),
+            voice: voice.map(str::to_owned),
         };
         let _: Value = self.call("test.voice_preview", json!(params))?;
         Ok(())
+    }
+
+    /// How loud the microphone `config.toml` names has been since last asked.
+    pub fn mic_level(&mut self) -> Result<MicLevel, Error> {
+        self.call("test.mic_level", Value::Null)
+    }
+
+    /// Listens for the Wake word for up to `timeout_secs`, opening no Session.
+    pub fn test_wake_word(&mut self, timeout_secs: f64) -> Result<WakeWordTestResult, Error> {
+        self.call("test.wake_word", json!(WakeWordTest { timeout_secs }))
     }
 
     /// The next event, exactly as lucyd sent it (one NDJSON line, no newline).

@@ -96,6 +96,27 @@ fn a_second_voice_preview_is_refused_as_busy_while_one_plays() {
 }
 
 #[test]
+fn a_voice_preview_can_speak_in_a_voice_that_is_not_running() {
+    let lucyd = Harness::start();
+    let mut client = lucyd.client();
+    let previewed =
+        std::thread::spawn(move || client.voice_preview_in("hello", Some("en_GB-alba-medium")));
+
+    assert_eq!(lucyd.tts.next_sentence(), "hello");
+    assert_eq!(lucyd.tts.voice().as_deref(), Some("en_GB-alba-medium"));
+    lucyd.tts.finish_playing();
+    previewed.join().unwrap().unwrap();
+
+    lucyd.client().start_session().unwrap();
+    assert_eq!(
+        lucyd.tts.voice(),
+        None,
+        "a Session speaks in the running voice"
+    );
+    lucyd.client().end_session().unwrap();
+}
+
+#[test]
 fn a_voice_preview_of_empty_text_is_refused() {
     let lucyd = Harness::start();
 

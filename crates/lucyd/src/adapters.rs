@@ -155,6 +155,16 @@ pub trait Tts: Send + Sync {
     /// device goes away it sends `DeviceLost`. Dropping the Speaker stops
     /// playback.
     fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker>;
+
+    /// Opens playback as `open` does, but speaking in `voice` rather than
+    /// the running voice, for a Voice preview of a voice not chosen yet. A
+    /// voice that isn't there yet is fetched first.
+    fn open_in_voice(
+        &self,
+        speaker: &str,
+        voice: &str,
+        events: mpsc::UnboundedSender<SpeakerEvent>,
+    ) -> Box<dyn Speaker>;
 }
 
 pub trait Speaker: Send {
@@ -355,6 +365,15 @@ impl Tts for Inert {
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker> {
         Box::new(InertSpeaker { events })
+    }
+
+    fn open_in_voice(
+        &self,
+        speaker: &str,
+        _voice: &str,
+        events: mpsc::UnboundedSender<SpeakerEvent>,
+    ) -> Box<dyn Speaker> {
+        Tts::open(self, speaker, events)
     }
 }
 

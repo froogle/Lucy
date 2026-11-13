@@ -1155,6 +1155,8 @@ pub struct FakeTts {
     events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
     /// The device the open Speaker plays on.
     device: Arc<Mutex<Option<String>>>,
+    /// The voice the open Speaker speaks in, if not the running one.
+    voice: Arc<Mutex<Option<String>>>,
 }
 
 impl FakeTts {
@@ -1171,7 +1173,13 @@ impl FakeTts {
             ducks: Arc::default(),
             events: Arc::default(),
             device: Arc::default(),
+            voice: Arc::default(),
         }
+    }
+
+    /// The voice the last Speaker was opened in, or None for the running one.
+    pub fn voice(&self) -> Option<String> {
+        self.voice.lock().unwrap().clone()
     }
 
     /// The device the last Speaker was opened on.
@@ -1240,7 +1248,19 @@ impl Tts for FakeTts {
     fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
         *self.events.lock().unwrap() = Some(events);
         *self.device.lock().unwrap() = Some(speaker.to_owned());
+        *self.voice.lock().unwrap() = None;
         Box::new(FakeSpeaker { tts: self.clone() })
+    }
+
+    fn open_in_voice(
+        &self,
+        speaker: &str,
+        voice: &str,
+        events: mpsc::UnboundedSender<SpeakerEvent>,
+    ) -> Box<dyn Speaker> {
+        let opened = self.open(speaker, events);
+        *self.voice.lock().unwrap() = Some(voice.to_owned());
+        opened
     }
 }
 
@@ -1570,12 +1590,19 @@ impl lucyd::audio::Vad for FakeVad {
 
 /// A wake word that hears the Wake word where a run of `WAKE` frames starts.
 #[derive(Default)]
+/// Its score is each frame's first sample.
 pub struct FakeWakeWord {
     in_wake: bool,
+    score: f32,
 }
 
 impl lucyd::audio::WakeWord for FakeWakeWord {
+    fn score(&self) -> f32 {
+        self.score
+    }
+
     fn push(&mut self, frame: &[f32]) -> bool {
+        self.score = frame[0];
         let was_in_wake = std::mem::replace(&mut self.in_wake, frame[0] == WAKE);
         self.in_wake && !was_in_wake
     }

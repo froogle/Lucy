@@ -4,9 +4,10 @@ use schemars::generate::SchemaSettings;
 use serde_json::{json, Value};
 
 use crate::{
-    ApprovalsList, Hello, HelloResult, LevelEvent, PluginsChanged, PluginsList, ProviderCheck,
-    ProviderCheckResult, ProvidersStatus, RevokeApproval, SessionStarted, SetPluginEnabled,
-    StateEvent, Status, Subscribe, VoicePreview, PROTOCOL,
+    ApprovalsList, Hello, HelloResult, LevelEvent, MicLevel, PluginsChanged, PluginsList,
+    ProviderCheck, ProviderCheckResult, ProvidersStatus, RevokeApproval, SessionStarted,
+    SetPluginEnabled, StateEvent, Status, Subscribe, VoicePreview, WakeWordTest,
+    WakeWordTestResult, PROTOCOL,
 };
 
 /// The schema committed as `schema/lucy-ipc.schema.json`. `x-methods` maps
@@ -30,6 +31,9 @@ pub fn schema() -> Value {
     let revoke_approval = generator.subschema_for::<RevokeApproval>();
     let plugins_changed = generator.subschema_for::<PluginsChanged>();
     let voice_preview = generator.subschema_for::<VoicePreview>();
+    let mic_level = generator.subschema_for::<MicLevel>();
+    let wake_word_test = generator.subschema_for::<WakeWordTest>();
+    let wake_word_test_result = generator.subschema_for::<WakeWordTestResult>();
 
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -49,6 +53,8 @@ pub fn schema() -> Value {
             "approvals.list": {"result": approvals_list},
             "approvals.revoke": {"params": revoke_approval, "result": {"type": "object"}},
             "test.voice_preview": {"params": voice_preview, "result": {"type": "object"}},
+            "test.mic_level": {"result": mic_level},
+            "test.wake_word": {"params": wake_word_test, "result": wake_word_test_result},
         },
         "x-events": {
             "state": {"params": state_event},

@@ -46,7 +46,7 @@ fn main() -> ExitCode {
         lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
             .join("lucy")
             .join("voices"),
-        lucyd::piper::DEFAULT_VOICE,
+        &config.piper.voice,
     );
     // What Lucy plays is the echo canceller's reference.
     let echo = piper

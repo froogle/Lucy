@@ -56,6 +56,13 @@ lucyd runs `python -m piper.http_server`, which needs the `http` extra: install 
 - **Live checks:** `cargo test -p lucyd --test whisper --test silero --test mic -- --ignored`. Outside the main checkout set `LUCY_WHISPER_MODELS` (a dir of ggml models) and `LUCY_SPEECH_WAV` (a speech recording); they default to the voice-loop prototype's.
 - **PipeWire in a smoke run:** a short `XDG_RUNTIME_DIR` hides PipeWire, so cpal falls back to ALSA. Also set `PIPEWIRE_RUNTIME_DIR=/run/user/$UID`.
 
+## Setup and the `lucy` pages
+
+- **Shape:** `lucy` (no arguments) and `lucy setup` ask one question a line on stdin (`crates/lucy/src/ui.rs`); at the end of input every question takes its default. The level meter redraws one line.
+- **Tests:** `crates/lucy/tests/support/mod.rs` runs the real `lucy` binary against an in-process lucyd with inert adapters, in its own XDG dirs, with a `PATH` holding only the fakes a test writes (`Home::fake`, logged to `<name>.log`). Answers are fed one a line, in prompt order. `--os-release` (hidden) points the Piper install at a test file.
+- **Tests inside lucyd:** `test.mic_level` and `test.wake_word` run in the Session runner (`runner/setup.rs`), refused while a Session is open. Under `Harness::hearing`, the fake wake word's score is each frame's first sample.
+- **systemd:** the units are `dist/systemd/*.service`. When systemd doesn't know `lucyd.service`, setup writes them to `$XDG_CONFIG_HOME/systemd/user/` running the binaries beside `lucy`. Tests use a fake `systemctl`; never enable the units in your own session.
+
 ## Unix sockets
 
 Socket paths are limited to about 108 bytes. The session scratchpad path is too long for a smoke run, so put the socket under `/tmp` or a short tempdir.
