@@ -2,6 +2,7 @@
 //! `session` state machine asks for.
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use lucy_ipc::{State, Status};
@@ -10,6 +11,7 @@ use tokio::time::Instant;
 
 use crate::adapters::Adapters;
 use crate::mcp::{Caller, Relays};
+use crate::plugins;
 use crate::session::{Input, Output, Session};
 use crate::status::StatusBus;
 
@@ -40,6 +42,7 @@ pub struct Runner {
     status: StatusBus,
     adapters: Adapters,
     relays: Relays,
+    plugins: Arc<plugins::Host>,
     silence_timeout: Duration,
     /// False once the speech source has gone away.
     speech_open: bool,
@@ -52,6 +55,7 @@ impl Runner {
         status: StatusBus,
         adapters: Adapters,
         relays: Relays,
+        plugins: Arc<plugins::Host>,
         silence_timeout: Duration,
     ) -> Self {
         Runner {
@@ -59,6 +63,7 @@ impl Runner {
             status,
             adapters,
             relays,
+            plugins,
             silence_timeout,
             speech_open: true,
             sessions_started: 0,
@@ -87,16 +92,28 @@ impl Runner {
         }
     }
 
-    /// Runs one Session until it ends. Status changes are published before
-    /// replying, so a client sees them as soon as its request returns.
+    /// Runs one Session until it ends, then stops the Plugins it started.
     async fn run_session(
         &mut self,
         id: SessionId,
         started: oneshot::Sender<Result<SessionId, StartError>>,
     ) {
+        let plugin_tools = self.plugins.open_session().await;
+        self.session_loop(id, started, plugin_tools.clone()).await;
+        plugin_tools.stop().await;
+    }
+
+    /// Status changes are published before replying, so a client sees them
+    /// as soon as its request returns.
+    async fn session_loop(
+        &mut self,
+        id: SessionId,
+        started: oneshot::Sender<Result<SessionId, StartError>>,
+        plugin_tools: Arc<plugins::SessionTools>,
+    ) {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // Revoked when the Session ends.
-        let (relay, _token) = self.relays.issue(Caller::SessionModel);
+        let (relay, _token) = self.relays.issue(Caller::SessionModel, plugin_tools);
         let mut model = self.adapters.thinking.open(events_tx, relay);
         let (played_tx, mut played) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(played_tx);

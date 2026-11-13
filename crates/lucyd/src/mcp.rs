@@ -19,6 +19,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::adapters::Relay;
+use crate::plugins::SessionTools;
 use crate::runner::Command;
 
 /// Who a token was issued to. Each sees a different set of tools.
@@ -49,11 +50,15 @@ impl Relays {
         }
     }
 
-    /// A relay command for `caller`. Its token works until the returned
-    /// `Token` is dropped.
-    pub fn issue(&self, caller: Caller) -> (Relay, Token) {
+    /// A relay command for `caller`, offering the Session's `plugins`. Its
+    /// token works until the returned `Token` is dropped.
+    pub fn issue(&self, caller: Caller, plugins: Arc<SessionTools>) -> (Relay, Token) {
         let value = random_token();
-        self.tokens.0.lock().unwrap().insert(value.clone(), caller);
+        self.tokens
+            .0
+            .lock()
+            .unwrap()
+            .insert(value.clone(), Grant { caller, plugins });
         let relay = Relay {
             program: self.program.clone(),
             args: vec![
@@ -71,13 +76,20 @@ impl Relays {
     }
 }
 
+/// What a token lets its holder reach.
+#[derive(Clone)]
+struct Grant {
+    caller: Caller,
+    plugins: Arc<SessionTools>,
+}
+
 /// The tokens currently issued.
 #[derive(Clone, Default)]
-struct Tokens(Arc<Mutex<HashMap<String, Caller>>>);
+struct Tokens(Arc<Mutex<HashMap<String, Grant>>>);
 
 impl Tokens {
-    fn caller(&self, token: &str) -> Option<Caller> {
-        self.0.lock().unwrap().get(token).copied()
+    fn grant(&self, token: &str) -> Option<Grant> {
+        self.0.lock().unwrap().get(token).cloned()
     }
 }
 
@@ -125,7 +137,7 @@ async fn connection(
     let Some(token) = read_token(&mut stream).await else {
         return;
     };
-    if tokens.caller(&token).is_none() {
+    if tokens.grant(&token).is_none() {
         let _ = stream.write_all(b"refused\n").await;
         return;
     }
@@ -162,10 +174,11 @@ struct Tools {
 }
 
 impl Tools {
-    /// Who is calling, or an error once the token has been revoked.
-    fn caller(&self) -> Result<Caller, ErrorData> {
+    /// Who is calling and what they may reach, or an error once the token
+    /// has been revoked.
+    fn grant(&self) -> Result<Grant, ErrorData> {
         self.tokens
-            .caller(&self.token)
+            .grant(&self.token)
             .ok_or_else(|| ErrorData::invalid_request("this relay's token has been revoked", None))
     }
 
@@ -179,6 +192,10 @@ impl Tools {
             _ => CallToolResult::error(vec![ContentBlock::text("No Session is open.")]),
         }
     }
+}
+
+fn no_tool(name: &str) -> ErrorData {
+    ErrorData::invalid_params(format!("no tool named {name}"), None)
 }
 
 fn end_session_tool() -> Tool {
@@ -204,8 +221,9 @@ impl ServerHandler for Tools {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let tools = match self.caller()? {
-            Caller::SessionModel => vec![end_session_tool()],
+        let grant = self.grant()?;
+        let tools = match grant.caller {
+            Caller::SessionModel => [vec![end_session_tool()], grant.plugins.list()].concat(),
             Caller::Delegate => vec![],
         };
         Ok(ListToolsResult::with_all_items(tools))
@@ -216,12 +234,16 @@ impl ServerHandler for Tools {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        match (self.caller()?, &*request.name) {
+        let grant = self.grant()?;
+        match (grant.caller, &*request.name) {
             (Caller::SessionModel, "end_session") => Ok(self.end_session().await.into()),
-            (_, name) => Err(ErrorData::invalid_params(
-                format!("no tool named {name}"),
-                None,
-            )),
+            (Caller::SessionModel, name) => {
+                match grant.plugins.call(name, request.arguments).await {
+                    Some(result) => Ok(result.into()),
+                    None => Err(no_tool(name)),
+                }
+            }
+            (_, name) => Err(no_tool(name)),
         }
     }
 }

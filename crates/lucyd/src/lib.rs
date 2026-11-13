@@ -5,6 +5,7 @@ pub mod adapters;
 pub mod claude;
 mod ipc;
 mod mcp;
+pub mod plugins;
 mod runner;
 mod session;
 mod status;
@@ -26,6 +27,8 @@ pub struct Options {
     /// The `lucy` binary, which model processes run as `lucy mcp-relay`.
     pub lucy_program: PathBuf,
     pub adapters: adapters::Adapters,
+    /// Where Plugins and Lucy's state live; normally `plugins::Paths::from_env()`.
+    pub plugins: plugins::Paths,
 }
 
 /// A running lucyd. Dropping it stops lucyd and removes its sockets.
@@ -43,6 +46,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         config,
         lucy_program,
         adapters,
+        plugins,
     } = options;
     let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -60,6 +64,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             status.clone(),
             adapters,
             relays.clone(),
+            plugins::Host::new(plugins),
             Duration::from_secs_f64(config.session.silence_timeout_secs),
         )
         .run(),

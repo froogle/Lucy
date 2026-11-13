@@ -15,7 +15,7 @@ use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
     Adapters, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
 };
-use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
@@ -33,6 +33,7 @@ pub struct Harness {
     pub tts: FakeTts,
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
+    plugins: lucyd::plugins::Paths,
     _dir: tempfile::TempDir,
 }
 
@@ -49,10 +50,16 @@ impl Harness {
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
+        let plugins = lucyd::plugins::Paths {
+            user: dir.path().join("data/lucy/plugins"),
+            shipped: dir.path().join("usr/share/lucy/plugins"),
+            state: dir.path().join("state/lucy"),
+        };
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config,
             lucy_program: lucy_binary(),
+            plugins: plugins.clone(),
             adapters: Adapters {
                 speech: speech_rx,
                 stt: Arc::new(stt.clone()),
@@ -68,6 +75,7 @@ impl Harness {
             thinking,
             tts,
             bus: Arc::default(),
+            plugins,
             _dir: dir,
         };
         harness.record_bus();
@@ -80,6 +88,76 @@ impl Harness {
 
     pub fn mcp_socket_path(&self) -> &Path {
         self.daemon.mcp_socket_path()
+    }
+
+    /// A scratch directory for the test's own files, outside every Plugin
+    /// folder and Lucy's state.
+    pub fn scratch(&self) -> PathBuf {
+        let scratch = self._dir.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        scratch
+    }
+
+    /// Lucy's state dir.
+    pub fn state_dir(&self) -> &Path {
+        &self.plugins.state
+    }
+
+    /// Installs a user Plugin: `manifest` plus the fixture Plugin executable
+    /// as `./fixture-plugin`. Returns its folder.
+    pub fn install_plugin(&self, name: &str, manifest: &str) -> PathBuf {
+        install(&self.plugins.user.join(name), manifest)
+    }
+
+    /// Installs a shipped Plugin, as `install_plugin` does.
+    pub fn install_shipped_plugin(&self, name: &str, manifest: &str) -> PathBuf {
+        install(&self.plugins.shipped.join(name), manifest)
+    }
+
+    /// Records an Approval for the Plugin `name` as it is now (the user copy
+    /// if there is one), saving an input schema for each Manifest tool that
+    /// marks it as approved: `{"type": "object", "description": "approved
+    /// <tool>", "properties": {..}}`.
+    pub fn approve(&self, name: &str) {
+        let user = self.plugins.user.join(name);
+        let dir = if user.exists() {
+            user
+        } else {
+            self.plugins.shipped.join(name)
+        };
+        let manifest = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
+        let parsed: toml::Table = toml::from_str(&manifest).unwrap();
+        let command = parsed["command"].as_array().unwrap()[0].as_str().unwrap();
+        let executable = std::fs::read(dir.join(command)).unwrap();
+        let mut schemas = toml::Table::new();
+        for tool in parsed["tools"].as_array().unwrap() {
+            let tool = tool["name"].as_str().unwrap();
+            let schema = serde_json::json!({
+                "type": "object",
+                "description": format!("approved {tool}"),
+                "properties": {"text": {"type": "string"}, "path": {"type": "string"}},
+            });
+            schemas.insert(tool.into(), schema.to_string().into());
+        }
+        let mut approval = toml::Table::new();
+        approval.insert(
+            "hash".into(),
+            content_hash(manifest.as_bytes(), &executable).into(),
+        );
+        approval.insert("schemas".into(), schemas.into());
+
+        let path = self.plugins.state.join("approvals.toml");
+        let mut approvals: toml::Table = std::fs::read_to_string(&path)
+            .map(|text| toml::from_str(&text).unwrap())
+            .unwrap_or_default();
+        approvals
+            .entry("plugins")
+            .or_insert_with(|| toml::Table::new().into())
+            .as_table_mut()
+            .unwrap()
+            .insert(name.into(), approval.into());
+        std::fs::create_dir_all(&self.plugins.state).unwrap();
+        std::fs::write(path, toml::to_string(&approvals).unwrap()).unwrap();
     }
 
     /// Runs `lucy mcp-relay` against lucyd's MCP socket with `args` after the
@@ -206,6 +284,46 @@ fn lucy_binary() -> PathBuf {
     lucy
 }
 
+/// The fixture Plugin executable (`examples/fixture-plugin.rs`), which cargo
+/// builds beside this test's binary.
+fn fixture_plugin() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let fixture = exe
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("examples/fixture-plugin");
+    assert!(
+        fixture.exists(),
+        "{} not found; run `cargo build -p lucyd --examples`",
+        fixture.display()
+    );
+    fixture
+}
+
+fn install(dir: &Path, manifest: &str) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+    std::fs::copy(fixture_plugin(), dir.join("fixture-plugin")).unwrap();
+    dir.to_owned()
+}
+
+/// What an Approval pins: SHA-256 over the Manifest's length (u64, little
+/// endian), the Manifest, then the executable, as lowercase hex.
+fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update((manifest.len() as u64).to_le_bytes());
+    hasher.update(manifest);
+    hasher.update(executable);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Waits for `receiver`, failing the test rather than hanging.
 fn recv<T>(receiver: &Mutex<std_mpsc::Receiver<T>>, what: &str) -> T {
     receiver
@@ -315,6 +433,31 @@ impl FakeThinking {
                 .await
                 .map_err(|e| e.to_string())
         })
+    }
+
+    /// The model calls one of Lucy's tools with `arguments`, a JSON object.
+    pub fn call_tool_with(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, String> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("arguments must be a JSON object")
+        };
+        self.with_mcp(|client| async move {
+            client
+                .call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// The tools the model is offered.
+    pub fn tools(&self) -> Vec<Tool> {
+        self.with_mcp(
+            |client| async move { client.list_all_tools().await.map_err(|e| e.to_string()) },
+        )
+        .unwrap()
     }
 
     /// The names of the tools the model is offered.

@@ -35,6 +35,7 @@ fn main() -> ExitCode {
         config,
         lucy_program,
         adapters,
+        plugins: lucyd::plugins::Paths::from_env(),
     }) {
         Ok(daemon) => daemon,
         Err(e) => {

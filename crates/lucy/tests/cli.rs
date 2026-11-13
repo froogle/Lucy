@@ -16,6 +16,11 @@ fn start_lucyd(runtime_dir: &Path) -> lucyd::Daemon {
         config: lucy_config::Config::default(),
         lucy_program: env!("CARGO_BIN_EXE_lucy").into(),
         adapters: lucyd::adapters::Adapters::inert(),
+        plugins: lucyd::plugins::Paths {
+            user: runtime_dir.join("plugins"),
+            shipped: runtime_dir.join("shipped"),
+            state: runtime_dir.join("state"),
+        },
     })
     .unwrap()
 }
