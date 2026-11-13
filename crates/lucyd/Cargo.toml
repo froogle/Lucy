@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 lucy-ipc.workspace = true
 lucy-config.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 

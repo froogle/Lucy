@@ -1,1 +1,107 @@
-//! lucyd's public IPC contract.
+//! lucyd's public IPC contract (ADR 0006).
+//!
+//! A Unix socket at `$XDG_RUNTIME_DIR/lucy/lucyd.sock` carrying
+//! newline-delimited JSON-RPC 2.0. Every client starts with `hello`. Within a
+//! major protocol version, fields are only ever added.
+//!
+//! Never carried: transcripts, spoken text, tool arguments.
+
+mod client;
+
+use std::path::PathBuf;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+pub use client::{Client, Error};
+
+/// The major protocol version this crate speaks.
+pub const PROTOCOL: u32 = 1;
+
+/// JSON-RPC error codes. The negative ones below -32000 are lucyd's own.
+pub mod error_code {
+    pub const PARSE_ERROR: i64 = -32700;
+    pub const INVALID_REQUEST: i64 = -32600;
+    pub const METHOD_NOT_FOUND: i64 = -32601;
+    pub const INVALID_PARAMS: i64 = -32602;
+    /// `hello` asked for a major protocol version lucyd doesn't speak.
+    pub const PROTOCOL_MISMATCH: i64 = -32001;
+    /// A request arrived before `hello`.
+    pub const HELLO_REQUIRED: i64 = -32002;
+}
+
+/// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
+pub fn default_socket_path() -> Option<PathBuf> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(runtime).join("lucy").join("lucyd.sock"))
+}
+
+/// Params of `hello`, the first request on every connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Hello {
+    /// Major protocol version the client speaks.
+    pub protocol: u32,
+    /// Free-form client name, for logs.
+    pub client: String,
+    /// A role the client claims, if any.
+    #[serde(default)]
+    pub role: Option<Role>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// Draws the Indicator. While no client holds it, lucyd uses notifications.
+    Indicator,
+}
+
+/// Result of `hello`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HelloResult {
+    /// Major protocol version lucyd speaks.
+    pub protocol: u32,
+    /// lucyd's name and version.
+    pub server: String,
+}
+
+/// Result of `status`: a snapshot of lucyd.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Status {
+    pub state: State,
+    /// The current Session, if one is open.
+    pub session_id: Option<String>,
+}
+
+/// Lucy's Session state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    Idle,
+}
+
+/// Params of `subscribe`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Subscribe {
+    pub topics: Vec<Topic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Topic {
+    /// `state` events. The current state is sent straight after subscribing.
+    State,
+}
+
+/// Params of the `state` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StateEvent {
+    pub state: State,
+    pub session_id: Option<String>,
+}
+
+/// An event: a JSON-RPC notification from lucyd.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "method", content = "params", rename_all = "snake_case")]
+pub enum Event {
+    State(StateEvent),
+}
