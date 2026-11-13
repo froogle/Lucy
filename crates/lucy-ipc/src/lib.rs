@@ -9,7 +9,7 @@
 mod client;
 mod schema;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,6 +41,16 @@ pub mod error_code {
 pub fn default_socket_path() -> Option<PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty())?;
     Some(PathBuf::from(runtime).join("lucy").join("lucyd.sock"))
+}
+
+/// lucyd's private MCP socket, beside the public socket at `socket_path`.
+pub fn mcp_socket_path(socket_path: &Path) -> PathBuf {
+    socket_path.with_file_name("mcp.sock")
+}
+
+/// `$XDG_RUNTIME_DIR/lucy/mcp.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
+pub fn default_mcp_socket_path() -> Option<PathBuf> {
+    default_socket_path().map(|path| mcp_socket_path(&path))
 }
 
 /// Params of `hello`, the first request on every connection.

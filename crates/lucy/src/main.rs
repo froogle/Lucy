@@ -97,9 +97,7 @@ fn events() -> Result<(), lucy_ipc::Error> {
 /// Sends `token`, then pipes stdin to the socket and the socket to stdout
 /// until lucyd hangs up.
 fn mcp_relay(token: &str, socket: Option<PathBuf>) -> ExitCode {
-    let Some(socket) = socket
-        .or_else(|| lucy_ipc::default_socket_path().map(|path| path.with_file_name("mcp.sock")))
-    else {
+    let Some(socket) = socket.or_else(lucy_ipc::default_mcp_socket_path) else {
         eprintln!("lucy: mcp-relay: XDG_RUNTIME_DIR is not set");
         return ExitCode::FAILURE;
     };

@@ -44,7 +44,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         lucy_program,
         adapters,
     } = options;
-    let mcp_socket_path = socket_path.with_file_name("mcp.sock");
+    let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

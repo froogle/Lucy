@@ -33,14 +33,20 @@ impl Default for Session {
 
 /// `$XDG_CONFIG_HOME/lucy/config.toml`, falling back to `~/.config`.
 pub fn default_path() -> PathBuf {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+        .join("lucy")
+        .join("config.toml")
+}
+
+/// The XDG base directory in `var`, or `~/<fallback>` if it is unset or empty.
+pub fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(var)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             let home = std::env::var_os("HOME").unwrap_or_default();
-            PathBuf::from(home).join(".config")
-        });
-    base.join("lucy").join("config.toml")
+            PathBuf::from(home).join(fallback)
+        })
 }
 
 /// Loads the config at `path`. A missing file means all defaults.
