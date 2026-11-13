@@ -26,6 +26,8 @@ pub enum Input {
     Ask(Question),
     /// The question went unanswered for too long.
     AnswerTimedOut,
+    /// The question is no longer asked; nothing is said.
+    Withdrawn,
 }
 
 /// Something Lucy asks the user in the middle of a tool call.
@@ -239,6 +241,10 @@ impl Session {
                 Some(answer) => self.answered(answer),
                 None => vec![],
             },
+            Input::Withdrawn => {
+                self.asking = None;
+                self.turn_finished().into_iter().collect()
+            }
         }
     }
 

@@ -372,3 +372,29 @@ fn an_argument_that_looks_like_a_placeholder_is_said_as_it_is() {
         format!("Write hello to {}?", path.display())
     );
 }
+
+// Tickets 11 and 14 together: the Thinking process dies while Confirming.
+#[test]
+fn a_question_pending_when_the_thinking_process_dies_is_withdrawn() {
+    let lucyd = with_files_plugin("");
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    let (file, call) = model_writes(&lucyd, &mut events);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    lucyd.tts.next_sentence();
+
+    // While the prompt is still playing.
+    lucyd.thinking.dies();
+
+    assert_eq!(lucyd.thinking.next_turn(), "save hello for me");
+    assert_eq!(next_state(&mut events).state, State::Speaking);
+    lucyd.tts.finish_playing();
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+    let result = call.join().unwrap().unwrap();
+    assert!(text(&result).starts_with("declined"), "{}", text(&result));
+    assert!(!file.exists());
+    // Withdrawn, not declined out loud.
+    assert!(!lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned()));
+}

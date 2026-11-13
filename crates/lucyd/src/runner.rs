@@ -35,7 +35,8 @@ pub enum Command {
     EndAfterSpeech(oneshot::Sender<Result<(), EndError>>),
     /// Ask the user something and hear their answer (Confirming). Questions
     /// are asked one at a time, in order. With no open Session, or if the
-    /// Session ends first, `reply` is dropped unanswered.
+    /// Session ends or the model process dies first, `reply` is dropped
+    /// unanswered.
     Ask(Ask),
 }
 
@@ -315,7 +316,13 @@ impl Runner {
                         if let Some(turn) = session.pending_turn() {
                             model.send_turn(turn.to_owned());
                         }
-                        continue;
+                        // Questions go unanswered rather than linger: the
+                        // resent Turn asks again if it needs to.
+                        questions.clear();
+                        if answer_to.take().is_none() {
+                            continue;
+                        }
+                        Input::Withdrawn
                     }
                     _ => {
                         eprintln!("lucyd: the model process died again");
