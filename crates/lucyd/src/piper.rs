@@ -103,10 +103,11 @@ impl Drop for Piper {
 }
 
 impl Tts for Piper {
-    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
+    fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
         let shared = self.shared.clone();
         playback::speaker(
             Box::new(move |text| shared.synthesise(text)),
+            speaker,
             events,
             self.reference.clone(),
         )
@@ -545,7 +546,7 @@ mod tests {
         let piper = Piper::start(Some(live_python()), voices.path().to_owned(), DEFAULT_VOICE);
         let reference = piper.take_reference().unwrap();
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let mut speaker = piper.open(events_tx);
+        let mut speaker = piper.open("default", events_tx);
 
         speaker.speak("Hello, I'm Lucy.".into());
         speaker.speak("This is my voice.".into());
@@ -559,6 +560,7 @@ mod tests {
                     levels += 1;
                 }
                 SpeakerEvent::Failed(sentence) => panic!("{sentence:?} failed"),
+                SpeakerEvent::DeviceLost => panic!("the speaker went away"),
             }
         }
         // Roughly 30 levels a second over a couple of seconds of speech.

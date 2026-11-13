@@ -75,6 +75,7 @@ fn a_tier_naming_a_missing_provider_is_spoken_with_the_fix_then_the_session_ends
         said.contains("nope") && said.contains("providers.nope"),
         "{said}"
     );
+    assert_eq!(next_state(&mut events).state, State::Error);
     assert_eq!(next_state(&mut events).state, State::Speaking);
     lucyd.tts.finish_playing();
 
@@ -91,7 +92,8 @@ fn a_config_file_that_does_not_parse_is_spoken_then_the_session_ends() {
 
     let said = lucyd.tts.next_sentence();
     assert!(said.contains("config.toml"), "{said}");
-    next_state(&mut events);
+    assert_eq!(next_state(&mut events).state, State::Error);
+    assert_eq!(next_state(&mut events).state, State::Speaking);
     lucyd.tts.finish_playing();
 
     assert_eq!(next_state(&mut events).state, State::Idle);

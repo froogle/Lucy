@@ -142,6 +142,29 @@ fn next_state_within(client: &mut lucy_ipc::Client, secs: u64) -> lucy_ipc::Stat
     next_state(client)
 }
 
+// Tickets 07 and 11 together: a Session the Wake word opens re-resolves a
+// pinned microphone too.
+#[test]
+fn a_wake_with_the_pinned_mic_missing_falls_back_with_one_notification() {
+    let lucyd = Harness::hearing(&format!(
+        "{HEY_LUCY}[audio]\nmic = \"alsa_input.usb-Blue_Yeti\"\n"
+    ));
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let mut events = lucyd.state_client();
+    lucyd.mic.unplug("alsa_input.usb-Blue_Yeti");
+
+    lucyd.mic.feed(SILENCE, ms(1024));
+    lucyd.mic.feed(WAKE, ms(512));
+    lucyd.mic.feed(SILENCE, ms(1024));
+
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    assert_eq!(lucyd.mic.opened().as_deref(), Some("default"));
+    let shown = lucyd.notifier.next_notification();
+    assert!(shown.body.contains("alsa_input.usb-Blue_Yeti"), "{shown:?}");
+    lucyd.notifier.assert_no_notification();
+    assert_eq!(lucyd.tts.sounds(), [Sound::Start]);
+}
+
 fn ms(ms: u64) -> Duration {
     Duration::from_millis(ms)
 }

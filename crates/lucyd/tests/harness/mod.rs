@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use lucy_config::{Config, Provider};
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Launcher, Notification, NotificationAction, Notifier, Relay, SessionModel, Sound,
-    Speaker, SpeakerEvent, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
+    Adapters, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay, SessionModel,
+    Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking, ThinkingEvent, Tts,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
@@ -345,6 +345,13 @@ impl Harness {
         speech.send(SpeechSegment { samples: vec![] }).unwrap();
     }
 
+    /// The user says something and the fake STT fails on it.
+    pub fn say_but_stt_fails(&self) {
+        self.stt.script_failure();
+        let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
+        speech.send(SpeechSegment { samples: vec![] }).unwrap();
+    }
+
     /// The wake-word engine hears the Wake word.
     pub fn wake(&self) {
         let wake_word = self.wake_word.as_ref().expect("lucyd hears through `mic`");
@@ -549,10 +556,11 @@ fn recv<T>(receiver: &Mutex<std_mpsc::Receiver<T>>, what: &str) -> T {
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
-/// STT that hears whatever the test scripted, in order.
+/// STT that hears whatever the test scripted, in order, or fails where it
+/// was scripted to.
 #[derive(Clone, Default)]
 pub struct FakeStt {
-    scripted: Arc<Mutex<VecDeque<String>>>,
+    scripted: Arc<Mutex<VecDeque<Result<String, SttError>>>>,
     heard: Arc<Mutex<Vec<String>>>,
     /// How long each utterance it was given lasted.
     segments: Arc<Mutex<Vec<Duration>>>,
@@ -571,7 +579,13 @@ impl FakeStt {
         self.scripted
             .lock()
             .unwrap()
-            .push_back(transcript.to_owned());
+            .push_back(Ok(transcript.to_owned()));
+    }
+
+    /// The next utterance fails to transcribe.
+    pub fn script_failure(&self) {
+        let failure = SttError("the fake STT failed".to_owned());
+        self.scripted.lock().unwrap().push_back(Err(failure));
     }
 
     fn heard(&self) -> Vec<String> {
@@ -585,7 +599,7 @@ impl FakeStt {
 }
 
 impl Stt for FakeStt {
-    fn transcribe(&self, segment: SpeechSegment) -> String {
+    fn transcribe(&self, segment: SpeechSegment) -> Result<String, SttError> {
         let length = Duration::from_secs_f64(segment.samples.len() as f64 / 16_000.0);
         self.segments.lock().unwrap().push(length);
         std::thread::sleep(*self.delay.lock().unwrap());
@@ -594,9 +608,9 @@ impl Stt for FakeStt {
             .lock()
             .unwrap()
             .pop_front()
-            .expect("a scripted transcript");
+            .expect("a scripted transcript")?;
         self.heard.lock().unwrap().push(transcript.clone());
-        transcript
+        Ok(transcript)
     }
 }
 
@@ -676,6 +690,16 @@ impl FakeThinking {
 
     pub fn turn_end(&self) {
         self.send(ThinkingEvent::TurnEnd);
+    }
+
+    /// The model process ends on its own.
+    pub fn dies(&self) {
+        self.send(ThinkingEvent::Died);
+    }
+
+    /// The model process reports where the subscription stands.
+    pub fn rate_limit(&self, limit: RateLimit) {
+        self.send(ThinkingEvent::RateLimit(limit));
     }
 
     /// The Provider turns out to be unusable, for `reason`.
@@ -870,6 +894,8 @@ pub struct FakeTts {
     failing: Arc<AtomicBool>,
     /// The open Speaker's event channel.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
+    /// The device the open Speaker plays on.
+    device: Arc<Mutex<Option<String>>>,
 }
 
 impl FakeTts {
@@ -882,7 +908,18 @@ impl FakeTts {
             sounds: Arc::default(),
             failing: Arc::default(),
             events: Arc::default(),
+            device: Arc::default(),
         }
+    }
+
+    /// The device the last Speaker was opened on.
+    pub fn device(&self) -> Option<String> {
+        self.device.lock().unwrap().clone()
+    }
+
+    /// The output device goes away.
+    pub fn lose_device(&self) {
+        self.send(SpeakerEvent::DeviceLost);
     }
 
     /// Waits for the next sentence handed to TTS.
@@ -923,8 +960,9 @@ impl FakeTts {
 }
 
 impl Tts for FakeTts {
-    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
+    fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
         *self.events.lock().unwrap() = Some(events);
+        *self.device.lock().unwrap() = Some(speaker.to_owned());
         Box::new(FakeSpeaker { tts: self.clone() })
     }
 }
@@ -1066,15 +1104,32 @@ pub const SILENCE: f32 = 0.0;
 /// word.
 pub const WAKE: f32 = 0.95;
 
-/// A microphone the test feeds with samples at 16 kHz.
+/// A sound card with a microphone the test feeds with samples at 16 kHz.
+/// Every device is there unless the test unplugs it.
 #[derive(Clone, Default)]
 pub struct FakeMic {
     ring: Arc<Mutex<Option<rtrb::Producer<f32>>>>,
     /// The device lucyd asked for.
     opened: Arc<Mutex<Option<String>>>,
+    unplugged: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeMic {
+    /// The device with node name `name` is no longer there.
+    pub fn unplug(&self, name: &str) {
+        self.unplugged.lock().unwrap().push(name.to_owned());
+    }
+
+    /// The device with node name `name` is there again.
+    pub fn plug_in(&self, name: &str) {
+        self.unplugged.lock().unwrap().retain(|n| n != name);
+    }
+
+    /// The open microphone goes away: capture stops.
+    pub fn lose(&self) {
+        drop(self.ring.lock().unwrap().take());
+    }
+
     /// Feeds `duration` of samples at `level`, waiting while the ring is full.
     pub fn feed(&self, level: f32, duration: Duration) {
         let len = (duration.as_secs_f64() * 16_000.0).round() as usize;
@@ -1115,6 +1170,10 @@ impl lucyd::audio::AudioIo for FakeMic {
         *self.ring.lock().unwrap() = Some(ring);
         *self.opened.lock().unwrap() = Some(mic.to_owned());
         Ok(Box::new(()))
+    }
+
+    fn has_device(&self, _direction: lucyd::audio::Direction, name: &str) -> bool {
+        !self.unplugged.lock().unwrap().iter().any(|n| n == name)
     }
 }
 

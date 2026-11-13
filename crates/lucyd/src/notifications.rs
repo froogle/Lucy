@@ -8,6 +8,7 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::adapters::{Notification, NotificationAction, NotificationKind, Notifier};
+use crate::audio::Direction;
 use crate::runner::Command;
 use crate::status::StatusBus;
 
@@ -158,6 +159,51 @@ pub fn unspoken(sentences: &[String]) -> Notification {
         body: sentences.join(" "),
         action: None,
         kind: NotificationKind::Reply,
+    }
+}
+
+/// Pinned devices that weren't there at Session start, so the defaults
+/// stand in. The pins stay.
+pub fn devices_missing(missing: &[(Direction, String)]) -> Notification {
+    let names: Vec<String> = missing
+        .iter()
+        .map(|(direction, name)| format!("{} {name}", device(*direction)))
+        .collect();
+    Notification {
+        summary: "Lucy is using the default device".into(),
+        body: format!(
+            "Can't find the pinned {}. She'll use it again once it's back.",
+            names.join(" or the pinned ")
+        ),
+        action: None,
+        kind: NotificationKind::Problem,
+    }
+}
+
+/// A device went away mid-Session, so the Session ended.
+pub fn device_lost(direction: Direction) -> Notification {
+    Notification {
+        summary: format!("Lucy lost the {}", device(direction)),
+        body: "It went away mid-Session, so the Session ended.".into(),
+        action: None,
+        kind: NotificationKind::Problem,
+    }
+}
+
+fn device(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Input => "microphone",
+        Direction::Output => "speaker",
+    }
+}
+
+/// The model process died twice running, so the Session ended.
+pub fn thinking_lost(provider: &str) -> Notification {
+    Notification {
+        summary: format!("Lucy lost her connection to {provider}"),
+        body: format!("The {provider} process stopped twice, so the Session ended."),
+        action: None,
+        kind: NotificationKind::Problem,
     }
 }
 

@@ -81,6 +81,15 @@ pub enum Kind {
     Claude,
 }
 
+impl Kind {
+    /// What Lucy calls it when she speaks of it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Claude => "Claude",
+        }
+    }
+}
+
 /// A Model tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tier {
@@ -179,12 +188,15 @@ pub fn recommended_model(kind: Kind, tier: Tier) -> &'static str {
 pub struct Audio {
     /// `"default"`, or the PipeWire node name of a pinned microphone.
     pub mic: String,
+    /// `"default"`, or the PipeWire node name of a pinned speaker.
+    pub speaker: String,
 }
 
 impl Default for Audio {
     fn default() -> Self {
         Audio {
             mic: "default".to_owned(),
+            speaker: "default".to_owned(),
         }
     }
 }
@@ -499,12 +511,13 @@ mod tests {
     }
 
     #[test]
-    fn microphone_and_endpointing_can_be_set() {
+    fn devices_and_endpointing_can_be_set() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(
             &path,
             "[audio]\nmic = \"alsa_input.usb-Blue_Yeti\"\n\
+             speaker = \"alsa_output.hdmi\"\n\
              [endpointing]\nend_silence_ms = 900\n",
         )
         .unwrap();
@@ -512,6 +525,7 @@ mod tests {
         let config = load(&path).unwrap();
 
         assert_eq!(config.audio.mic, "alsa_input.usb-Blue_Yeti");
+        assert_eq!(config.audio.speaker, "alsa_output.hdmi");
         assert_eq!(config.endpointing.end_silence_ms, 900);
         assert_eq!(config.endpointing.pre_roll_ms, 500);
     }

@@ -331,3 +331,25 @@ fn in_a_session_opened_by_the_wake_word_a_yes_after_the_wake_phrase_counts() {
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
 }
+
+// Tickets 11 and 14 together: an STT failure while Confirming.
+#[test]
+fn a_reply_stt_fails_on_declines_with_an_error_flash() {
+    let lucyd = with_files_plugin("");
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    let (file, call) = model_writes(&lucyd, &mut events);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+
+    lucyd.say_but_stt_fails();
+
+    let result = call.join().unwrap().unwrap();
+    assert!(text(&result).starts_with("declined"), "{}", text(&result));
+    assert!(!file.exists());
+    assert_eq!(lucyd.tts.next_sentence(), "Okay, I won't.");
+    assert_eq!(next_state(&mut events).state, State::Error);
+    assert_eq!(next_state(&mut events).state, State::Speaking);
+}

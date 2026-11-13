@@ -8,6 +8,7 @@ mod desktop;
 pub mod desktop_entries;
 mod ipc;
 pub mod launcher;
+mod limits;
 mod mcp;
 mod notifications;
 pub mod notify_send;

@@ -8,7 +8,7 @@ use std::sync::Mutex;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use crate::adapters::{SpeechSegment, Stt};
+use crate::adapters::{SpeechSegment, Stt, SttError};
 
 /// The shorter encoder context Whisper gets on the CPU, in 20 ms frames
 /// (7.68 s), which makes a short command much faster to transcribe.
@@ -81,12 +81,9 @@ impl Whisper {
 }
 
 impl Stt for Whisper {
-    fn transcribe(&self, segment: SpeechSegment) -> String {
-        // Ticket 11 speaks STT failures; until then a failure is no speech.
-        self.run(&segment.samples).unwrap_or_else(|e| {
-            eprintln!("lucyd: Whisper failed: {e}");
-            String::new()
-        })
+    fn transcribe(&self, segment: SpeechSegment) -> Result<String, SttError> {
+        self.run(&segment.samples)
+            .map_err(|e| SttError(format!("Whisper failed: {e}")))
     }
 }
 

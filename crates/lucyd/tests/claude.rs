@@ -74,6 +74,7 @@ fn read_turn(
             Ok(ThinkingEvent::TurnEnd) => return (text, rate_limits),
             Ok(event @ ThinkingEvent::RateLimit(_)) => rate_limits.push(event),
             Ok(ThinkingEvent::Unavailable(reason)) => panic!("Provider unavailable: {reason}"),
+            Ok(ThinkingEvent::Died) => panic!("claude died: {text:?}"),
             Err(_) => {
                 assert!(Instant::now() < deadline, "the Turn never ended: {text:?}");
                 std::thread::sleep(Duration::from_millis(10));
@@ -144,7 +145,7 @@ fn one_process_is_prespawned_and_serves_every_turn() {
 }
 
 #[test]
-fn claude_dying_mid_turn_ends_the_turn() {
+fn claude_dying_mid_turn_reports_that_it_died() {
     let work = tempfile::tempdir().unwrap();
     let claude = verified(work.path(), "dying-claude");
     let (tx, mut events) = mpsc::unbounded_channel();
@@ -152,8 +153,45 @@ fn claude_dying_mid_turn_ends_the_turn() {
 
     model.send_turn("Remember the word kiwi.".into());
 
-    let (text, _) = read_turn(&mut events, WAIT);
+    let deadline = Instant::now() + WAIT;
+    let mut text = String::new();
+    loop {
+        match events.try_recv() {
+            Ok(ThinkingEvent::Delta(delta)) => text.push_str(&delta),
+            Ok(ThinkingEvent::Died) => break,
+            Ok(ThinkingEvent::TurnEnd) => panic!("the Turn ended as if claude had finished"),
+            Ok(_) => {}
+            Err(_) => {
+                assert!(Instant::now() < deadline, "no Died: {text:?}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
     assert_eq!(text, "Got it, I'll remember the word kiw");
+}
+
+#[test]
+fn ending_the_session_is_not_a_death() {
+    let work = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude");
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model = claude.open(&fast(), tx, relay(), String::new());
+    model.send_turn("Remember the word kiwi.".into());
+    read_turn(&mut events, WAIT);
+
+    drop(model);
+
+    // Every sender goes once claude has been stopped.
+    let rest = std::thread::spawn(move || {
+        std::iter::from_fn(|| events.blocking_recv()).collect::<Vec<_>>()
+    });
+    let deadline = Instant::now() + WAIT;
+    while !rest.is_finished() {
+        assert!(Instant::now() < deadline, "claude's events never closed");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let rest = rest.join().unwrap();
+    assert!(!rest.contains(&ThinkingEvent::Died), "{rest:?}");
 }
 
 #[test]

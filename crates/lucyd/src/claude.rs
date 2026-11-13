@@ -6,7 +6,6 @@ mod guard;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 
 use lucy_config::Provider;
@@ -95,7 +94,7 @@ impl Claude {
         instructions: &str,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         turns: std_mpsc::Receiver<String>,
-        process: &Mutex<Process>,
+        process: &Arc<Mutex<Process>>,
     ) {
         if let Err(reason) = self.prepare(provider) {
             eprintln!("lucyd: refusing claude: {reason}");
@@ -122,34 +121,26 @@ impl Claude {
             }
             *process = Process::Running(child);
         }
-        let in_turn = Arc::new(AtomicBool::new(false));
-        let reader_in_turn = in_turn.clone();
+        let reader_process = process.clone();
         let reader_events = events.clone();
         std::thread::spawn(move || {
             let mut stream = Stream::default();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 for event in stream.line(&line) {
-                    if event == ThinkingEvent::TurnEnd {
-                        reader_in_turn.store(false, Ordering::SeqCst);
-                    }
                     let _ = reader_events.send(event);
                 }
             }
-            // claude died: don't leave the Session waiting on the Turn.
-            if reader_in_turn.swap(false, Ordering::SeqCst) {
-                let _ = reader_events.send(ThinkingEvent::TurnEnd);
+            // claude stopped on its own, not because the Session ended.
+            if !matches!(*reader_process.lock().unwrap(), Process::Ended) {
+                let _ = reader_events.send(ThinkingEvent::Died);
             }
         });
         for text in turns {
             let message =
                 serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
-            in_turn.store(true, Ordering::SeqCst);
             if let Err(e) = writeln!(stdin, "{message}").and_then(|()| stdin.flush()) {
-                // Don't leave the Session waiting on a reply that can't come.
+                // claude is gone; the reader reports it.
                 eprintln!("lucyd: can't reach claude: {e}");
-                if in_turn.swap(false, Ordering::SeqCst) {
-                    let _ = events.send(ThinkingEvent::TurnEnd);
-                }
             }
         }
     }

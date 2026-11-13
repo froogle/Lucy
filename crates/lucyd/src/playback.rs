@@ -12,12 +12,13 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Resampler};
 use tokio::sync::mpsc;
 
 use crate::adapters::{Sound, Speaker, SpeakerEvent};
+use crate::audio;
 
 /// Lucy's internal rate, which the echo canceller works at.
 pub const REFERENCE_RATE: u32 = 16_000;
@@ -48,9 +49,10 @@ pub type Synthesise = Box<dyn FnMut(&str) -> Result<Pcm, String> + Send>;
 pub type Reference = Arc<Mutex<rtrb::Producer<f32>>>;
 
 /// Starts a Speaker that synthesises each sentence with `synthesise` and
-/// plays it on the default output device.
+/// plays it on `device` (`"default"` or a pinned node name).
 pub fn speaker(
     mut synthesise: Synthesise,
+    device: &str,
     events: mpsc::UnboundedSender<SpeakerEvent>,
     reference: Reference,
 ) -> Box<dyn Speaker> {
@@ -73,7 +75,8 @@ pub fn speaker(
             }
         }
     });
-    std::thread::spawn(move || Player::new(events, reference).run(items_rx));
+    let device = device.to_owned();
+    std::thread::spawn(move || Player::new(device, events, reference).run(items_rx));
     Box::new(PlaybackSpeaker { sentences })
 }
 
@@ -115,6 +118,8 @@ struct Output {
 }
 
 struct Player {
+    /// The output device's node name, or `"default"`.
+    device: String,
     events: mpsc::UnboundedSender<SpeakerEvent>,
     reference: Reference,
     output: Option<Output>,
@@ -133,8 +138,13 @@ struct Player {
 }
 
 impl Player {
-    fn new(events: mpsc::UnboundedSender<SpeakerEvent>, reference: Reference) -> Self {
+    fn new(
+        device: String,
+        events: mpsc::UnboundedSender<SpeakerEvent>,
+        reference: Reference,
+    ) -> Self {
         Player {
+            device,
             events,
             reference,
             output: None,
@@ -227,9 +237,11 @@ impl Player {
             ));
         }
         self.output = Some(open_output(
+            &self.device,
             sample_rate,
             self.consumed.clone(),
             self.rms.clone(),
+            self.events.clone(),
         )?);
         Ok(())
     }
@@ -295,14 +307,15 @@ fn cue(sound: Sound, rate: u32) -> Vec<f32> {
         .collect()
 }
 
+/// `events` hears `DeviceLost` if the device goes away.
 fn open_output(
+    device: &str,
     sample_rate: u32,
     consumed: Arc<AtomicU64>,
     rms: Arc<AtomicU32>,
+    events: mpsc::UnboundedSender<SpeakerEvent>,
 ) -> Result<Output, String> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("no output device")?;
+    let device = audio::cpal::find_output(device)?;
     let channels = device
         .default_output_config()
         .map_err(|e| e.to_string())?
@@ -338,7 +351,12 @@ fn open_output(
                     consumed.fetch_add(played_now, Ordering::Release);
                 }
             },
-            |e| eprintln!("lucyd: playback error: {e}"),
+            move |e| {
+                eprintln!("lucyd: playback error: {e}");
+                if audio::cpal::is_device_lost(&e) {
+                    let _ = events.send(SpeakerEvent::DeviceLost);
+                }
+            },
             None,
         )
         .map_err(|e| e.to_string())?;
