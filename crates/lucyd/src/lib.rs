@@ -19,6 +19,7 @@ pub mod plugins;
 mod runner;
 mod session;
 mod status;
+pub mod superwhisper;
 mod system_status;
 mod wake;
 pub mod whisper;
