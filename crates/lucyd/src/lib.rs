@@ -70,7 +70,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         )
         .run(),
     );
-    runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
+    runtime.spawn(mcp::serve(mcp_listener, relays, persona, sessions.clone()));
     runtime.spawn(ipc::serve(listener, status, sessions));
 
     Ok(Daemon {

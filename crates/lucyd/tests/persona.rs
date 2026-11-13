@@ -1,6 +1,7 @@
 mod harness;
 
-use harness::Harness;
+use harness::{next_state, Harness};
+use lucy_ipc::State;
 
 #[test]
 fn a_missing_persona_is_created_with_the_default_and_given_to_the_model() {
@@ -16,6 +17,24 @@ fn a_missing_persona_is_created_with_the_default_and_given_to_the_model() {
     assert!(persona.contains("markdown"), "{persona}");
     assert!(persona.contains("Let me check"), "{persona}");
     assert!(persona.contains("serious news"), "{persona}");
+}
+
+#[test]
+fn the_default_persona_names_no_one_until_told() {
+    let lucyd = Harness::first_run();
+
+    lucyd.client().start_session().unwrap();
+
+    let persona = std::fs::read_to_string(lucyd.persona_path()).unwrap();
+    assert!(
+        persona.contains("You don't know what to call the user yet."),
+        "{persona}"
+    );
+    for var in ["USER", "LOGNAME"] {
+        if let Some(name) = std::env::var(var).ok().filter(|n| n.len() > 2) {
+            assert!(!persona.contains(&name), "{var} {name:?} is in {persona}");
+        }
+    }
 }
 
 #[test]
@@ -58,4 +77,84 @@ fn the_first_session_opens_with_an_introduction_and_only_the_first() {
     lucyd.say("What's the time?");
     // An opening Turn would have been sent before anything the user said.
     assert_eq!(lucyd.thinking.next_turn(), "What's the time?");
+}
+
+#[test]
+fn the_name_given_in_the_first_session_is_stored_in_the_persona() {
+    let lucyd = Harness::first_run();
+    let mut events = lucyd.state_client();
+    let mut client = lucyd.client();
+    client.start_session().unwrap();
+    lucyd.thinking.next_turn();
+    lucyd
+        .thinking
+        .delta("Hi, I'm Lucy! What should I call you?");
+    lucyd.thinking.turn_end();
+    lucyd.tts.next_sentence();
+    while next_state(&mut events).state != State::Speaking {}
+    lucyd.tts.finish_playing();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+
+    lucyd.say("Call me Sam.");
+    assert_eq!(lucyd.thinking.next_turn(), "Call me Sam.");
+    let persona = format!("{}\nCall the user Sam.\n", lucyd.thinking.instructions());
+    let result = lucyd
+        .thinking
+        .call_tool_with("update_persona", serde_json::json!({"persona": persona}))
+        .unwrap();
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    client.end_session().unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(lucyd.persona_path()).unwrap(),
+        persona
+    );
+    client.start_session().unwrap();
+    assert!(lucyd.thinking.instructions().contains("Call the user Sam."));
+}
+
+#[test]
+fn a_persona_change_by_voice_is_saved_and_read_back_without_approval() {
+    let lucyd = Harness::start();
+    let mut events = lucyd.state_client();
+    lucyd.client().start_session().unwrap();
+    next_state(&mut events);
+    lucyd.say("Be a bit more sarcastic.");
+    lucyd.thinking.next_turn();
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+
+    let persona = "You are Lucy. Be properly sarcastic.";
+    let result = lucyd
+        .thinking
+        .call_tool_with("update_persona", serde_json::json!({"persona": persona}))
+        .unwrap();
+
+    // Saved at once: no Approval, so no Confirming.
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(
+        std::fs::read_to_string(lucyd.persona_path()).unwrap(),
+        persona
+    );
+    assert_eq!(lucyd.client().status().unwrap().state, State::Thinking);
+    // The model is handed the new text and told to read the change back.
+    let text = format!("{:?}", result.content);
+    assert!(text.contains(persona), "{text}");
+    assert!(text.contains("Tell the user what changed"), "{text}");
+}
+
+#[test]
+fn update_persona_needs_the_new_text() {
+    let lucyd = Harness::start();
+    lucyd.client().start_session().unwrap();
+
+    let result = lucyd
+        .thinking
+        .call_tool_with("update_persona", serde_json::json!({"persona": "  "}))
+        .unwrap();
+
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        std::fs::read_to_string(lucyd.persona_path()).unwrap(),
+        "You are Lucy."
+    );
 }
