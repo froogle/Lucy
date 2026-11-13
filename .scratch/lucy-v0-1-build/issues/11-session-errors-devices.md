@@ -13,9 +13,13 @@ Spec: Session state machine (Errors); Audio pipeline (Devices).
 
 **Seams:** owns a failure result from `Stt::transcribe` (also used by 19); owns a `ThinkingEvent` for a dead Thinking process and its `FakeThinking` helper (also used by 09, 18); owns `[audio] speaker` and by-name device resolution through `AudioIo` (also used by 20); extends `Speaker` and `SpeakerEvent` (owned by 06, resolved) and `NotificationKind` (owned by 08, resolved)
 
-**Status:** claimed
+**Status:** resolved
 
 - [ ] Each error path above is covered by a harness test using the fakes
 - [ ] A transient `error` state event is emitted (Indicator red flash)
 - [ ] Never falls back silently to another Provider
 - [ ] Pinned devices are re-resolved by name at each Session start
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-3` (427912a..1339254). `Stt::transcribe` returns `Result<String, SttError>`; `ThinkingEvent::Died` with `FakeThinking::dies()`; `[audio] speaker` and `AudioIo::has_device`; `Tts::open` takes the speaker name (06's trait, needed for a pinned speaker). Problem notifications are `NotificationKind::Problem`. Respawn-once is per Turn. A death while a question is pending withdraws it silently (a pending Approval too). Live device unplugging, a real `claude` death and a real plan limit still need a person.

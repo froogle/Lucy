@@ -26,3 +26,7 @@ Spec: Providers and configuration (TUI scope, Piper); Processes and crates (syst
 - [ ] Granting Approval never happens in the TUI, only revoking
 - [ ] Superwhisper warnings shown when it is chosen
 - [ ] Everything else stays file-only (thresholds, timeouts, endpointing, paths)
+
+## Comments
+
+From slice 3: `uv tool install piper-tts` lacks Flask, so `piper.http_server` won't import. Install `piper-tts[http]`, and detect Piper by importing `piper.http_server` with `PYTHONPATH` cleared. Starting a spoken Approval for shipped Plugins goes through `Daemon::request_approval` (ticket 14); the TUI needs an IPC request that starts one, never one that grants it.

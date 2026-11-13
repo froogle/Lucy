@@ -10,7 +10,7 @@ Spec: Confirmation and Approval are runtime-owned; Plugins (Approval). ADR 0005.
 
 **Seams:** owns the Confirming step in `session::Session` (`State::Confirming`) (also used by 09, 15); owns the spoken Approval flow and `plugins::Host`'s writes to `approvals.toml` (also used by 15, 20, 22, 23); owns `tools/list_changed` from the MCP tool server (also used by 15, 22); extends `NotificationKind` (owned by 08, resolved)
 
-**Status:** claimed
+**Status:** resolved
 
 - [ ] A yes during the prompt counts; anything else, or 8 s of silence, means no, and Lucy says "Okay, I won't"
 - [ ] Indicator click while Confirming declines and ends the Session
@@ -19,3 +19,7 @@ Spec: Confirmation and Approval are runtime-owned; Plugins (Approval). ADR 0005.
 - [ ] Shipped Plugins can be approved during setup through the same spoken flow (setup wiring lands in 20)
 - [ ] Mid-call questions over MCP `input_required` are relayed to the user
 - [ ] Harness tests: yes, non-yes, silence, yes-during-prompt, click, update summary
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-3` (427912a..1339254). One listening step, `session::Input::Ask`, serves Confirmations, Approvals and Plugin `input_required` questions. `[confirmation]` holds `yes_phrases` and `timeout_secs` (the timeout config isn't in the spec). The only Approval entry point is the in-process `Daemon::request_approval`; ticket 20 needs an IPC request that *starts* one, never grants it. `approvals.toml` now stores the approved Manifest for update diffs; older entries get the full summary. Plugins start with rmcp `ClientLifecycleMode::Auto` (older-protocol fallback untested). `tools/list_changed` uses rmcp's `notify_tool_list_changed`; a real `claude` receiving it is unchecked.
