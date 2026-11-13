@@ -88,15 +88,32 @@ pub trait SessionModel: Send {
 
 /// A TTS Provider together with playback.
 pub trait Tts: Send + Sync {
-    /// Opens playback for a new Session. Each sentence sends one `()` on
-    /// `played` once it has finished playing. Dropping the Speaker stops
-    /// playback.
-    fn open(&self, played: mpsc::UnboundedSender<()>) -> Box<dyn Speaker>;
+    /// Opens playback for a new Session. Each sentence sends one `Played` or
+    /// `Failed` on `events`, in order, and `Level` about 30 times a second
+    /// while it plays. Dropping the Speaker stops playback.
+    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker>;
 }
 
 pub trait Speaker: Send {
     /// Queues a sentence to be synthesised and played.
     fn speak(&mut self, sentence: String);
+}
+
+/// What a Speaker reports back.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpeakerEvent {
+    /// The oldest queued sentence finished playing.
+    Played,
+    /// The oldest queued sentence couldn't be synthesised or played. Carries
+    /// its text.
+    Failed(String),
+    /// RMS of the samples just played, from 0.0 to 1.0.
+    Level(f32),
+}
+
+/// Desktop notifications.
+pub trait Notifier: Send + Sync {
+    fn notify(&self, body: &str);
 }
 
 /// Starts things on the user's desktop. Blocking; lucyd calls it off the
@@ -114,6 +131,7 @@ pub struct Adapters {
     pub stt: Arc<dyn Stt>,
     pub thinking: Box<dyn Thinking>,
     pub tts: Box<dyn Tts>,
+    pub notifier: Box<dyn Notifier>,
     pub launcher: Arc<dyn Launcher>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
@@ -128,6 +146,7 @@ impl Adapters {
             stt: Arc::new(Inert),
             thinking: Box::new(Inert),
             tts: Box::new(Inert),
+            notifier: Box::new(Inert),
             launcher: Arc::new(Inert),
             applications: vec![],
         }
@@ -162,19 +181,23 @@ impl SessionModel for InertSessionModel {
 }
 
 impl Tts for Inert {
-    fn open(&self, played: mpsc::UnboundedSender<()>) -> Box<dyn Speaker> {
-        Box::new(InertSpeaker { played })
+    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
+        Box::new(InertSpeaker { events })
     }
 }
 
 struct InertSpeaker {
-    played: mpsc::UnboundedSender<()>,
+    events: mpsc::UnboundedSender<SpeakerEvent>,
 }
 
 impl Speaker for InertSpeaker {
     fn speak(&mut self, _sentence: String) {
-        let _ = self.played.send(());
+        let _ = self.events.send(SpeakerEvent::Played);
     }
+}
+
+impl Notifier for Inert {
+    fn notify(&self, _body: &str) {}
 }
 
 impl Launcher for Inert {

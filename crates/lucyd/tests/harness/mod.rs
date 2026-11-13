@@ -7,14 +7,15 @@ use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lucy_config::Config;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Launcher, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent,
-    Tts,
+    Adapters, Launcher, Notifier, Relay, SessionModel, Speaker, SpeakerEvent, SpeechSegment, Stt,
+    Thinking, ThinkingEvent, Tts,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
@@ -32,6 +33,7 @@ pub struct Harness {
     pub stt: FakeStt,
     pub thinking: FakeThinking,
     pub tts: FakeTts,
+    pub notifier: FakeNotifier,
     pub launcher: FakeLauncher,
     /// Where lucyd looks for desktop entries: the user's dir, then the
     /// system's.
@@ -71,6 +73,7 @@ impl Harness {
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
+        let notifier = FakeNotifier::new();
         let plugins = lucyd::plugins::Paths {
             user: dir.path().join("data/lucy/plugins"),
             shipped: dir.path().join("usr/share/lucy/plugins"),
@@ -92,6 +95,7 @@ impl Harness {
                 stt: Arc::new(stt.clone()),
                 thinking: Box::new(thinking.clone()),
                 tts: Box::new(tts.clone()),
+                notifier: Box::new(notifier.clone()),
                 launcher: Arc::new(launcher.clone()),
                 applications: applications.to_vec(),
             },
@@ -103,6 +107,7 @@ impl Harness {
             stt,
             thinking,
             tts,
+            notifier,
             launcher,
             applications,
             bus: Arc::default(),
@@ -304,6 +309,14 @@ impl Harness {
         }
     }
 
+    /// The recorder, subscribed to `state` only, never received a `level`
+    /// event. Call it after `assert_nothing_private_on_bus`.
+    pub fn assert_no_level_on_bus(&self) {
+        let bus = self.bus.lock().unwrap();
+        let level = bus.iter().find(|line| line.contains(r#""method":"level""#));
+        assert!(level.is_none(), "a state-only subscriber got {level:?}");
+    }
+
     /// The recorder has seen a Session and then Idle again.
     fn bus_is_idle(&self) -> bool {
         let bus = self.bus.lock().unwrap();
@@ -328,6 +341,7 @@ fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
 pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {
         Event::State(state) => state,
+        other => panic!("expected a state event, got {other:?}"),
     }
 }
 
@@ -609,14 +623,16 @@ impl SessionModel for FakeSessionModel {
     }
 }
 
-/// TTS that records each sentence and "plays" it until the test finishes it.
+/// TTS that records each sentence and "plays" it until the test finishes it,
+/// or fails every sentence once told to.
 #[derive(Clone)]
 pub struct FakeTts {
     sentences_tx: std_mpsc::Sender<String>,
     sentences: Arc<Mutex<std_mpsc::Receiver<String>>>,
     spoken: Arc<Mutex<Vec<String>>>,
-    /// The open Speaker's "finished playing" channel.
-    played: Arc<Mutex<Option<mpsc::UnboundedSender<()>>>>,
+    failing: Arc<AtomicBool>,
+    /// The open Speaker's event channel.
+    events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
 }
 
 impl FakeTts {
@@ -626,7 +642,8 @@ impl FakeTts {
             sentences_tx,
             sentences: Arc::new(Mutex::new(sentences)),
             spoken: Arc::default(),
-            played: Arc::default(),
+            failing: Arc::default(),
+            events: Arc::default(),
         }
     }
 
@@ -642,31 +659,73 @@ impl FakeTts {
 
     /// The oldest queued sentence finishes playing.
     pub fn finish_playing(&self) {
-        let played = self.played.lock().unwrap();
-        let played = played.as_ref().expect("a Speaker is open");
-        played.send(()).expect("lucyd is listening for playback");
+        self.send(SpeakerEvent::Played);
+    }
+
+    /// Playback reports its level.
+    pub fn level(&self, rms: f32) {
+        self.send(SpeakerEvent::Level(rms));
+    }
+
+    /// From now on, every sentence fails to synthesise.
+    pub fn fail(&self) {
+        self.failing.store(true, Ordering::SeqCst);
+    }
+
+    fn send(&self, event: SpeakerEvent) {
+        let events = self.events.lock().unwrap();
+        let events = events.as_ref().expect("a Speaker is open");
+        events.send(event).expect("lucyd is listening for playback");
     }
 }
 
 impl Tts for FakeTts {
-    fn open(&self, played: mpsc::UnboundedSender<()>) -> Box<dyn Speaker> {
-        *self.played.lock().unwrap() = Some(played);
-        Box::new(FakeSpeaker {
-            sentences: self.sentences_tx.clone(),
-            spoken: self.spoken.clone(),
-        })
+    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
+        *self.events.lock().unwrap() = Some(events);
+        Box::new(FakeSpeaker { tts: self.clone() })
     }
 }
 
 struct FakeSpeaker {
-    sentences: std_mpsc::Sender<String>,
-    spoken: Arc<Mutex<Vec<String>>>,
+    tts: FakeTts,
 }
 
 impl Speaker for FakeSpeaker {
     fn speak(&mut self, sentence: String) {
-        self.spoken.lock().unwrap().push(sentence.clone());
-        let _ = self.sentences.send(sentence);
+        self.tts.spoken.lock().unwrap().push(sentence.clone());
+        if self.tts.failing.load(Ordering::SeqCst) {
+            self.tts.send(SpeakerEvent::Failed(sentence));
+        } else {
+            let _ = self.tts.sentences_tx.send(sentence);
+        }
+    }
+}
+
+/// Records the text of each desktop notification.
+#[derive(Clone)]
+pub struct FakeNotifier {
+    shown_tx: std_mpsc::Sender<String>,
+    shown: Arc<Mutex<std_mpsc::Receiver<String>>>,
+}
+
+impl FakeNotifier {
+    fn new() -> Self {
+        let (shown_tx, shown) = std_mpsc::channel();
+        FakeNotifier {
+            shown_tx,
+            shown: Arc::new(Mutex::new(shown)),
+        }
+    }
+
+    /// Waits for the text of the next notification.
+    pub fn next_notification(&self) -> String {
+        recv(&self.shown, "a notification")
+    }
+}
+
+impl Notifier for FakeNotifier {
+    fn notify(&self, body: &str) {
+        let _ = self.shown_tx.send(body.to_owned());
     }
 }
 

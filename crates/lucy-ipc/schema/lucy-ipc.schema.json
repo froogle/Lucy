@@ -52,6 +52,20 @@
       ],
       "type": "object"
     },
+    "LoudnessEvent": {
+      "description": "Params of the `level` event: how loud Lucy's voice is right now.",
+      "properties": {
+        "rms": {
+          "description": "RMS of the samples just played, from 0.0 (silent) to 1.0.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "rms"
+      ],
+      "type": "object"
+    },
     "Role": {
       "oneOf": [
         {
@@ -138,6 +152,11 @@
           "const": "state",
           "description": "`state` events. The current state is sent straight after subscribing.",
           "type": "string"
+        },
+        {
+          "const": "level",
+          "description": "`level` events, about 30 a second while Lucy is speaking.",
+          "type": "string"
         }
       ]
     }
@@ -146,6 +165,11 @@
   "description": "Newline-delimited JSON-RPC 2.0 on $XDG_RUNTIME_DIR/lucy/lucyd.sock. Send hello first. Within a major protocol version, fields are only ever added.",
   "title": "lucyd public IPC, protocol 1",
   "x-events": {
+    "level": {
+      "params": {
+        "$ref": "#/$defs/LoudnessEvent"
+      }
+    },
     "state": {
       "params": {
         "$ref": "#/$defs/Status"
