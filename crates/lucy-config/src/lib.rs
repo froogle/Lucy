@@ -203,8 +203,9 @@ impl Default for Endpointing {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Whisper {
-    /// Run on the GPU through Vulkan.
-    pub gpu: bool,
+    /// Run on the GPU through Vulkan. Unset means on the GPU if Vulkan
+    /// finds one.
+    pub gpu: Option<bool>,
     /// The model name, such as `small.en`, found as `ggml-<model>.bin` in
     /// `$XDG_DATA_HOME/lucy/models`. Unset means `small.en` on the GPU and
     /// `base.en` on the CPU.
@@ -214,7 +215,7 @@ pub struct Whisper {
 impl Default for Whisper {
     fn default() -> Self {
         Whisper {
-            gpu: true,
+            gpu: None,
             model: None,
         }
     }

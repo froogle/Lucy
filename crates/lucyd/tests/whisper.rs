@@ -14,10 +14,18 @@ use lucyd::whisper::Whisper;
 fn a_missing_model_is_reported_with_its_path() {
     let dir = tempfile::tempdir().unwrap();
 
-    let gpu = Whisper::load(&Config::default(), dir.path()).err().unwrap();
+    let gpu = Whisper::load(
+        &Config {
+            gpu: Some(true),
+            model: None,
+        },
+        dir.path(),
+    )
+    .err()
+    .unwrap();
     let cpu = Whisper::load(
         &Config {
-            gpu: false,
+            gpu: Some(false),
             model: None,
         },
         dir.path(),
@@ -26,7 +34,7 @@ fn a_missing_model_is_reported_with_its_path() {
     .unwrap();
     let named = Whisper::load(
         &Config {
-            gpu: true,
+            gpu: Some(true),
             model: Some("large-v3-turbo-q5_0".to_owned()),
         },
         dir.path(),
@@ -68,7 +76,10 @@ fn transcribe(config: Config) -> String {
 #[test]
 #[ignore = "needs the small.en model and a Vulkan GPU"]
 fn small_en_on_the_gpu_transcribes_speech() {
-    let heard = transcribe(Config::default());
+    let heard = transcribe(Config {
+        gpu: Some(true),
+        model: None,
+    });
     assert!(heard.to_lowercase().contains("lucy"), "{heard:?}");
 }
 
@@ -76,7 +87,7 @@ fn small_en_on_the_gpu_transcribes_speech() {
 #[ignore = "needs the base.en model"]
 fn base_en_on_the_cpu_transcribes_speech() {
     let heard = transcribe(Config {
-        gpu: false,
+        gpu: Some(false),
         model: None,
     });
     assert!(heard.to_lowercase().contains("lucy"), "{heard:?}");
@@ -87,7 +98,7 @@ fn base_en_on_the_cpu_transcribes_speech() {
 fn a_long_utterance_on_the_cpu_is_transcribed_to_the_end() {
     let whisper = Whisper::load(
         &Config {
-            gpu: false,
+            gpu: Some(false),
             model: None,
         },
         &models_dir(),
