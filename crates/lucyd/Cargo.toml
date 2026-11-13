@@ -21,6 +21,8 @@ cpal = { version = "0.18.2", features = ["pipewire", "pulseaudio"] }
 hound = "3.5"
 rubato = "5.1.0"
 rtrb = "0.4.1"
+# A pure-Rust port of WebRTC AEC3 (BSD-3-Clause); see audio/sonora.rs.
+sonora = "0.3.0"
 ureq = { version = "3", default-features = false }
 libc = "0.2"
 ort.workspace = true

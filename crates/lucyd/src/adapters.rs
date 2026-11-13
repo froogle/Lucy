@@ -164,6 +164,14 @@ pub trait Speaker: Send {
     /// Queues a short cue. It sends no event, and if it is the last thing
     /// queued it plays out even if the Speaker is dropped straight after.
     fn sound(&mut self, sound: Sound);
+
+    /// Turns playback down (true), as the user may be cutting in, or back up
+    /// (false). The echo canceller's reference is what actually plays.
+    fn duck(&mut self, ducked: bool);
+
+    /// Stops playback at once and drops everything queued, for a Barge-in.
+    /// Nothing dropped sends an event. Unducks.
+    fn stop(&mut self);
 }
 
 /// The cues Lucy plays around a Session.
@@ -360,6 +368,10 @@ impl Speaker for InertSpeaker {
     }
 
     fn sound(&mut self, _sound: Sound) {}
+
+    fn duck(&mut self, _ducked: bool) {}
+
+    fn stop(&mut self) {}
 }
 
 impl Notifier for Inert {

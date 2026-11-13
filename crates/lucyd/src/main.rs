@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use lucyd::adapters::Adapters;
-use lucyd::audio::{self, Cpal, LiveKit, Silero, WakeWord};
+use lucyd::audio::{self, Cpal, EchoCanceller, LiveKit, Silero, Sonora, WakeWord};
 use lucyd::superwhisper::Superwhisper;
 use lucyd::whisper::Whisper;
 
@@ -41,14 +41,18 @@ fn main() -> ExitCode {
         claude: Arc::new(lucyd::claude::Claude::new("claude".into(), work.clone())),
         codex: Arc::new(lucyd::codex::Codex::new("codex".into(), work)),
     });
-    // Ticket 09 feeds `take_reference()` to the echo canceller.
-    adapters.tts = Box::new(lucyd::piper::Piper::start(
+    let piper = lucyd::piper::Piper::start(
         None,
         lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
             .join("lucy")
             .join("voices"),
         lucyd::piper::DEFAULT_VOICE,
-    ));
+    );
+    // What Lucy plays is the echo canceller's reference.
+    let echo = piper
+        .take_reference()
+        .map(|reference| Box::new(Sonora::new(reference)) as Box<dyn EchoCanceller>);
+    adapters.tts = Box::new(piper);
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
     adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher);
@@ -59,7 +63,7 @@ fn main() -> ExitCode {
         utterances.to_owned(),
     ));
     adapters.applications = lucyd::desktop_entries::xdg_dirs();
-    if let Err(e) = hear(&config, &mut adapters) {
+    if let Err(e) = hear(&config, &mut adapters, echo) {
         eprintln!("lucyd: {e}; Lucy can't hear");
     }
     let daemon = match lucyd::spawn(lucyd::Options {
@@ -87,9 +91,13 @@ fn main() -> ExitCode {
 }
 
 /// Loads Whisper and the wake word once, listens for the Wake word and cuts
-/// the microphone into utterances for STT. Whisper is optional while `[stt]`
-/// chooses Superwhisper.
-fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box<dyn Error>> {
+/// the microphone, cleaned of Lucy's echo by `echo`, into utterances for STT.
+/// Whisper is optional while `[stt]` chooses Superwhisper.
+fn hear(
+    config: &lucy_config::Config,
+    adapters: &mut Adapters,
+    echo: Option<Box<dyn EchoCanceller>>,
+) -> Result<(), Box<dyn Error>> {
     let models = lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
         .join("lucy")
         .join("models");
@@ -114,6 +122,7 @@ fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box
         &config.audio,
         Box::new(vad),
         wake_word,
+        echo,
         &config.endpointing,
     )?;
     if let Some(whisper) = whisper {

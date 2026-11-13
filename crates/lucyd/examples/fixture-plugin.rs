@@ -10,6 +10,8 @@
 //! - `reject`: answers with an MCP error.
 //! - `ask {question}`: asks the user `question` mid-call (MCP
 //!   `input_required`), then returns `heard: <answer>`, or `no answer`.
+//! - `wait {path}`: writes `<path>.waiting`, then returns `done` once `path`
+//!   exists. If the call is cancelled first, it writes `<path>.cancelled`.
 
 use std::sync::Arc;
 
@@ -38,7 +40,7 @@ fn tool(name: &str) -> Tool {
     let properties = match name {
         "echo" | "save_state" => json!({"text": string}),
         "ask" => json!({"question": string}),
-        "read_file" => json!({"path": string}),
+        "read_file" | "wait" => json!({"path": string}),
         "write_file" => json!({"path": string, "text": string}),
         _ => json!({}),
     };
@@ -83,9 +85,27 @@ impl ServerHandler for Fixture {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let outcome = match &*request.name {
+            "wait" => {
+                let path = std::path::PathBuf::from(arg(&request, "path"));
+                let mut waiting = path.clone().into_os_string();
+                waiting.push(".waiting");
+                let _ = std::fs::write(waiting, "");
+                loop {
+                    if path.exists() {
+                        break Ok("done".into());
+                    }
+                    if context.ct.is_cancelled() {
+                        let mut cancelled = path.into_os_string();
+                        cancelled.push(".cancelled");
+                        let _ = std::fs::write(cancelled, "");
+                        break Ok("cancelled".into());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
             "echo" => Ok(arg(&request, "text")),
             "read_file" => std::fs::read_to_string(arg(&request, "path")),
             "write_file" => {

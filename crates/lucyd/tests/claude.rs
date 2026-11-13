@@ -242,6 +242,109 @@ fn any_model_the_cli_accepts_is_passed_through() {
     );
 }
 
+/// The fixture's first recorded Turn, cut off before its `result`: what a
+/// Turn still going looks like.
+fn unfinished_turn() -> String {
+    let turn = std::fs::read_to_string(fixtures().join("turn1.jsonl")).unwrap();
+    turn.lines()
+        .take(8)
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+/// Sends a Turn that is still going, and waits for all of it that was said.
+fn start_unfinished_turn(
+    model: &mut Box<dyn lucyd::adapters::SessionModel>,
+    events: &mut mpsc::UnboundedReceiver<ThinkingEvent>,
+) {
+    model.send_turn("Remember the word kiwi.".into());
+    let mut text = String::new();
+    wait_until("the Turn never got going", || {
+        while let Ok(event) = events.try_recv() {
+            match event {
+                ThinkingEvent::Delta(delta) => text.push_str(&delta),
+                ThinkingEvent::RateLimit(_) => {}
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        (text == "Got it, I'll remember the word kiw").then_some(())
+    });
+}
+
+#[test]
+fn an_interrupt_stops_the_turn_with_the_control_request_and_keeps_the_process() {
+    let work = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude");
+    std::fs::write(work.path().join("turn1.jsonl"), unfinished_turn()).unwrap();
+    // How claude answers the interrupt: it acknowledges, then ends the Turn.
+    std::fs::write(
+        work.path().join("turn2.jsonl"),
+        "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"interrupt-1\"}}\n\
+         {\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true}\n",
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures().join("turn2.jsonl"),
+        work.path().join("turn3.jsonl"),
+    )
+    .unwrap();
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model = claude.open(&fast(), tx, relay(), String::new());
+    start_unfinished_turn(&mut model, &mut events);
+
+    model.interrupt();
+    model.send_turn("What word?".into());
+
+    // Nothing more of the interrupted Turn, not even its end.
+    let (text, _) = read_turn(&mut events, WAIT);
+    assert_eq!(text, "Kiwi.| You asked me to remember that word.|");
+    let stdin = std::fs::read_to_string(work.path().join("stdin")).unwrap();
+    let interrupt: serde_json::Value = serde_json::from_str(stdin.lines().nth(1).unwrap()).unwrap();
+    assert_eq!(
+        interrupt,
+        serde_json::json!({"type": "control_request", "request_id": "interrupt-1",
+                           "request": {"subtype": "interrupt"}})
+    );
+    let pids = std::fs::read_to_string(work.path().join("pids")).unwrap();
+    assert_eq!(pids.lines().count(), 1, "one process for the Session");
+}
+
+#[test]
+fn without_the_control_interrupt_claude_gets_sigint_and_a_new_process() {
+    let work = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude");
+    std::fs::write(work.path().join("turn1.jsonl"), unfinished_turn()).unwrap();
+    std::fs::write(
+        work.path().join("turn2.jsonl"),
+        "{\"type\":\"control_response\",\"response\":{\"subtype\":\"error\",\"request_id\":\"interrupt-1\",\"error\":\"Unknown subtype\"}}\n",
+    )
+    .unwrap();
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model = claude.open(&fast(), tx, relay(), String::new());
+    start_unfinished_turn(&mut model, &mut events);
+    let first = std::fs::read_to_string(work.path().join("pids")).unwrap();
+
+    model.interrupt();
+
+    let pids = wait_until("no new process", || {
+        let pids = std::fs::read_to_string(work.path().join("pids")).unwrap();
+        (pids.lines().count() == 2).then_some(pids)
+    });
+    wait_until("the interrupted claude outlived its SIGINT", || {
+        (!Path::new("/proc").join(first.trim()).exists()).then_some(())
+    });
+    assert_ne!(pids.lines().nth(1), Some(first.trim()));
+    // The new process answers the next Turn as its first.
+    std::fs::copy(
+        fixtures().join("turn2.jsonl"),
+        work.path().join("turn1.jsonl"),
+    )
+    .unwrap();
+    model.send_turn("What word?".into());
+    let (text, _) = read_turn(&mut events, WAIT);
+    assert_eq!(text, "Kiwi.| You asked me to remember that word.|");
+}
+
 /// Opt-in: `cargo test -p lucyd --test claude -- --ignored`. Uses the real
 /// `claude` on PATH and the user's subscription.
 #[test]
