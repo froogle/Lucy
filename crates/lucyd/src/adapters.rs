@@ -96,12 +96,39 @@ pub trait Speaker: Send {
     fn speak(&mut self, sentence: String);
 }
 
+/// A desktop notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    pub summary: String,
+    pub body: String,
+    /// An action button, if the notification offers one.
+    pub action: Option<NotificationAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationAction {
+    /// "End": ends the Session.
+    EndSession,
+}
+
+/// Desktop notifications (`org.freedesktop.Notifications`).
+pub trait Notifier: Send + Sync {
+    /// Shows `notification` without blocking. If the user picks its action,
+    /// the action is sent on `actions`.
+    fn notify(
+        &self,
+        notification: Notification,
+        actions: mpsc::UnboundedSender<NotificationAction>,
+    );
+}
+
 pub struct Adapters {
     /// Utterances from the microphone. Ignored while no Session is open.
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
     pub stt: Arc<dyn Stt>,
     pub thinking: Box<dyn Thinking>,
     pub tts: Box<dyn Tts>,
+    pub notifier: Arc<dyn Notifier>,
 }
 
 impl Adapters {
@@ -113,6 +140,7 @@ impl Adapters {
             stt: Arc::new(Inert),
             thinking: Box::new(Inert),
             tts: Box::new(Inert),
+            notifier: Arc::new(Inert),
         }
     }
 }
@@ -156,5 +184,14 @@ struct InertSpeaker {
 impl Speaker for InertSpeaker {
     fn speak(&mut self, _sentence: String) {
         let _ = self.played.send(());
+    }
+}
+
+impl Notifier for Inert {
+    fn notify(
+        &self,
+        _notification: Notification,
+        _actions: mpsc::UnboundedSender<NotificationAction>,
+    ) {
     }
 }

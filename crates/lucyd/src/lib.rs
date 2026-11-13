@@ -5,6 +5,7 @@ pub mod adapters;
 pub mod claude;
 mod ipc;
 mod mcp;
+mod notifications;
 mod runner;
 mod session;
 mod status;
@@ -54,6 +55,9 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
     let (sessions, commands) = mpsc::unbounded_channel();
+    let (indicators, fallback) =
+        notifications::fallback(&status, adapters.notifier.clone(), sessions.clone());
+    runtime.spawn(fallback);
     runtime.spawn(
         runner::Runner::new(
             commands,
@@ -65,7 +69,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         .run(),
     );
     runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
-    runtime.spawn(ipc::serve(listener, status, sessions));
+    runtime.spawn(ipc::serve(listener, status, indicators, sessions));
 
     Ok(Daemon {
         socket_path,

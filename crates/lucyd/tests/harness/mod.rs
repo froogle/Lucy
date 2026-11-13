@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use lucy_config::Config;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
+    Adapters, Notification, NotificationAction, Notifier, Relay, SessionModel, Speaker,
+    SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -31,6 +32,7 @@ pub struct Harness {
     pub stt: FakeStt,
     pub thinking: FakeThinking,
     pub tts: FakeTts,
+    pub notifier: FakeNotifier,
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
     _dir: tempfile::TempDir,
@@ -49,6 +51,7 @@ impl Harness {
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
+        let notifier = FakeNotifier::new();
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config,
@@ -58,6 +61,7 @@ impl Harness {
                 stt: Arc::new(stt.clone()),
                 thinking: Box::new(thinking.clone()),
                 tts: Box::new(tts.clone()),
+                notifier: Arc::new(notifier.clone()),
             },
         })
         .expect("lucyd starts");
@@ -67,6 +71,7 @@ impl Harness {
             stt,
             thinking,
             tts,
+            notifier,
             bus: Arc::default(),
             _dir: dir,
         };
@@ -98,6 +103,15 @@ impl Harness {
     /// A client that has completed the `hello` handshake.
     pub fn client(&self) -> Client {
         let client = Client::connect(self.socket_path(), "harness", None).expect("hello succeeds");
+        client.set_read_timeout(Some(WAIT)).unwrap();
+        client
+    }
+
+    /// A client that claims the `indicator` role, as `lucy-indicator` or a
+    /// third-party widget would.
+    pub fn indicator(&self, name: &str) -> Client {
+        let client = Client::connect(self.socket_path(), name, Some(lucy_ipc::Role::Indicator))
+            .expect("hello succeeds");
         client.set_read_timeout(Some(WAIT)).unwrap();
         client
     }
@@ -455,5 +469,58 @@ impl Speaker for FakeSpeaker {
     fn speak(&mut self, sentence: String) {
         self.spoken.lock().unwrap().push(sentence.clone());
         let _ = self.sentences.send(sentence);
+    }
+}
+
+/// Notifications that lucyd showed, in order.
+#[derive(Clone)]
+pub struct FakeNotifier {
+    shown_tx: std_mpsc::Sender<Notification>,
+    shown: Arc<Mutex<std_mpsc::Receiver<Notification>>>,
+    /// The last notification that offered an action.
+    offered: Arc<Mutex<Option<OfferedAction>>>,
+}
+
+/// An action, and where lucyd listens for it.
+type OfferedAction = (
+    NotificationAction,
+    mpsc::UnboundedSender<NotificationAction>,
+);
+
+impl FakeNotifier {
+    fn new() -> Self {
+        let (shown_tx, shown) = std_mpsc::channel();
+        FakeNotifier {
+            shown_tx,
+            shown: Arc::new(Mutex::new(shown)),
+            offered: Arc::default(),
+        }
+    }
+
+    /// Waits for the next notification lucyd shows.
+    pub fn next_notification(&self) -> Notification {
+        recv(&self.shown, "a notification")
+    }
+
+    /// The user picks the action of the last notification that offered one.
+    pub fn pick_action(&self) {
+        let offered = self.offered.lock().unwrap();
+        let (action, actions) = offered.as_ref().expect("a notification offered an action");
+        actions
+            .send(*action)
+            .expect("lucyd is listening for actions");
+    }
+}
+
+impl Notifier for FakeNotifier {
+    fn notify(
+        &self,
+        notification: Notification,
+        actions: mpsc::UnboundedSender<NotificationAction>,
+    ) {
+        if let Some(action) = notification.action {
+            *self.offered.lock().unwrap() = Some((action, actions));
+        }
+        let _ = self.shown_tx.send(notification);
     }
 }
