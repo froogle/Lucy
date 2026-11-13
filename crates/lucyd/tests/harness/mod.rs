@@ -27,7 +27,9 @@ const WAIT: Duration = Duration::from_secs(5);
 pub struct Harness {
     // Dropped first, so lucyd stops before its runtime dir goes away.
     daemon: lucyd::Daemon,
-    speech: mpsc::UnboundedSender<SpeechSegment>,
+    /// Where `say` sends utterances, unless lucyd hears through `mic`.
+    speech: Option<mpsc::UnboundedSender<SpeechSegment>>,
+    pub mic: FakeMic,
     pub stt: FakeStt,
     pub thinking: FakeThinking,
     pub tts: FakeTts,
@@ -43,9 +45,28 @@ impl Harness {
     }
 
     pub fn with_config(config: Config) -> Harness {
+        let (speech, speech_rx) = mpsc::unbounded_channel();
+        Harness::with_speech(config, Some(speech), speech_rx, FakeMic::default())
+    }
+
+    /// Starts lucyd hearing through the fake microphone and VAD, with the
+    /// real DSP thread and endpointing in between.
+    pub fn hearing(config: Config) -> Harness {
+        let mic = FakeMic::default();
+        let speech =
+            lucyd::audio::listen(&mic, &config.audio, Box::new(FakeVad), &config.endpointing)
+                .expect("the fake microphone opens");
+        Harness::with_speech(config, None, speech, mic)
+    }
+
+    fn with_speech(
+        config: Config,
+        speech: Option<mpsc::UnboundedSender<SpeechSegment>>,
+        speech_rx: mpsc::UnboundedReceiver<SpeechSegment>,
+        mic: FakeMic,
+    ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
-        let (speech, speech_rx) = mpsc::unbounded_channel();
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
@@ -64,6 +85,7 @@ impl Harness {
         let harness = Harness {
             daemon,
             speech,
+            mic,
             stt,
             thinking,
             tts,
@@ -113,7 +135,8 @@ impl Harness {
     /// The user says something that the fake STT will hear as `transcript`.
     pub fn say(&self, transcript: &str) {
         self.stt.script(transcript);
-        self.speech.send(SpeechSegment { samples: vec![] }).unwrap();
+        let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
+        speech.send(SpeechSegment { samples: vec![] }).unwrap();
     }
 
     /// The user makes a sound that the fake STT recognises as no speech.
@@ -220,6 +243,8 @@ fn recv<T>(receiver: &Mutex<std_mpsc::Receiver<T>>, what: &str) -> T {
 pub struct FakeStt {
     scripted: Arc<Mutex<VecDeque<String>>>,
     heard: Arc<Mutex<Vec<String>>>,
+    /// How long each utterance it was given lasted.
+    segments: Arc<Mutex<Vec<Duration>>>,
     /// How long each transcription takes.
     delay: Arc<Mutex<Duration>>,
 }
@@ -230,7 +255,8 @@ impl FakeStt {
         *self.delay.lock().unwrap() = delay;
     }
 
-    fn script(&self, transcript: &str) {
+    /// The next utterance will be heard as `transcript`.
+    pub fn script(&self, transcript: &str) {
         self.scripted
             .lock()
             .unwrap()
@@ -240,10 +266,17 @@ impl FakeStt {
     fn heard(&self) -> Vec<String> {
         self.heard.lock().unwrap().clone()
     }
+
+    /// How long each utterance transcribed so far lasted, at 16 kHz.
+    pub fn segments(&self) -> Vec<Duration> {
+        self.segments.lock().unwrap().clone()
+    }
 }
 
 impl Stt for FakeStt {
-    fn transcribe(&self, _segment: SpeechSegment) -> String {
+    fn transcribe(&self, segment: SpeechSegment) -> String {
+        let length = Duration::from_secs_f64(segment.samples.len() as f64 / 16_000.0);
+        self.segments.lock().unwrap().push(length);
         std::thread::sleep(*self.delay.lock().unwrap());
         let transcript = self
             .scripted
@@ -455,5 +488,70 @@ impl Speaker for FakeSpeaker {
     fn speak(&mut self, sentence: String) {
         self.spoken.lock().unwrap().push(sentence.clone());
         let _ = self.sentences.send(sentence);
+    }
+}
+
+/// A level the fake VAD hears as speech.
+pub const SPEECH: f32 = 0.9;
+/// A level the fake VAD hears as silence.
+pub const SILENCE: f32 = 0.0;
+
+/// A microphone the test feeds with samples at 16 kHz.
+#[derive(Clone, Default)]
+pub struct FakeMic {
+    ring: Arc<Mutex<Option<rtrb::Producer<f32>>>>,
+    /// The device lucyd asked for.
+    opened: Arc<Mutex<Option<String>>>,
+}
+
+impl FakeMic {
+    /// Feeds `duration` of samples at `level`, waiting while the ring is full.
+    pub fn feed(&self, level: f32, duration: Duration) {
+        let mut left = (duration.as_secs_f64() * 16_000.0).round() as usize;
+        while left > 0 {
+            let written = {
+                let mut ring = self.ring.lock().unwrap();
+                let ring = ring.as_mut().expect("lucyd opened the microphone");
+                let n = left.min(ring.slots());
+                for _ in 0..n {
+                    ring.push(level).unwrap();
+                }
+                n
+            };
+            left -= written;
+            if written == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    /// The device lucyd opened.
+    pub fn opened(&self) -> Option<String> {
+        self.opened.lock().unwrap().clone()
+    }
+}
+
+impl lucyd::audio::AudioIo for FakeMic {
+    fn capture(
+        &self,
+        mic: &str,
+        ring: rtrb::Producer<f32>,
+    ) -> Result<Box<dyn Send>, lucyd::audio::Error> {
+        *self.ring.lock().unwrap() = Some(ring);
+        *self.opened.lock().unwrap() = Some(mic.to_owned());
+        Ok(Box::new(()))
+    }
+}
+
+/// A VAD that hears each chunk's first sample as its speech probability.
+pub struct FakeVad;
+
+impl lucyd::audio::Vad for FakeVad {
+    fn chunk_len(&self) -> usize {
+        512
+    }
+
+    fn speech_probability(&mut self, chunk: &[f32]) -> f32 {
+        chunk[0]
     }
 }

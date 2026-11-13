@@ -2,6 +2,7 @@
 //! process (ADR 0006). Everything else talks to it over the public socket.
 
 pub mod adapters;
+pub mod audio;
 pub mod claude;
 mod ipc;
 mod mcp;

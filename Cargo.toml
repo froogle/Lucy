@@ -20,3 +20,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 rmcp = { version = "3.10", default-features = false }
+rtrb = "0.3"

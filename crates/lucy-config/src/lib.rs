@@ -13,6 +13,55 @@ use serde::Deserialize;
 #[serde(default)]
 pub struct Config {
     pub session: Session,
+    pub audio: Audio,
+    pub endpointing: Endpointing,
+}
+
+/// `[audio]`
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Audio {
+    /// `"default"`, or the PipeWire node name of a pinned microphone.
+    pub mic: String,
+}
+
+impl Default for Audio {
+    fn default() -> Self {
+        Audio {
+            mic: "default".to_owned(),
+        }
+    }
+}
+
+/// `[endpointing]`: how the VAD cuts utterances from the microphone.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Endpointing {
+    /// Speech probability at or above which speech starts.
+    pub start_threshold: f32,
+    /// Speech probability below which speech has stopped.
+    pub end_threshold: f32,
+    /// Speech must last this long before it counts as an utterance.
+    pub start_ms: u64,
+    /// Audio kept from before the speech started.
+    pub pre_roll_ms: u64,
+    /// Silence that ends an utterance.
+    pub end_silence_ms: u64,
+    /// The longest utterance; longer speech is cut here.
+    pub max_utterance_secs: f64,
+}
+
+impl Default for Endpointing {
+    fn default() -> Self {
+        Endpointing {
+            start_threshold: 0.5,
+            end_threshold: 0.35,
+            start_ms: 100,
+            pre_roll_ms: 500,
+            end_silence_ms: 700,
+            max_utterance_secs: 30.0,
+        }
+    }
 }
 
 /// `[session]`
@@ -95,6 +144,24 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[session]\nsilence_timeout_secs = 45\n").unwrap();
         assert_eq!(load(&path).unwrap().session.silence_timeout_secs, 45.0);
+    }
+
+    #[test]
+    fn microphone_and_endpointing_can_be_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[audio]\nmic = \"alsa_input.usb-Blue_Yeti\"\n\
+             [endpointing]\nend_silence_ms = 900\n",
+        )
+        .unwrap();
+
+        let config = load(&path).unwrap();
+
+        assert_eq!(config.audio.mic, "alsa_input.usb-Blue_Yeti");
+        assert_eq!(config.endpointing.end_silence_ms, 900);
+        assert_eq!(config.endpointing.pre_roll_ms, 500);
     }
 
     #[test]
