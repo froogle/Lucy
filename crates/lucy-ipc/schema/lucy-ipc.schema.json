@@ -98,24 +98,6 @@
         }
       ]
     },
-    "StateEvent": {
-      "description": "Params of the `state` event.",
-      "properties": {
-        "session_id": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "state": {
-          "$ref": "#/$defs/State"
-        }
-      },
-      "required": [
-        "state"
-      ],
-      "type": "object"
-    },
     "Status": {
       "description": "Result of `status`: a snapshot of lucyd.",
       "properties": {
@@ -166,7 +148,7 @@
   "x-events": {
     "state": {
       "params": {
-        "$ref": "#/$defs/StateEvent"
+        "$ref": "#/$defs/Status"
       }
     }
   },

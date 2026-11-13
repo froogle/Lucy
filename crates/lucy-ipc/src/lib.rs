@@ -122,12 +122,8 @@ pub enum Topic {
     State,
 }
 
-/// Params of the `state` event.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct StateEvent {
-    pub state: State,
-    pub session_id: Option<String>,
-}
+/// Params of the `state` event: the new status.
+pub type StateEvent = Status;
 
 /// An event: a JSON-RPC notification from lucyd.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

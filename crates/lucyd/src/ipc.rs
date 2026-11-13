@@ -1,8 +1,7 @@
 //! The public socket: newline-delimited JSON-RPC 2.0 (ADR 0006).
 
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, SessionStarted, StateEvent, Status, Subscribe, Topic,
-    PROTOCOL,
+    error_code, Event, Hello, HelloResult, SessionStarted, Status, Subscribe, Topic, PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -117,10 +116,7 @@ impl Connection {
     }
 
     async fn send_state(&mut self, status: Status) -> std::io::Result<()> {
-        let event = Event::State(StateEvent {
-            state: status.state,
-            session_id: status.session_id,
-        });
+        let event = Event::State(status);
         let mut message = json!(event);
         message["jsonrpc"] = json!("2.0");
         self.send(message).await
