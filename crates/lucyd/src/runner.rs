@@ -12,13 +12,14 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::{Adapters, Notification, SpeakerEvent, ThinkingEvent};
+use crate::adapters::{Adapters, Notification, Sound, SpeakerEvent, ThinkingEvent};
 use crate::mcp::Relays;
 use crate::notifications;
 use crate::persona;
 use crate::plugins;
 use crate::session::{Answer, Input, Output, Question, Session};
 use crate::status::Buses;
+use crate::wake;
 pub use start::SessionFiles;
 
 /// A request from the public socket or the MCP server.
@@ -68,6 +69,9 @@ impl fmt::Display for SessionId {
     }
 }
 
+/// How long a Session opened by the Wake word waits for the first Turn.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(8);
+
 pub struct StartError;
 pub struct EndError;
 
@@ -80,6 +84,8 @@ pub struct Runner {
     files: SessionFiles,
     /// False once the speech source has gone away.
     speech_open: bool,
+    /// False once the wake-word source has gone away.
+    wake_open: bool,
     sessions_started: u64,
 }
 
@@ -100,6 +106,7 @@ impl Runner {
             plugin_host,
             files,
             speech_open: true,
+            wake_open: true,
             sessions_started: 0,
         }
     }
@@ -107,18 +114,21 @@ impl Runner {
     pub async fn run(mut self) {
         loop {
             tokio::select! {
+                // The Wake word before speech: the utterance it starts
+                // belongs to the Session it opens.
+                biased;
                 command = self.commands.recv() => match command {
-                    Some(Command::Start(reply)) => {
-                        self.sessions_started += 1;
-                        let id = SessionId(self.sessions_started);
-                        self.run_session(id, reply).await;
-                    }
+                    Some(Command::Start(reply)) => self.run_session(Some(reply)).await,
                     Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
                         let _ = reply.send(Err(EndError));
                     }
                     // Dropped unanswered: there is no one to ask.
                     Some(Command::Ask(_)) => {}
                     None => return,
+                },
+                wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
+                    Some(()) => self.run_session(None).await,
+                    None => self.wake_open = false,
                 },
                 // Speech outside a Session is ignored.
                 speech = self.adapters.speech.recv(), if self.speech_open => {
@@ -129,11 +139,14 @@ impl Runner {
     }
 
     /// Runs one Session until it ends, then stops the Plugins it started.
+    /// `started` hears that it opened; it is None when the Wake word opened
+    /// it.
     async fn run_session(
         &mut self,
-        id: SessionId,
-        started: oneshot::Sender<Result<SessionId, StartError>>,
+        started: Option<oneshot::Sender<Result<SessionId, StartError>>>,
     ) {
+        self.sessions_started += 1;
+        let id = SessionId(self.sessions_started);
         let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
         plugin_tools.stop().await;
@@ -144,9 +157,10 @@ impl Runner {
     async fn session_loop(
         &mut self,
         id: SessionId,
-        started: oneshot::Sender<Result<SessionId, StartError>>,
+        started: Option<oneshot::Sender<Result<SessionId, StartError>>>,
         plugin_tools: Arc<plugins::SessionTools>,
     ) {
+        let woken = started.is_none();
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // The token is revoked when the Session ends.
         let start::Started {
@@ -156,12 +170,18 @@ impl Runner {
             first_run,
         } = self.start(plugin_tools, events_tx);
         let silence_timeout = settings.session.silence_timeout_secs;
+        let wake_phrase = wake::phrase(&settings.wake_word);
         let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(speaker_tx);
-        let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
+        speaker.sound(Sound::Start);
+        let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel::<String>();
         let mut session = Session::new(confirmation.yes_phrases);
         let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
+        if woken {
+            // A false wake clears quickly.
+            silence.first_timeout(WAKE_TIMEOUT);
+        }
         silence.set_running(session.silence_timer_runs());
         // Questions waiting to be asked, and where the answer to the one
         // being asked goes.
@@ -179,7 +199,9 @@ impl Runner {
         let mut opening = introducing.then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
 
         self.publish(session.state(), Some(id));
-        let _ = started.send(Ok(id));
+        if let Some(started) = started {
+            let _ = started.send(Ok(id));
+        }
         loop {
             let mut segment = None;
             let input = if let Some(input) = opening.take() {
@@ -225,7 +247,16 @@ impl Runner {
                         continue;
                     }
                 },
-                Some(text) = transcripts.recv() => Input::Transcript(text),
+                wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
+                    Some(()) => Input::WakeWord,
+                    None => {
+                        self.wake_open = false;
+                        continue;
+                    }
+                },
+                Some(text) = transcripts.recv() => {
+                    Input::Transcript(wake::strip(&text, &wake_phrase).to_owned())
+                }
                 Some(event) = events.recv() => Input::Thinking(event),
                 Some(event) = speaker_events.recv() => match event {
                     SpeakerEvent::Played => Input::Played,
@@ -240,6 +271,7 @@ impl Runner {
                     }
                 },
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
+                    speaker.sound(Sound::Closing);
                     self.publish(State::Idle, None);
                     return;
                 }
@@ -332,6 +364,12 @@ impl SilenceTimer {
             }
             _ => {}
         }
+    }
+
+    /// Counts down from `timeout` until the next reset, instead of the
+    /// usual timeout.
+    fn first_timeout(&mut self, timeout: Duration) {
+        self.remaining = timeout;
     }
 
     fn reset(&mut self) {

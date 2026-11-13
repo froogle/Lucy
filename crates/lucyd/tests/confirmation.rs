@@ -312,3 +312,22 @@ fn a_mid_call_question_met_with_silence_goes_unanswered() {
     // Only a declined Confirmation is answered "Okay, I won't".
     assert!(!lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned()));
 }
+
+#[test]
+fn in_a_session_opened_by_the_wake_word_a_yes_after_the_wake_phrase_counts() {
+    let lucyd = with_files_plugin("[wake_word]\nmodel = \"/models/hey_lucy.onnx\"\n");
+    let mut events = lucyd.state_client();
+    lucyd.wake();
+    next_state(&mut events);
+    let (file, call) = model_writes(&lucyd, &mut events);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+
+    lucyd.wake();
+    lucyd.say("Hey Lucy, yes.");
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+}
