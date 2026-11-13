@@ -64,13 +64,15 @@ impl Claude {
 
     /// `claude -p` stream-json, with `relay` as its only MCP server, or none,
     /// `instructions` appended to its system prompt, and of its own tools
-    /// only `own_tools`.
+    /// only `own_tools`. It carries on the conversation `resume` names, if
+    /// any; conversations are kept on disk so that it can.
     fn command(
         &self,
         provider: &Provider,
         relay: Option<&Relay>,
         instructions: &str,
         own_tools: &[&str],
+        resume: Option<&str>,
     ) -> Command {
         let servers = match relay {
             Some(relay) => serde_json::json!({"lucy": {
@@ -85,7 +87,7 @@ impl Claude {
             .args(["-p", "--verbose"])
             .args(["--input-format", "stream-json"])
             .args(["--output-format", "stream-json"])
-            .args(["--include-partial-messages", "--no-session-persistence"])
+            .arg("--include-partial-messages")
             .arg("--strict-mcp-config")
             .arg("--mcp-config")
             .arg(mcp_config.to_string())
@@ -107,6 +109,9 @@ impl Claude {
         if let Some(model) = &provider.model {
             command.args(["--model", model]);
         }
+        if let Some(session) = resume {
+            command.args(["--resume", session]);
+        }
         command.stdin(Stdio::piped()).stdout(Stdio::piped());
         command
     }
@@ -119,8 +124,9 @@ impl Claude {
         relay: &Relay,
         instructions: &str,
         workspace: &Workspace,
+        resume: Option<&str>,
     ) -> std::io::Result<Command> {
-        let mut command = self.command(provider, Some(relay), instructions, DELEGATE_TOOLS);
+        let mut command = self.command(provider, Some(relay), instructions, DELEGATE_TOOLS, resume);
         command
             .current_dir(&workspace.dir)
             .env("TMPDIR", &workspace.tmp);
@@ -142,7 +148,7 @@ impl Claude {
     /// `claude -p`, fed each Turn and interrupt from `inputs` until the
     /// SessionModel is dropped. A Turn is interrupted with the stream-json
     /// control interrupt; if claude doesn't acknowledge it, with SIGINT,
-    /// which ends the process, and a new one takes over.
+    /// which ends the process, and a new one carries on the conversation.
     fn run_session(
         &self,
         provider: &Provider,
@@ -156,7 +162,9 @@ impl Claude {
             let _ = events.send(ThinkingEvent::Unavailable(reason));
             return;
         }
-        let spawn = || self.spawn(provider, role, events, process);
+        // claude's id for the conversation, read from its stream.
+        let session = Arc::new(Mutex::new(None));
+        let spawn = || self.spawn(provider, role, events, process, &session);
         let Some(mut running) = spawn() else {
             return;
         };
@@ -217,17 +225,20 @@ impl Claude {
         role: &Role,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         process: &Arc<Mutex<Process>>,
+        session: &Arc<Mutex<Option<String>>>,
     ) -> Option<Running> {
+        let resume = session.lock().unwrap().clone();
+        let resume = resume.as_deref();
         let command = match role {
             Role::Session {
                 relay,
                 instructions,
-            } => Ok(self.command(provider, Some(relay), instructions, &[])),
+            } => Ok(self.command(provider, Some(relay), instructions, &[], resume)),
             Role::Delegate {
                 relay,
                 instructions,
                 workspace,
-            } => self.delegate_command(provider, relay, instructions, workspace),
+            } => self.delegate_command(provider, relay, instructions, workspace, resume),
         };
         let mut child = match command.and_then(|mut command| command.spawn()) {
             Ok(child) => child,
@@ -259,10 +270,14 @@ impl Claude {
         let reader_turns = turns.clone();
         let reader_process = process.clone();
         let reader_events = events.clone();
+        let reader_session = session.clone();
         std::thread::spawn(move || {
             let mut stream = Stream::default();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let value: Value = serde_json::from_str(&line).unwrap_or_default();
+                if let Some(id) = value["session_id"].as_str() {
+                    *reader_session.lock().unwrap() = Some(id.to_owned());
+                }
                 if value["type"] == "control_response" {
                     let _ = acks_tx.send(value["response"]["subtype"] == "success");
                     continue;
@@ -508,7 +523,7 @@ mod tests {
             program: "lucy".into(),
             args: vec![],
         };
-        let command = claude.command(&provider, Some(&relay), "", &[]);
+        let command = claude.command(&provider, Some(&relay), "", &[], None);
         command
             .get_envs()
             .filter(|(_, value)| value.is_none())
