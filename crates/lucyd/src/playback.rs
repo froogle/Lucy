@@ -73,9 +73,9 @@ pub fn speaker(
                 Request::Sound(sound) => Item::Sound(sound),
                 Request::Sentence(sentence) => match synthesise(&sentence) {
                     Ok(pcm) => Item::Audio(pcm, sentence),
-                    Err(e) => {
-                        eprintln!("lucyd: TTS failed: {e}");
-                        Item::Failed(sentence)
+                    Err(reason) => {
+                        eprintln!("lucyd: TTS failed: {reason}");
+                        Item::Failed(Failure { sentence, reason })
                     }
                 },
             };
@@ -155,8 +155,14 @@ impl Speaker for PlaybackSpeaker {
 enum Item {
     /// A sentence's audio, and its text in case it can't be played.
     Audio(Pcm, String),
-    Failed(String),
+    Failed(Failure),
     Sound(Sound),
+}
+
+/// A sentence that couldn't be synthesised or played, and why.
+struct Failure {
+    sentence: String,
+    reason: String,
 }
 
 /// The output stream and what the player shares with its callback.
@@ -183,8 +189,8 @@ struct Player {
     consumed: Arc<AtomicU64>,
     /// RMS of the callback's latest block, as f32 bits.
     rms: Arc<AtomicU32>,
-    /// Each sentence's end position, with its text if it failed.
-    pending: VecDeque<(u64, Option<String>)>,
+    /// Each sentence's end position, with its failure if it failed.
+    pending: VecDeque<(u64, Option<Failure>)>,
     /// The last item queued was a cue.
     sound_last: bool,
     control: Arc<Control>,
@@ -259,11 +265,13 @@ impl Player {
                     self.pending.push_back((self.written, None));
                 }
                 Err(e) => {
-                    eprintln!("lucyd: can't play speech: {e}");
-                    self.pending.push_back((self.written, Some(sentence)));
+                    let reason = format!("can't play speech: {e}");
+                    eprintln!("lucyd: {reason}");
+                    let failure = Failure { sentence, reason };
+                    self.pending.push_back((self.written, Some(failure)));
                 }
             },
-            Item::Failed(sentence) => self.pending.push_back((self.written, Some(sentence))),
+            Item::Failed(failure) => self.pending.push_back((self.written, Some(failure))),
             Item::Sound(sound) => {
                 let rate = self.output.as_ref().map_or(SOUND_RATE, |o| o.sample_rate);
                 match self.output_at(rate) {
@@ -355,7 +363,7 @@ impl Player {
             let (_, failed) = self.pending.pop_front().unwrap();
             let _ = self.events.send(match failed {
                 None => SpeakerEvent::Played,
-                Some(sentence) => SpeakerEvent::Failed(sentence),
+                Some(Failure { sentence, reason }) => SpeakerEvent::Failed { sentence, reason },
             });
         }
     }

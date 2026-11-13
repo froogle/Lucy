@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
@@ -20,19 +20,24 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::adapters::Relay;
+use crate::authoring::{self, Authoring, Build};
 use crate::desktop::Desktop;
 use crate::persona::Persona;
 use crate::plugins::{self, SessionTools};
 use crate::runner::Command;
 
-/// Who a token was issued to. Each sees a different set of tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Who a token was issued to, and what it lets them reach. Each sees a
+/// different set of tools.
+#[derive(Clone)]
 pub enum Caller {
-    /// The model process of the open Session.
-    SessionModel,
-    /// An agent working on a goal, such as an Authoring build.
-    #[allow(dead_code)] // Issued once Delegates land.
-    Delegate,
+    /// The model process of the open Session: the Built-in tools, the
+    /// Session's `plugins` and its `desktop` tools.
+    SessionModel {
+        plugins: Arc<SessionTools>,
+        desktop: Desktop,
+    },
+    /// The agent working on an Authoring build: only the Delegate tools.
+    Delegate(Weak<Build>),
 }
 
 /// Issues relay commands, each with a fresh token for one caller.
@@ -53,24 +58,16 @@ impl Relays {
         }
     }
 
-    /// A relay command for `caller`, offering the Session's `plugins` and
-    /// `desktop` tools. Its token works until the returned `Token` is
-    /// dropped.
-    pub fn issue(
-        &self,
-        caller: Caller,
-        plugins: Arc<SessionTools>,
-        desktop: Desktop,
-    ) -> (Relay, Token) {
+    /// The `lucy` binary each relay runs.
+    pub fn program(&self) -> PathBuf {
+        self.program.clone()
+    }
+
+    /// A relay command for `caller`. Its token works until the returned
+    /// `Token` is dropped.
+    pub fn issue(&self, caller: Caller) -> (Relay, Token) {
         let value = random_token();
-        self.tokens.0.lock().unwrap().insert(
-            value.clone(),
-            Grant {
-                caller,
-                plugins,
-                desktop,
-            },
-        );
+        self.tokens.0.lock().unwrap().insert(value.clone(), caller);
         let relay = Relay {
             program: self.program.clone(),
             args: vec![
@@ -88,20 +85,12 @@ impl Relays {
     }
 }
 
-/// What a token lets its holder reach.
-#[derive(Clone)]
-struct Grant {
-    caller: Caller,
-    plugins: Arc<SessionTools>,
-    desktop: Desktop,
-}
-
 /// The tokens currently issued.
 #[derive(Clone, Default)]
-struct Tokens(Arc<Mutex<HashMap<String, Grant>>>);
+struct Tokens(Arc<Mutex<HashMap<String, Caller>>>);
 
 impl Tokens {
-    fn grant(&self, token: &str) -> Option<Grant> {
+    fn grant(&self, token: &str) -> Option<Caller> {
         self.0.lock().unwrap().get(token).cloned()
     }
 }
@@ -132,6 +121,7 @@ pub async fn serve(
     relays: Relays,
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
+    authoring: Arc<Authoring>,
 ) {
     loop {
         match listener.accept().await {
@@ -141,6 +131,7 @@ pub async fn serve(
                     relays.tokens.clone(),
                     persona.clone(),
                     commands.clone(),
+                    authoring.clone(),
                 ));
             }
             Err(e) => eprintln!("lucyd: MCP accept failed: {e}"),
@@ -153,6 +144,7 @@ async fn connection(
     tokens: Tokens,
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
+    authoring: Arc<Authoring>,
 ) {
     let Some(token) = read_token(&mut stream).await else {
         return;
@@ -169,9 +161,12 @@ async fn connection(
         tokens,
         persona,
         commands,
+        authoring,
     };
     if let Ok(service) = tools.serve(stream).await {
-        grant.plugins.watch(service.peer().clone());
+        if let Caller::SessionModel { plugins, .. } = grant {
+            plugins.watch(service.peer().clone());
+        }
         let _ = service.waiting().await;
     }
 }
@@ -194,15 +189,14 @@ struct Tools {
     tokens: Tokens,
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
+    authoring: Arc<Authoring>,
 }
 
 impl Tools {
     /// Who is calling and what they may reach, or an error once the token
     /// has been revoked.
-    fn grant(&self) -> Result<Grant, ErrorData> {
-        self.tokens
-            .grant(&self.token)
-            .ok_or_else(|| ErrorData::invalid_request("this relay's token has been revoked", None))
+    fn grant(&self) -> Result<Caller, ErrorData> {
+        self.tokens.grant(&self.token).ok_or_else(revoked)
     }
 
     async fn end_session(&self) -> CallToolResult {
@@ -236,6 +230,10 @@ impl Tools {
             }
         }
     }
+}
+
+fn revoked() -> ErrorData {
+    ErrorData::invalid_request("this relay's token has been revoked", None)
 }
 
 fn no_tool(name: &str) -> ErrorData {
@@ -312,19 +310,19 @@ impl ServerHandler for Tools {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let grant = self.grant()?;
-        let tools = match grant.caller {
-            Caller::SessionModel => [
+        let tools = match self.grant()? {
+            Caller::SessionModel { plugins, .. } => [
                 vec![
                     end_session_tool(),
                     update_persona_tool(),
                     plugins::manage_plugin_tool(),
+                    authoring::request_plugin_tool(),
                 ],
                 Desktop::tools(),
-                grant.plugins.list(),
+                plugins.list(),
             ]
             .concat(),
-            Caller::Delegate => vec![],
+            Caller::Delegate(_) => authoring::delegate_tools(),
         };
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -335,23 +333,28 @@ impl ServerHandler for Tools {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let arguments = request.arguments.clone().unwrap_or_default();
-        let grant = self.grant()?;
-        match (grant.caller, &*request.name) {
-            (Caller::SessionModel, "end_session") => Ok(self.end_session().await.into()),
-            (Caller::SessionModel, "update_persona") => Ok(self.update_persona(&request).into()),
-            (Caller::SessionModel, "manage_plugin") => {
-                Ok(grant.plugins.manage(&arguments).await.into())
+        let (plugins, desktop) = match self.grant()? {
+            Caller::SessionModel { plugins, desktop } => (plugins, desktop),
+            Caller::Delegate(build) => {
+                let build = build.upgrade().ok_or_else(revoked)?;
+                let result = build.call(&request.name, &arguments).await;
+                return result.map(Into::into).ok_or_else(|| no_tool(&request.name));
             }
-            (Caller::SessionModel, name) => {
-                if let Some(result) = grant.desktop.call(name, &arguments).await {
+        };
+        match &*request.name {
+            "end_session" => Ok(self.end_session().await.into()),
+            "update_persona" => Ok(self.update_persona(&request).into()),
+            "manage_plugin" => Ok(plugins.manage(&arguments).await.into()),
+            "request_plugin" => Ok(self.authoring.request(&arguments).into()),
+            name => {
+                if let Some(result) = desktop.call(name, &arguments).await {
                     return Ok(result.into());
                 }
-                match grant.plugins.call(name, request.arguments).await {
+                match plugins.call(name, request.arguments).await {
                     Some(result) => Ok(result.into()),
                     None => Err(no_tool(name)),
                 }
             }
-            (_, name) => Err(no_tool(name)),
         }
     }
 }

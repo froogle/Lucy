@@ -78,9 +78,10 @@ impl Runner {
         if let Some(report) = plugin_tools.scan_report() {
             instructions = format!("{instructions}\n\n{report}");
         }
-        let (relay, token) = self
-            .relays
-            .issue(Caller::SessionModel, plugin_tools, desktop);
+        let (relay, token) = self.relays.issue(Caller::SessionModel {
+            plugins: plugin_tools,
+            desktop,
+        });
         let provider = match &config {
             Ok(config) => config.provider(Tier::Fast),
             Err(e) => Err(format!(

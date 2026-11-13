@@ -525,3 +525,81 @@ fn a_confirmed_call_runs_on_after_a_barge_in_and_the_next_turn_reports_it() {
          did it work"
     );
 }
+
+// With an Authoring build running (ticket 22).
+
+#[test]
+fn a_delegate_question_parked_while_lucy_speaks_waits_out_a_barge_in_and_its_turn() {
+    let lucyd = Harness::start();
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    lucyd.say("find my Mount Rainier photo");
+    lucyd.thinking.next_turn();
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+    let requested = lucyd.thinking.call_tool_with(
+        "request_plugin",
+        serde_json::json!({
+            "name": "photos",
+            "goal": "find the user's photos by place or date",
+            "clarifications": "",
+            "request": "find my Mount Rainier photo",
+        }),
+    );
+    assert_eq!(requested.unwrap().is_error, Some(false));
+    let a_few_minutes = lucyd.tts.next_sentence();
+    lucyd.thinking.turn_end();
+    lucyd.tts.finish_playing();
+    until_state(&mut events, State::Listening);
+    let delegate = &lucyd.thinking.delegate;
+    delegate.next_turn();
+    // Lucy is answering something else, and still speaking, when the
+    // Delegate asks.
+    lucyd.say("what's the weather?");
+    lucyd.thinking.next_turn();
+    lucyd.thinking.delta("It's sunny.");
+    lucyd.thinking.sentence_end();
+    assert_eq!(lucyd.tts.next_sentence(), "It's sunny.");
+    until_state(&mut events, State::Speaking);
+    let asked = delegate.call_tool_with(
+        "ask_user",
+        serde_json::json!({"question": "Which folder are your photos in?"}),
+    );
+    assert_eq!(asked.unwrap().is_error, Some(false));
+
+    // The user cuts in, and is still talking once Lucy has stopped.
+    lucyd.start_speaking();
+    lucyd.wake();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    lucyd.say("never mind");
+    assert_eq!(
+        lucyd.thinking.next_turn(),
+        "[You were interrupted; the user heard up to: \"It's sunny.\"]\nnever mind"
+    );
+    lucyd.thinking.delta("Okay.");
+    lucyd.thinking.turn_end();
+    assert_eq!(lucyd.tts.next_sentence(), "Okay.");
+    lucyd.tts.finish_playing();
+
+    // Only now is the Delegate's question asked.
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Which folder are your photos in?"
+    );
+    assert_eq!(
+        lucyd.tts.sentences(),
+        [
+            a_few_minutes.as_str(),
+            "It's sunny.",
+            "Okay.",
+            "Which folder are your photos in?"
+        ]
+    );
+    assert_eq!(lucyd.tts.stops(), 1);
+    assert_eq!(lucyd.thinking.interrupts(), 1);
+}
+
+/// Reads state events until `state`.
+fn until_state(events: &mut Client, state: State) {
+    while next_state(events).state != state {}
+}

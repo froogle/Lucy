@@ -7,7 +7,7 @@ use lucy_config::{Config, Tier};
 use lucy_ipc::{
     error_code, Event, Hello, HelloResult, LevelEvent, PluginsChanged, ProviderCheck,
     ProviderCheckResult, ProviderStatus, ProvidersStatus, RevokeApproval, Role, SessionStarted,
-    SetPluginEnabled, Status, Subscribe, Topic, PROTOCOL,
+    SetPluginEnabled, Status, Subscribe, Topic, VoicePreview, PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::adapters::Thinking;
 use crate::notifications::{IndicatorClaim, Indicators};
 use crate::plugins::{self, Host};
-use crate::runner::Command;
+use crate::runner::{self, Command, PreviewError};
 use crate::status::Buses;
 
 /// What `providers.status` and `provider.check` need.
@@ -254,6 +254,11 @@ impl Connection {
                 self.plugins.revoke(&plugin).await.map_err(plugin_error)?;
                 Ok(json!({}))
             }
+            "test.voice_preview" => {
+                let VoicePreview { text } = parse_params(params)?;
+                self.voice_preview(text).await?;
+                Ok(json!({}))
+            }
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method {method:?}"),
@@ -270,6 +275,36 @@ impl Connection {
         let gone = || RpcError::new(error_code::INTERNAL_ERROR, "lucyd's Session runner stopped");
         self.sessions.send(command(reply)).map_err(|_| gone())?;
         answer.await.map_err(|_| gone())
+    }
+
+    /// Says `text` outside any Session, once it has been played.
+    async fn voice_preview(&self, text: String) -> Result<(), RpcError> {
+        if text.trim().is_empty() {
+            return Err(RpcError::new(
+                error_code::INVALID_PARAMS,
+                "there is nothing to say: the text is empty",
+            ));
+        }
+        let outcome = self
+            .ask(|reply| Command::VoicePreview(runner::VoicePreview { text, reply }))
+            .await?;
+        outcome.map_err(|e| match e {
+            PreviewError::SessionOpen => RpcError::new(
+                error_code::SESSION_OPEN,
+                "a Session is open; end it before a Voice preview",
+            ),
+            PreviewError::Busy => {
+                RpcError::new(error_code::BUSY, "another Voice preview is playing")
+            }
+            PreviewError::Interrupted => RpcError::new(
+                error_code::INTERRUPTED,
+                "interrupted: a Session opened and cut the Voice preview short",
+            ),
+            PreviewError::Failed(reason) => RpcError::new(
+                error_code::TTS_FAILED,
+                format!("Lucy couldn't say it: {reason}"),
+            ),
+        })
     }
 
     /// Health checks for every Provider in config, with no model call.

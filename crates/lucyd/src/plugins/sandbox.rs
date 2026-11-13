@@ -1,6 +1,9 @@
 //! Landlock confinement for a Plugin: it may read and run the system, read
 //! its own folder and its declared `read` paths, and write only its declared
 //! `write` paths and its private state dir.
+//!
+//! An Authoring Delegate, and the build and tests it submits, are confined
+//! the same way to their workspace: no user data.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,6 +20,10 @@ const ABI_VERSION: ABI = ABI::V5;
 /// Read-only system paths every Plugin needs to run at all.
 const SYSTEM: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"];
 
+/// What a Delegate's CLI and toolchain read besides the system: process
+/// info. `/dev/null` and `/dev/urandom` are always allowed.
+const DELEGATE_SYSTEM: &[&str] = &["/proc"];
+
 /// Makes `command` apply the Plugin's Landlock rules just before it execs.
 pub fn confine(
     command: &mut tokio::process::Command,
@@ -24,7 +31,41 @@ pub fn confine(
     state_dir: &Path,
     declared: &Declared,
 ) -> io::Result<()> {
-    let mut ruleset = Some(ruleset(folder, state_dir, declared).map_err(io::Error::other)?);
+    let readable = [folder.to_owned()]
+        .into_iter()
+        .chain(declared.read.iter().map(|p| expand(p)));
+    let writable = declared
+        .write
+        .iter()
+        .map(|p| expand(p))
+        .chain([state_dir.to_owned()]);
+    restrict(command.as_std_mut(), readable, writable)
+}
+
+/// Makes `command` apply a Delegate's Landlock rules just before it execs:
+/// the system and `readable` read-only, `writable` read-write, and nothing
+/// else. The network stays open.
+pub fn confine_delegate(
+    command: &mut std::process::Command,
+    readable: &[PathBuf],
+    writable: &[PathBuf],
+) -> io::Result<()> {
+    let readable = DELEGATE_SYSTEM
+        .iter()
+        .map(PathBuf::from)
+        .chain(readable.iter().cloned());
+    restrict(command, readable, writable.iter().cloned())
+}
+
+/// Makes `command` apply Landlock rules allowing the system and `readable`
+/// read-only and `writable` read-write, just before it execs.
+fn restrict(
+    command: &mut std::process::Command,
+    readable: impl IntoIterator<Item = PathBuf>,
+    writable: impl IntoIterator<Item = PathBuf>,
+) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    let mut ruleset = Some(ruleset(readable, writable).map_err(io::Error::other)?);
     // SAFETY: the closure only makes the landlock_restrict_self and prctl
     // syscalls on a ruleset built before the fork.
     unsafe {
@@ -43,22 +84,12 @@ pub fn confine(
 }
 
 fn ruleset(
-    folder: &Path,
-    state_dir: &Path,
-    declared: &Declared,
+    readable: impl IntoIterator<Item = PathBuf>,
+    writable: impl IntoIterator<Item = PathBuf>,
 ) -> Result<RulesetCreated, landlock::RulesetError> {
     let read = AccessFs::from_read(ABI_VERSION);
     let all = AccessFs::from_all(ABI_VERSION);
-    let readable = SYSTEM
-        .iter()
-        .map(PathBuf::from)
-        .chain([folder.to_owned()])
-        .chain(declared.read.iter().map(|p| expand(p)));
-    let writable = declared
-        .write
-        .iter()
-        .map(|p| expand(p))
-        .chain([state_dir.to_owned()]);
+    let readable = SYSTEM.iter().map(PathBuf::from).chain(readable);
 
     let mut ruleset = Ruleset::default().handle_access(all)?.create()?;
     ruleset = add(ruleset, readable, read)?;
@@ -101,4 +132,18 @@ fn expand(path: &str) -> PathBuf {
         Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
         None => PathBuf::from(path),
     }
+}
+
+/// The directory holding the executable `program` (searched for on `PATH`
+/// if it is a bare name), with symlinks resolved, so a sandbox can let it
+/// run.
+pub fn program_dir(program: &Path) -> Option<PathBuf> {
+    let found = if program.components().count() > 1 {
+        Some(program.to_owned())
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join(program))
+            .find(|path| path.is_file())
+    }?;
+    Some(std::fs::canonicalize(found).ok()?.parent()?.to_owned())
 }

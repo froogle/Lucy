@@ -13,8 +13,13 @@ use lucy_config::Provider;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent};
+use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::plugins::sandbox;
 use crate::sentences::Sentences;
+
+/// The `claude` tools a Delegate writes and builds a Plugin with, inside
+/// its sandbox. A Session's model has none of them.
+const DELEGATE_TOOLS: &[&str] = &["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
 
 /// Settings that would make `claude` bill something other than the user's
 /// subscription. Everything above `CLAUDE_CODE_OAUTH_TOKEN` in Claude Code's
@@ -58,8 +63,15 @@ impl Claude {
     }
 
     /// `claude -p` stream-json, with `relay` as its only MCP server, or none,
-    /// and `instructions` appended to its system prompt.
-    fn command(&self, provider: &Provider, relay: Option<&Relay>, instructions: &str) -> Command {
+    /// `instructions` appended to its system prompt, and of its own tools
+    /// only `own_tools`.
+    fn command(
+        &self,
+        provider: &Provider,
+        relay: Option<&Relay>,
+        instructions: &str,
+        own_tools: &[&str],
+    ) -> Command {
         let servers = match relay {
             Some(relay) => serde_json::json!({"lucy": {
                 "command": relay.program,
@@ -79,9 +91,17 @@ impl Claude {
             .arg(mcp_config.to_string())
             .args(["--setting-sources", ""])
             .arg("--disable-slash-commands")
-            .args(["--tools", ""])
+            .args(["--tools", &own_tools.join(",")])
             .args(["--permission-mode", "dontAsk"])
-            .args(["--allowedTools", "mcp__lucy__*"])
+            .arg("--allowedTools")
+            .arg(
+                ["mcp__lucy__*"]
+                    .iter()
+                    .chain(own_tools)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(","),
+            )
             .arg("--append-system-prompt")
             .arg(instructions);
         if let Some(model) = &provider.model {
@@ -91,16 +111,42 @@ impl Claude {
         command
     }
 
-    /// One Session's process: the guard's checks, then `claude -p`, fed each
-    /// Turn and interrupt from `inputs` until the SessionModel is dropped.
-    /// A Turn is interrupted with the stream-json control interrupt; if
-    /// claude doesn't acknowledge it, with SIGINT, which ends the process,
-    /// and a new one takes over.
-    fn run_session(
+    /// A Delegate's `claude -p`: its own file and shell tools, working in
+    /// the workspace, confined to it, the program and its config.
+    fn delegate_command(
         &self,
         provider: &Provider,
         relay: &Relay,
         instructions: &str,
+        workspace: &Workspace,
+    ) -> std::io::Result<Command> {
+        let mut command = self.command(provider, Some(relay), instructions, DELEGATE_TOOLS);
+        command
+            .current_dir(&workspace.dir)
+            .env("TMPDIR", &workspace.tmp);
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+        let mut writable = vec![
+            workspace.dir.clone(),
+            workspace.tmp.clone(),
+            home.join(".claude"),
+            home.join(".claude.json"),
+        ];
+        writable.extend(workspace.writable.iter().cloned());
+        let mut readable = workspace.readable.clone();
+        readable.extend(sandbox::program_dir(&self.program));
+        sandbox::confine_delegate(&mut command, &readable, &writable)?;
+        Ok(command)
+    }
+
+    /// One Session's or Delegate's process: the guard's checks, then
+    /// `claude -p`, fed each Turn and interrupt from `inputs` until the
+    /// SessionModel is dropped. A Turn is interrupted with the stream-json
+    /// control interrupt; if claude doesn't acknowledge it, with SIGINT,
+    /// which ends the process, and a new one takes over.
+    fn run_session(
+        &self,
+        provider: &Provider,
+        role: &Role,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         inputs: std_mpsc::Receiver<ToClaude>,
         process: &Arc<Mutex<Process>>,
@@ -110,7 +156,7 @@ impl Claude {
             let _ = events.send(ThinkingEvent::Unavailable(reason));
             return;
         }
-        let spawn = || self.spawn(provider, relay, instructions, events, process);
+        let spawn = || self.spawn(provider, role, events, process);
         let Some(mut running) = spawn() else {
             return;
         };
@@ -168,12 +214,22 @@ impl Claude {
     fn spawn(
         &self,
         provider: &Provider,
-        relay: &Relay,
-        instructions: &str,
+        role: &Role,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         process: &Arc<Mutex<Process>>,
     ) -> Option<Running> {
-        let mut child = match self.command(provider, Some(relay), instructions).spawn() {
+        let command = match role {
+            Role::Session {
+                relay,
+                instructions,
+            } => Ok(self.command(provider, Some(relay), instructions, &[])),
+            Role::Delegate {
+                relay,
+                instructions,
+                workspace,
+            } => self.delegate_command(provider, relay, instructions, workspace),
+        };
+        let mut child = match command.and_then(|mut command| command.spawn()) {
             Ok(child) => child,
             Err(e) => {
                 eprintln!("lucyd: can't start {}: {e}", self.program.display());
@@ -277,15 +333,27 @@ struct Turns {
     retired: bool,
 }
 
-impl Thinking for Claude {
+/// What a `claude -p` process is for.
+enum Role {
+    Session {
+        relay: Relay,
+        instructions: String,
+    },
+    Delegate {
+        relay: Relay,
+        instructions: String,
+        workspace: Workspace,
+    },
+}
+
+impl Claude {
     /// Returns at once. The guard's checks and the spawn happen on a thread
     /// of their own; Turns sent meanwhile wait for the process.
-    fn open(
+    fn open_as(
         &self,
         provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
-        relay: Relay,
-        instructions: String,
+        role: Role,
     ) -> Box<dyn SessionModel> {
         let (inputs, inputs_rx) = std_mpsc::channel();
         let process = Arc::new(Mutex::new(Process::Starting));
@@ -294,20 +362,45 @@ impl Thinking for Claude {
         let thread_events = events.clone();
         let thread_process = process.clone();
         std::thread::spawn(move || {
-            claude.run_session(
-                &provider,
-                &relay,
-                &instructions,
-                &thread_events,
-                inputs_rx,
-                &thread_process,
-            );
+            claude.run_session(&provider, &role, &thread_events, inputs_rx, &thread_process);
         });
         Box::new(ClaudeSessionModel {
             inputs,
             process,
             _events: events,
         })
+    }
+}
+
+impl Thinking for Claude {
+    fn open(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+    ) -> Box<dyn SessionModel> {
+        let role = Role::Session {
+            relay,
+            instructions,
+        };
+        self.open_as(provider, events, role)
+    }
+
+    fn open_delegate(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        workspace: Workspace,
+    ) -> Box<dyn SessionModel> {
+        let role = Role::Delegate {
+            relay,
+            instructions,
+            workspace,
+        };
+        self.open_as(provider, events, role)
     }
 
     fn health(&self, provider: &Provider) -> Result<(), String> {
@@ -415,7 +508,7 @@ mod tests {
             program: "lucy".into(),
             args: vec![],
         };
-        let command = claude.command(&provider, Some(&relay), "");
+        let command = claude.command(&provider, Some(&relay), "", &[]);
         command
             .get_envs()
             .filter(|(_, value)| value.is_none())
