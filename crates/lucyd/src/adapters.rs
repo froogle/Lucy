@@ -68,12 +68,14 @@ pub struct Relay {
 /// A Thinking Provider.
 pub trait Thinking: Send + Sync {
     /// Starts the model process for a new Session, configured with `relay`
-    /// as its MCP server. The process streams its replies into `events`.
-    /// Dropping the SessionModel ends the process.
+    /// as its MCP server and `instructions` (the Persona) as its system
+    /// prompt. The process streams its replies into `events`. Dropping the
+    /// SessionModel ends the process.
     fn open(
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
+        instructions: String,
     ) -> Box<dyn SessionModel>;
 }
 
@@ -130,6 +132,7 @@ impl Thinking for Inert {
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         _relay: Relay,
+        _instructions: String,
     ) -> Box<dyn SessionModel> {
         Box::new(InertSessionModel { _events: events })
     }

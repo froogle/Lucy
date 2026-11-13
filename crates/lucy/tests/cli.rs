@@ -11,9 +11,12 @@ fn lucy(runtime_dir: &Path) -> Command {
 }
 
 fn start_lucyd(runtime_dir: &Path) -> lucyd::Daemon {
+    // Not the first run, so a Session opens in Listening.
+    std::fs::write(runtime_dir.join("persona.md"), "You are Lucy.").unwrap();
     lucyd::spawn(lucyd::Options {
         socket_path: runtime_dir.join("lucy").join("lucyd.sock"),
         config: lucy_config::Config::default(),
+        persona_path: runtime_dir.join("persona.md"),
         lucy_program: env!("CARGO_BIN_EXE_lucy").into(),
         adapters: lucyd::adapters::Adapters::inert(),
     })

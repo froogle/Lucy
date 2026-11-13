@@ -12,11 +12,6 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent};
 
-/// Until the Persona lands (ticket 16).
-const SYSTEM_PROMPT: &str = "You are Lucy, a voice assistant. Everything you write is spoken \
-aloud. Answer in one to three short spoken sentences. No markdown, no lists, no emoji. \
-Before calling a tool that may be slow, first say \"Let me check.\"";
-
 /// Settings that would make `claude` bill something other than the user's
 /// subscription. Everything above `CLAUDE_CODE_OAUTH_TOKEN` in Claude Code's
 /// credential precedence. `apiKeyHelper` lives only in settings files, which
@@ -40,7 +35,7 @@ impl Claude {
         Claude { program, work_dir }
     }
 
-    fn command(&self, relay: &Relay) -> Command {
+    fn command(&self, relay: &Relay, instructions: &str) -> Command {
         let mcp_config = serde_json::json!({"mcpServers": {"lucy": {
             "command": relay.program,
             "args": relay.args,
@@ -59,7 +54,8 @@ impl Claude {
             .args(["--tools", ""])
             .args(["--permission-mode", "dontAsk"])
             .args(["--allowedTools", "mcp__lucy__*"])
-            .args(["--append-system-prompt", SYSTEM_PROMPT])
+            .arg("--append-system-prompt")
+            .arg(instructions)
             .current_dir(&self.work_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -76,9 +72,10 @@ impl Thinking for Claude {
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
+        instructions: String,
     ) -> Box<dyn SessionModel> {
-        let child =
-            std::fs::create_dir_all(&self.work_dir).and_then(|()| self.command(&relay).spawn());
+        let child = std::fs::create_dir_all(&self.work_dir)
+            .and_then(|()| self.command(&relay, &instructions).spawn());
         let mut child = match child {
             Ok(child) => child,
             Err(e) => {
@@ -311,7 +308,7 @@ mod tests {
             program: "lucy".into(),
             args: vec![],
         };
-        let command = claude.command(&relay);
+        let command = claude.command(&relay, "");
         let removed: Vec<_> = command
             .get_envs()
             .filter(|(_, value)| value.is_none())

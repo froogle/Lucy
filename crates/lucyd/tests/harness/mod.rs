@@ -33,18 +33,34 @@ pub struct Harness {
     pub tts: FakeTts,
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
+    persona_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
 impl Harness {
-    /// Starts lucyd with default config and a socket in a fresh runtime dir.
+    /// Starts lucyd with default config and a socket in a fresh runtime dir,
+    /// for a user who already has a Persona.
     pub fn start() -> Harness {
         Harness::with_config(Config::default())
     }
 
     pub fn with_config(config: Config) -> Harness {
+        Harness::build(config, Some("You are Lucy."))
+    }
+
+    /// Starts lucyd for a user who has never had a Session: no `persona.md`.
+    pub fn first_run() -> Harness {
+        Harness::build(Config::default(), None)
+    }
+
+    fn build(config: Config, persona: Option<&str>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
+        let persona_path = dir.path().join("config").join("lucy").join("persona.md");
+        if let Some(persona) = persona {
+            std::fs::create_dir_all(persona_path.parent().unwrap()).unwrap();
+            std::fs::write(&persona_path, persona).unwrap();
+        }
         let (speech, speech_rx) = mpsc::unbounded_channel();
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
@@ -52,6 +68,7 @@ impl Harness {
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config,
+            persona_path: persona_path.clone(),
             lucy_program: lucy_binary(),
             adapters: Adapters {
                 speech: speech_rx,
@@ -68,6 +85,7 @@ impl Harness {
             thinking,
             tts,
             bus: Arc::default(),
+            persona_path,
             _dir: dir,
         };
         harness.record_bus();
@@ -80,6 +98,11 @@ impl Harness {
 
     pub fn mcp_socket_path(&self) -> &Path {
         self.daemon.mcp_socket_path()
+    }
+
+    /// The user's `persona.md`.
+    pub fn persona_path(&self) -> &Path {
+        &self.persona_path
     }
 
     /// Runs `lucy mcp-relay` against lucyd's MCP socket with `args` after the
@@ -268,6 +291,8 @@ pub struct FakeThinking {
     events: Arc<Mutex<Option<mpsc::UnboundedSender<ThinkingEvent>>>>,
     /// How the open SessionModel reaches Lucy's tools.
     relay: Arc<Mutex<Option<Relay>>>,
+    /// The instructions the open SessionModel was given.
+    instructions: Arc<Mutex<Option<String>>>,
     streamed: Arc<Mutex<Vec<String>>>,
 }
 
@@ -279,6 +304,7 @@ impl FakeThinking {
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
             relay: Arc::default(),
+            instructions: Arc::default(),
             streamed: Arc::default(),
         }
     }
@@ -307,11 +333,32 @@ impl FakeThinking {
         self.send(ThinkingEvent::TurnEnd);
     }
 
+    /// The instructions the last SessionModel was opened with.
+    pub fn instructions(&self) -> String {
+        self.instructions
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a SessionModel was opened")
+    }
+
     /// The model calls one of Lucy's tools through the real relay.
     pub fn call_tool(&self, name: &str) -> Result<CallToolResult, String> {
+        self.call_tool_with(name, serde_json::json!({}))
+    }
+
+    /// The model calls one of Lucy's tools with `arguments`, a JSON object.
+    pub fn call_tool_with(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, String> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("tool arguments are an object");
+        };
         self.with_mcp(|client| async move {
             client
-                .call_tool(CallToolRequestParams::new(name.to_owned()))
+                .call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -378,9 +425,11 @@ impl Thinking for FakeThinking {
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
+        instructions: String,
     ) -> Box<dyn SessionModel> {
         *self.events.lock().unwrap() = Some(events);
         *self.relay.lock().unwrap() = Some(relay);
+        *self.instructions.lock().unwrap() = Some(instructions);
         Box::new(FakeSessionModel {
             turns: self.turns_tx.clone(),
         })

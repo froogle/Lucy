@@ -5,6 +5,7 @@ pub mod adapters;
 pub mod claude;
 mod ipc;
 mod mcp;
+mod persona;
 mod runner;
 mod session;
 mod status;
@@ -23,6 +24,8 @@ pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
     pub config: Config,
+    /// The user's Persona; normally `persona.md` beside `config.toml`.
+    pub persona_path: PathBuf,
     /// The `lucy` binary, which model processes run as `lucy mcp-relay`.
     pub lucy_program: PathBuf,
     pub adapters: adapters::Adapters,
@@ -41,9 +44,11 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
         config,
+        persona_path,
         lucy_program,
         adapters,
     } = options;
+    let persona = persona::Persona::new(persona_path);
     let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -60,6 +65,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             status.clone(),
             adapters,
             relays.clone(),
+            persona.clone(),
             Duration::from_secs_f64(config.session.silence_timeout_secs),
         )
         .run(),

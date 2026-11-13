@@ -33,6 +33,9 @@ fn main() -> ExitCode {
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,
+        persona_path: lucy_config::xdg_dir("XDG_CONFIG_HOME", ".config")
+            .join("lucy")
+            .join("persona.md"),
         lucy_program,
         adapters,
     }) {
