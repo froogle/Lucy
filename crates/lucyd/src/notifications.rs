@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::adapters::{Notification, NotificationAction, Notifier};
+use crate::adapters::{Notification, NotificationAction, NotificationKind, Notifier};
 use crate::runner::Command;
 use crate::status::StatusBus;
 
@@ -129,6 +129,7 @@ pub fn listening() -> Notification {
         summary: "Lucy is listening".into(),
         body: String::new(),
         action: Some(NotificationAction::EndSession),
+        kind: NotificationKind::Status,
     }
 }
 
@@ -137,6 +138,7 @@ pub fn confirming() -> Notification {
         summary: "Lucy is waiting for your yes".into(),
         body: "Say yes to go ahead, or End to decline.".into(),
         action: Some(NotificationAction::EndSession),
+        kind: NotificationKind::Status,
     }
 }
 
@@ -145,6 +147,17 @@ pub fn ended() -> Notification {
         summary: "Lucy has stopped listening".into(),
         body: String::new(),
         action: None,
+        kind: NotificationKind::Status,
+    }
+}
+
+/// A reply Lucy couldn't speak, shown instead: the sentences of one Turn.
+pub fn unspoken(sentences: &[String]) -> Notification {
+    Notification {
+        summary: "Lucy".into(),
+        body: sentences.join(" "),
+        action: None,
+        kind: NotificationKind::Reply,
     }
 }
 

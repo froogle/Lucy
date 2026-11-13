@@ -847,6 +847,12 @@ impl FakeNotifier {
         recv(&self.shown, "a notification")
     }
 
+    /// Fails if lucyd showed a notification the test hasn't read.
+    pub fn assert_no_notification(&self) {
+        let shown = self.shown.lock().unwrap().try_recv();
+        assert!(shown.is_err(), "unexpected notification: {shown:?}");
+    }
+
     /// The user picks the action of the last notification that offered one.
     pub fn pick_action(&self) {
         let offered = self.offered.lock().unwrap();

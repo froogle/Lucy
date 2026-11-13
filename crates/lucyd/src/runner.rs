@@ -11,8 +11,9 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::{Adapters, Notification, SessionModel, SpeakerEvent, ThinkingEvent};
+use crate::adapters::{Adapters, SessionModel, SpeakerEvent, ThinkingEvent};
 use crate::mcp::{Caller, Relays};
+use crate::notifications;
 use crate::persona::{self, Loaded, Persona};
 use crate::plugins;
 use crate::session::{Input, Output, Session};
@@ -160,6 +161,8 @@ impl Runner {
         // introduction's Turn has ended, so a Provider that can't be used
         // doesn't use it up.
         let mut introducing = persona.first_run;
+        // Sentences of the current reply that TTS couldn't say.
+        let mut unspoken = Vec::new();
         let mut opening = introducing.then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
 
         self.publish(session.state(), Some(id));
@@ -202,14 +205,7 @@ impl Runner {
                     SpeakerEvent::Played => Input::Played,
                     // Lucy can't say it, so she shows it.
                     SpeakerEvent::Failed(sentence) => {
-                        let notification = Notification {
-                            summary: "Lucy".into(),
-                            body: sentence,
-                            action: None,
-                        };
-                        // It offers no action, so nothing listens for one.
-                        let (actions, _) = mpsc::unbounded_channel();
-                        self.adapters.notifier.notify(notification, actions);
+                        unspoken.push(sentence);
                         Input::Played
                     }
                     SpeakerEvent::Level(rms) => {
@@ -229,7 +225,16 @@ impl Runner {
                     eprintln!("lucyd: can't save {}: {e}", self.persona.path().display());
                 }
             }
-            for output in session.handle(input) {
+            let outputs = session.handle(input);
+            // Once the reply is over, one notification shows what of it
+            // couldn't be said.
+            if !unspoken.is_empty() && session.state() == State::Listening {
+                let notification = notifications::unspoken(&std::mem::take(&mut unspoken));
+                // It offers no action, so nothing listens for one.
+                let (actions, _) = mpsc::unbounded_channel();
+                self.adapters.notifier.notify(notification, actions);
+            }
+            for output in outputs {
                 match output {
                     Output::Transcribe => {
                         let segment = segment.take().expect("Transcribe follows Speech");

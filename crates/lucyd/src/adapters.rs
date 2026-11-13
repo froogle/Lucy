@@ -133,6 +133,18 @@ pub struct Notification {
     pub body: String,
     /// An action button, if the notification offers one.
     pub action: Option<NotificationAction>,
+    pub kind: NotificationKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationKind {
+    /// Session start, Confirming or end, from the notification fallback.
+    /// Each replaces the last one that offered an action, so a stale End
+    /// button doesn't linger.
+    Status,
+    /// A reply Lucy couldn't speak. It replaces nothing, so the End button
+    /// stays.
+    Reply,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

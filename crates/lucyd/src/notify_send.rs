@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::adapters::{Notification, NotificationAction, Notifier};
+use crate::adapters::{Notification, NotificationAction, NotificationKind, Notifier};
 
 pub struct NotifySend {
     program: PathBuf,
-    /// The last notification shown with an action. The next notification
-    /// replaces it, so a stale End button doesn't linger.
+    /// The last notification shown with an action. The next Status
+    /// notification replaces it.
     with_action: Arc<Mutex<Option<String>>>,
 }
 
@@ -37,8 +37,10 @@ impl Notifier for NotifySend {
         let mut command = Command::new(&self.program);
         // `--print-id` prints the notification's id first.
         command.arg("--app-name=Lucy").arg("--print-id");
-        if let Some(id) = self.with_action.lock().unwrap().take() {
-            command.arg(format!("--replace-id={id}"));
+        if notification.kind == NotificationKind::Status {
+            if let Some(id) = self.with_action.lock().unwrap().take() {
+                command.arg(format!("--replace-id={id}"));
+            }
         }
         let has_action = notification.action.is_some();
         if let Some(NotificationAction::EndSession) = notification.action {
@@ -82,7 +84,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::notifications::{ended, listening};
+    use crate::notifications::{ended, listening, unspoken};
 
     /// A stand-in `notify-send` that appends each call's arguments to
     /// `calls`, one call per line, and prints `output`.
@@ -137,6 +139,31 @@ mod tests {
         assert_eq!(
             calls(dir.path())[1],
             "--app-name=Lucy|--print-id|--replace-id=7|--|Lucy has stopped listening|"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unspoken_reply_leaves_the_end_action_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let notifier = NotifySend::new(fake_notify_send(dir.path(), "7\\nend\\n"));
+        let (actions, mut picked) = mpsc::unbounded_channel();
+        notifier.notify(listening(), actions.clone());
+        // The action is read after the id.
+        picked.recv().await;
+
+        notifier.notify(unspoken(&["It's three o'clock.".into()]), actions.clone());
+        notifier.notify(ended(), actions);
+
+        while picked.recv().await.is_some() {}
+        // The two run at once, so their calls may land in either order.
+        let mut later = calls(dir.path())[1..].to_vec();
+        later.sort();
+        assert_eq!(
+            later,
+            [
+                "--app-name=Lucy|--print-id|--replace-id=7|--|Lucy has stopped listening|",
+                "--app-name=Lucy|--print-id|--|Lucy|It's three o'clock."
+            ]
         );
     }
 

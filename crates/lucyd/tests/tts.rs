@@ -62,12 +62,13 @@ fn when_tts_fails_the_reply_becomes_notification_text_and_the_session_continues(
     lucyd.thinking.delta(" Time for tea");
     lucyd.thinking.turn_end();
 
+    // The whole reply, in one notification.
     assert_eq!(
         lucyd.notifier.next_notification().body,
-        "It's three o'clock."
+        "It's three o'clock. Time for tea"
     );
-    assert_eq!(lucyd.notifier.next_notification().body, "Time for tea");
     while next_state(&mut events).state != State::Listening {}
+    lucyd.notifier.assert_no_notification();
 
     // The Session carries on with the next Turn.
     lucyd.say("thanks");
