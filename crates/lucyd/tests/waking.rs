@@ -134,15 +134,40 @@ fn only_a_leading_wake_word_is_stripped() {
 
 #[test]
 fn the_wake_word_alone_is_no_speech() {
-    let lucyd = Harness::with_config(HEY_LUCY);
+    // A Plugin's question shows what was heard: the words, or "no answer"
+    // once the wait for one is over. That wait doesn't run while a reply
+    // is being transcribed, so the reply is always heard first.
+    let lucyd = Harness::with_config(&format!("{HEY_LUCY}[confirmation]\ntimeout_secs = 0.3\n"));
+    lucyd.install_plugin(
+        "asker",
+        "name = \"asker\"\nversion = \"0.1.0\"\nauthor = \"human\"\nsummary = \"Asks\"\n\
+         command = [\"./fixture-plugin\", \"ask\"]\n\n\
+         [[tools]]\nname = \"ask\"\nhandles = \"ask something\"\n",
+    );
+    lucyd.approve("asker");
     let mut client = lucyd.client();
     client.start_session().unwrap();
+    lucyd.say("find my album");
+    lucyd.thinking.next_turn();
+    let thinking = lucyd.thinking.clone();
+    let call = std::thread::spawn(move || {
+        thinking.call_tool_with(
+            "asker__ask",
+            serde_json::json!({"question": "Which album?"}),
+        )
+    });
+    lucyd.tts.next_sentence();
 
     lucyd.say("Hey Lucy.");
-    std::thread::sleep(ms(200));
-    lucyd.say("what's the weather");
+    lucyd.tts.finish_playing();
 
-    assert_eq!(lucyd.thinking.next_turn(), "what's the weather");
+    let result = call.join().unwrap().unwrap();
+    let said: String = result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|text| text.text.clone()))
+        .collect();
+    assert_eq!(said, "no answer");
 }
 
 /// Waits up to `secs` for the next state event.
