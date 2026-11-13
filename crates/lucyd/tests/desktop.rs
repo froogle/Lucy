@@ -70,3 +70,65 @@ fn launch_app_launches_the_one_app_whose_name_matches() {
     assert_eq!(result, json!({ "result": "launched", "app": "Firefox" }));
     assert_eq!(lucyd.launcher.launched(), [firefox]);
 }
+
+#[test]
+fn launch_app_matches_generic_names_and_keywords() {
+    let lucyd = Harness::start();
+    let kitty = lucyd.desktop_entry(
+        "kitty.desktop",
+        "Name=kitty\nGenericName=Terminal emulator\nKeywords=shell;prompt;",
+    );
+    lucyd.desktop_entry("gimp.desktop", "Name=GIMP\nKeywords=paint;");
+    lucyd.client().start_session().unwrap();
+
+    for spoken in ["Terminal Emulator", "shell", "prompt"] {
+        let result = launch_app(&lucyd, spoken);
+        assert_eq!(result, json!({ "result": "launched", "app": "kitty" }));
+    }
+
+    assert_eq!(lucyd.launcher.launched(), vec![kitty; 3]);
+}
+
+#[test]
+fn an_apps_own_name_beats_another_apps_keyword() {
+    let lucyd = Harness::start();
+    let firefox = lucyd.desktop_entry("firefox.desktop", "Name=Firefox");
+    lucyd.desktop_entry(
+        "profiles.desktop",
+        "Name=Profile Manager\nKeywords=firefox;",
+    );
+    lucyd.client().start_session().unwrap();
+
+    let result = launch_app(&lucyd, "Firefox");
+
+    assert_eq!(result, json!({ "result": "launched", "app": "Firefox" }));
+    assert_eq!(lucyd.launcher.launched(), [firefox]);
+}
+
+#[test]
+fn launch_app_offers_candidates_when_several_apps_match_and_launches_none() {
+    let lucyd = Harness::start();
+    lucyd.desktop_entry("firefox.desktop", "Name=Firefox\nGenericName=Web Browser");
+    lucyd.desktop_entry("chromium.desktop", "Name=Chromium\nGenericName=Web Browser");
+    lucyd.client().start_session().unwrap();
+
+    let result = launch_app(&lucyd, "web browser");
+
+    assert_eq!(
+        result,
+        json!({ "result": "candidates", "candidates": ["Chromium", "Firefox"] })
+    );
+    assert!(lucyd.launcher.launched().is_empty());
+}
+
+#[test]
+fn launch_app_says_not_found_when_nothing_matches() {
+    let lucyd = Harness::start();
+    lucyd.desktop_entry("firefox.desktop", "Name=Firefox");
+    lucyd.client().start_session().unwrap();
+
+    let result = launch_app(&lucyd, "photoshop");
+
+    assert_eq!(result, json!({ "result": "not_found" }));
+    assert!(lucyd.launcher.launched().is_empty());
+}
