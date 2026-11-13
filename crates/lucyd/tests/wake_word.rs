@@ -25,6 +25,19 @@ fn the_bundled_model_ignores_other_speech() {
 }
 
 #[test]
+fn a_damaged_installed_model_of_the_right_size_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = lucyd::audio::install_bundled_wake_model(dir.path()).unwrap();
+    let size = std::fs::metadata(&model).unwrap().len() as usize;
+    std::fs::write(&model, vec![0u8; size]).unwrap();
+
+    let model = lucyd::audio::install_bundled_wake_model(dir.path()).unwrap();
+
+    let mut wake_word = LiveKit::load(&model, 0.5).expect("the model loads on tract");
+    assert_eq!(heard(&mut wake_word, &recording("positive.wav")), 1);
+}
+
+#[test]
 fn a_file_that_is_not_a_wake_word_model_is_refused_with_its_path() {
     let dir = tempfile::tempdir().unwrap();
     let model = dir.path().join("hey_lucy.onnx");
