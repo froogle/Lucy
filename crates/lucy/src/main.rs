@@ -1,19 +1,17 @@
 //! `lucy`: a thin client of lucyd's public socket. With no arguments it
-//! shows Lucy's Providers and Approvals; `lucy setup` sets her up.
+//! shows Lucy's Providers and Approvals; `lucy setup` sets her up. Both are
+//! full-screen; every other command prints plain lines.
 
-mod home;
-mod piper;
-mod setup;
-mod systemd;
-mod ui;
-
-use std::io::{Read, Write};
+use std::io::{IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use lucy::ui::{Console, Ui};
+use lucy::{home, setup, Env};
 use lucy_ipc::{Client, State, Topic};
+use ratatui::DefaultTerminal;
 
 #[derive(Parser)]
 #[command(version, about = "Talk to Lucy's daemon, lucyd")]
@@ -58,16 +56,8 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        None => connect().and_then(|mut client| home::run(&mut client, &mut ui::Ui::terminal())),
-        Some(Command::Setup { os_release }) => {
-            return match setup::run(&mut ui::Ui::terminal(), &os_release) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("lucy: setup: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
+        None => return home_page(),
+        Some(Command::Setup { os_release }) => return setup_page(&os_release),
         Some(Command::Status) => status(),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
@@ -77,18 +67,78 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(lucy_ipc::Error::NotRunning) => {
-            eprintln!("lucyd isn't running. Start it with: systemctl --user start lucyd");
-            ExitCode::FAILURE
+        Err(e) => failed(e),
+    }
+}
+
+fn failed(e: lucy_ipc::Error) -> ExitCode {
+    match e {
+        lucy_ipc::Error::NotRunning => {
+            eprintln!("lucyd isn't running. Start it with: systemctl --user start lucyd")
         }
+        e => eprintln!("lucy: {e}"),
+    }
+    ExitCode::FAILURE
+}
+
+/// The full screen, or why there can't be one: a pipe would get escape
+/// codes, not a page.
+fn full_screen(page: &str) -> Result<DefaultTerminal, ExitCode> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        eprintln!(
+            "lucy: {page} is a full-screen page and needs a terminal. \
+             For a plain snapshot of lucyd, run: lucy status"
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    // Also restores the terminal if lucy panics.
+    ratatui::try_init().map_err(|e| {
+        eprintln!("lucy: can't take over the terminal: {e}");
+        ExitCode::FAILURE
+    })
+}
+
+fn home_page() -> ExitCode {
+    let mut client = match connect() {
+        Ok(client) => client,
+        Err(e) => return failed(e),
+    };
+    let mut terminal = match full_screen("lucy") {
+        Ok(terminal) => terminal,
+        Err(code) => return code,
+    };
+    let result = home::run(&mut client, &mut terminal, &mut Console);
+    ratatui::restore();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => failed(e),
+    }
+}
+
+fn setup_page(os_release: &Path) -> ExitCode {
+    let terminal = match full_screen("lucy setup") {
+        Ok(terminal) => terminal,
+        Err(code) => return code,
+    };
+    let env = Env::of_process(os_release);
+    let mut keys = Console;
+    let mut ui = Ui::new(terminal, &mut keys, "Lucy setup");
+    let result = setup::run(&mut ui, &env);
+    ratatui::restore();
+    // What was said and chosen stays in the terminal's scrollback.
+    for line in &ui.screen.lines {
+        println!("{line}");
+    }
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("lucy: {e}");
+            eprintln!("lucy: setup: {e}");
             ExitCode::FAILURE
         }
     }
 }
 
-pub(crate) fn connect() -> Result<Client, lucy_ipc::Error> {
+fn connect() -> Result<Client, lucy_ipc::Error> {
     // With no runtime dir there can be no socket, so lucyd isn't running.
     let path = lucy_ipc::default_socket_path().ok_or(lucy_ipc::Error::NotRunning)?;
     Client::connect(&path, "lucy", None)

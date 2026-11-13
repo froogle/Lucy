@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::Env;
+
 const UNITS: [(&str, &str, &str); 2] = [
     (
         "lucyd.service",
@@ -18,28 +20,31 @@ const UNITS: [(&str, &str, &str); 2] = [
 
 /// Enables and starts `lucyd.service` and `lucy-indicator.service`. If
 /// systemd doesn't know them (Lucy wasn't installed as a package), they are
-/// written to the user's unit dir first, running the programs beside this
-/// `lucy`.
-pub fn enable() -> Result<(), String> {
+/// written to the user's unit dir first, running the programs in
+/// `env.bin`. systemctl's output is kept off the full screen.
+pub fn enable(env: &Env) -> Result<(), String> {
     let known = Command::new("systemctl")
         .args(["--user", "cat", "lucyd.service"])
+        .env("PATH", &env.path)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success());
     if !known {
-        let here = std::env::current_exe().map_err(|e| format!("can't find lucy: {e}"))?;
-        let dir = lucy_config::xdg_dir("XDG_CONFIG_HOME", ".config").join("systemd/user");
-        install(&dir, here.parent().unwrap_or(Path::new("/")))?;
-        systemctl(&["--user", "daemon-reload"])?;
+        install(&env.units, &env.bin)?;
+        systemctl(env, &["--user", "daemon-reload"])?;
     }
-    systemctl(&[
-        "--user",
-        "enable",
-        "--now",
-        "lucyd.service",
-        "lucy-indicator.service",
-    ])
+    systemctl(
+        env,
+        &[
+            "--user",
+            "enable",
+            "--now",
+            "lucyd.service",
+            "lucy-indicator.service",
+        ],
+    )
 }
 
 /// Writes the units into `dir`, running the programs in `bin`.
@@ -60,13 +65,20 @@ fn install(dir: &Path, bin: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn systemctl(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("systemctl")
+fn systemctl(env: &Env, args: &[&str]) -> Result<(), String> {
+    let output = Command::new("systemctl")
         .args(args)
-        .status()
+        .env("PATH", &env.path)
+        .stdin(Stdio::null())
+        .output()
         .map_err(|e| format!("can't run systemctl: {e}"))?;
-    match status.success() {
+    match output.status.success() {
         true => Ok(()),
-        false => Err(format!("systemctl {} failed ({status})", args.join(" "))),
+        false => Err(format!(
+            "systemctl {} failed ({}): {}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
     }
 }

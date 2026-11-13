@@ -1,8 +1,10 @@
-//! `lucy` with no arguments: the Provider status page and the Approval list.
+//! `lucy` with no arguments: the Provider status page and the Approval list,
+//! full-screen, pressed by scripted keys.
 
 mod support;
 
-use support::{stderr, stdout, Home};
+use ratatui::crossterm::event::KeyCode;
+use support::{stderr, Home, Script};
 
 fn client(home: &Home) -> lucy_ipc::Client {
     let socket = home.runtime().join("lucy").join("lucyd.sock");
@@ -22,10 +24,8 @@ fn approve(home: &Home, plugin: &str) {
 fn it_shows_each_provider_with_its_health_and_runs_a_real_check_on_request() {
     let home = Home::with_lucyd();
 
-    let output = home.lucy(&[], &["c1", "q"]);
+    let page = home.page(Script::new().typed("cq"));
 
-    assert!(output.status.success(), "{}", stderr(&output));
-    let page = stdout(&output);
     for shown in [
         "claude-advanced",
         "opus",
@@ -48,11 +48,15 @@ fn it_lists_approvals_and_revokes_one_after_a_yes() {
     approve(&home, "news");
     approve(&home, "notes");
 
-    let output = home.lucy(&[], &["r2", "y", "r1", "n", "q"]);
+    let keys = Script::new()
+        .press(KeyCode::Tab)
+        .down(1)
+        .typed("ry") // revoke notes
+        .typed("rnq"); // not news
+    let page = home.page(keys);
 
-    assert!(output.status.success(), "{}", stderr(&output));
-    let page = stdout(&output);
-    assert!(page.contains("news") && page.contains("notes"), "{page}");
+    assert!(page.contains("news"), "{page}");
+    assert!(page.contains("Not revoked."), "{page}");
     let left: Vec<String> = client(&home)
         .approvals()
         .unwrap()
@@ -66,10 +70,10 @@ fn it_lists_approvals_and_revokes_one_after_a_yes() {
 #[test]
 fn approvals_are_never_granted_here_only_by_voice() {
     let home = Home::with_lucyd();
+    approve(&home, "news");
 
-    let output = home.lucy(&[], &["a1", "q"]);
+    let page = home.page(Script::new().typed("a1gyq")).to_lowercase();
 
-    let page = stdout(&output).to_lowercase();
     assert!(page.contains("granted only by voice"), "{page}");
     assert!(!page.contains("approve"), "{page}");
 }
@@ -83,6 +87,21 @@ fn it_says_plainly_when_lucyd_is_not_running() {
     assert!(!output.status.success());
     assert!(
         stderr(&output).contains("lucyd isn't running"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn it_needs_a_terminal_rather_than_writing_escape_codes_to_a_pipe() {
+    let home = Home::with_lucyd();
+
+    let output = home.lucy(&[], &[]);
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        stderr(&output).contains("needs a terminal"),
         "{}",
         stderr(&output)
     );

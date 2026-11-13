@@ -12,6 +12,7 @@ lucy-ipc.workspace = true
 lucy-config.workspace = true
 clap.workspace = true
 toml_edit.workspace = true
+ratatui.workspace = true
 
 [dev-dependencies]
 lucyd.workspace = true
