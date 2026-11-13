@@ -27,3 +27,7 @@ allow = ["Unlicense"]
 [[licenses.exceptions]]
 crate = "whisper-rs-sys"
 allow = ["Unlicense"]
+
+# livekit-wakeword is pinned to a git rev until its v2 support is released.
+[sources]
+allow-git = ["https://github.com/livekit/rust-sdks"]

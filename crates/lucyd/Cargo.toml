@@ -26,6 +26,8 @@ libc = "0.2"
 ort.workspace = true
 ort-tract.workspace = true
 whisper-rs.workspace = true
+# v2 models need an unreleased livekit-wakeword; pinned until 0.2 is on crates.io.
+livekit-wakeword = { git = "https://github.com/livekit/rust-sdks", rev = "1b19002692239946fa7c31ca59d320b95833819c" }
 
 [dev-dependencies]
 tempfile.workspace = true

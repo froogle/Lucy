@@ -21,10 +21,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 rmcp = { version = "3.10", default-features = false }
-# ort-tract pins ort-sys exactly, so the two move together. The next pair
+# ort-tract pins ort-sys exactly, so the two move together, and
+# livekit-wakeword (the wake word) needs this pair. The next pair
 # (ort 2.0.0-rc.14 + ort-tract 0.5.0) fails to compile with these features.
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "alternative-backend", "api-17"] }
-ort-tract = "=0.3.0"
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "alternative-backend"] }
+ort-tract = "=0.2.0"
 whisper-rs = { version = "0.16", features = ["vulkan"] }
 
 # Approvals hash Plugin executables, and unoptimised SHA-256 makes every

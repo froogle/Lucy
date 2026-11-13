@@ -29,7 +29,7 @@ impl Silero {
     pub fn load() -> Result<Silero, Error> {
         ort::set_api(ort_tract::api());
         let session = Session::builder()
-            .and_then(|mut builder| builder.commit_from_memory(MODEL))
+            .and_then(|builder| builder.commit_from_memory(MODEL))
             .map_err(|e| Error(format!("can't load the Silero VAD: {e}")))?;
         Ok(Silero {
             session,

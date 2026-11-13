@@ -21,6 +21,7 @@ pub struct Config {
     pub audio: Audio,
     pub endpointing: Endpointing,
     pub whisper: Whisper,
+    pub wake_word: WakeWord,
 }
 
 impl Default for Config {
@@ -41,6 +42,7 @@ impl Default for Config {
             audio: Audio::default(),
             endpointing: Endpointing::default(),
             whisper: Whisper::default(),
+            wake_word: WakeWord::default(),
         }
     }
 }
@@ -227,6 +229,28 @@ pub struct Whisper {
     /// `$XDG_DATA_HOME/lucy/models`. Unset means `small.en` on the GPU and
     /// `base.en` on the CPU.
     pub model: Option<String>,
+}
+
+/// `[wake_word]`: the one wake-word engine, which is not a Provider. Read
+/// when lucyd starts.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct WakeWord {
+    /// A LiveKit WakeWord v2 `.onnx` model. Its file name names the wake
+    /// phrase: `hey_lucy.onnx` listens for "hey lucy". Unset means the model
+    /// bundled with lucyd.
+    pub model: Option<PathBuf>,
+    /// The score from 0 to 1 at which the Wake word counts as heard.
+    pub threshold: f32,
+}
+
+impl Default for WakeWord {
+    fn default() -> Self {
+        WakeWord {
+            model: None,
+            threshold: 0.5,
+        }
+    }
 }
 
 /// `[session]`
@@ -450,6 +474,19 @@ mod tests {
         assert_eq!(config.audio.mic, "alsa_input.usb-Blue_Yeti");
         assert_eq!(config.endpointing.end_silence_ms, 900);
         assert_eq!(config.endpointing.pre_roll_ms, 500);
+    }
+
+    #[test]
+    fn the_wake_word_model_is_bundled_unless_config_names_one() {
+        assert_eq!(Config::default().wake_word.model, None);
+
+        let config = parse("[wake_word]\nmodel = \"/models/computer.onnx\"\n");
+
+        assert_eq!(
+            config.wake_word.model.as_deref(),
+            Some(Path::new("/models/computer.onnx"))
+        );
+        assert_eq!(config.wake_word.threshold, 0.5);
     }
 
     #[test]

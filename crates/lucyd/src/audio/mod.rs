@@ -4,6 +4,7 @@
 
 mod cpal;
 mod endpoint;
+mod livekit;
 mod silero;
 
 use std::fmt;
@@ -15,6 +16,7 @@ use tokio::sync::mpsc;
 pub use self::cpal::Cpal;
 use crate::adapters::SpeechSegment;
 use endpoint::Endpointer;
+pub use livekit::{install_bundled_wake_model, LiveKit};
 pub use silero::Silero;
 
 /// Lucy's internal sample rate: mono f32 at 16 kHz.
@@ -45,6 +47,12 @@ pub trait Vad: Send {
 
     /// How likely `chunk` (of `chunk_len` samples) is to be speech, 0 to 1.
     fn speech_probability(&mut self, chunk: &[f32]) -> f32;
+}
+
+/// A wake-word detector. It hears every frame, in and out of Sessions.
+pub trait WakeWord: Send {
+    /// Takes the next 10 ms frame. True if it completes the Wake word.
+    fn push(&mut self, frame: &[f32]) -> bool;
 }
 
 /// Why the microphone can't be heard.
