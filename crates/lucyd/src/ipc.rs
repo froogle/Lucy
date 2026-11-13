@@ -381,7 +381,7 @@ fn plugin_error(e: plugins::Refusal) -> RpcError {
     let code = match e {
         plugins::Refusal::NoSuchPlugin(_) => error_code::UNKNOWN_PLUGIN,
         plugins::Refusal::NotApproved(_) => error_code::NOT_APPROVED,
-        plugins::Refusal::Other(_) => error_code::INTERNAL_ERROR,
+        _ => error_code::INTERNAL_ERROR,
     };
     RpcError::new(code, e.to_string())
 }

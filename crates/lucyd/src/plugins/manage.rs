@@ -12,7 +12,9 @@ use lucy_ipc::{ApprovalInfo, ApprovalsList, PluginAuthor, PluginInfo, PluginStat
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 
 use super::manifest::{Author, Manifest};
-use super::{content_hash, Contents, Host, Scanned, SessionTools, Usable, DECLINED};
+use super::{
+    broken_message, content_hash, Contents, Host, Scanned, SessionTools, Usable, DECLINED,
+};
 use crate::adapters::{Notification, NotificationKind};
 use crate::mcp;
 use crate::runner;
@@ -23,8 +25,20 @@ use crate::session::{Answer, Expects, Question};
 pub enum Refusal {
     NoSuchPlugin(String),
     NotApproved(String),
-    /// Anything else, ready to tell the user.
-    Other(String),
+    /// Lucy changes only her own Plugins.
+    WrittenByHuman(String),
+    NoPreviousVersion(String),
+    /// The kept previous version no longer matches its Approval.
+    PreviousVersionDamaged(String),
+    NotRestored(String, std::io::Error),
+    Shipped(String),
+    NotDeleted(String, std::io::Error),
+    Broken {
+        plugin: String,
+        reason: String,
+    },
+    /// `approvals.toml` or `plugins.toml` couldn't be read or saved.
+    Records(String),
 }
 
 impl fmt::Display for Refusal {
@@ -32,14 +46,39 @@ impl fmt::Display for Refusal {
         match self {
             Refusal::NoSuchPlugin(name) => write!(f, "There's no Plugin called {name}."),
             Refusal::NotApproved(name) => write!(f, "The {name} Plugin has no Approval."),
-            Refusal::Other(reason) => write!(f, "{reason}"),
+            Refusal::WrittenByHuman(name) => write!(
+                f,
+                "The {name} Plugin was written by a human, so Lucy won't change its files. Its \
+                 author can roll it back."
+            ),
+            Refusal::NoPreviousVersion(name) => write!(
+                f,
+                "No previous approved version of the {name} Plugin is kept."
+            ),
+            Refusal::PreviousVersionDamaged(name) => write!(
+                f,
+                "The previous version of the {name} Plugin wasn't kept intact."
+            ),
+            Refusal::NotRestored(name, e) => write!(
+                f,
+                "The previous version of the {name} Plugin couldn't be put back: {e}"
+            ),
+            Refusal::Shipped(name) => write!(
+                f,
+                "The {name} Plugin was shipped with Lucy, so it can't be removed, but it can be \
+                 disabled."
+            ),
+            Refusal::NotDeleted(name, e) => {
+                write!(f, "The {name} Plugin couldn't be deleted: {e}")
+            }
+            Refusal::Broken { plugin, reason } => write!(f, "{}", broken_message(plugin, reason)),
+            Refusal::Records(reason) => {
+                write!(
+                    f,
+                    "Lucy's Plugin records couldn't be read or saved: {reason}"
+                )
+            }
         }
-    }
-}
-
-impl From<String> for Refusal {
-    fn from(reason: String) -> Self {
-        Refusal::Other(reason)
     }
 }
 
@@ -143,7 +182,8 @@ impl Host {
     /// `approvals.list`.
     pub fn approval_list(&self) -> Result<ApprovalsList, Refusal> {
         let approvals = self
-            .approvals()?
+            .approvals()
+            .map_err(Refusal::Records)?
             .plugins
             .into_iter()
             .map(|(plugin, approval)| ApprovalInfo {
@@ -169,7 +209,7 @@ impl Host {
             } else {
                 prefs.disabled.insert(name.to_owned());
             }
-            self.save_prefs(&prefs)?;
+            self.save_prefs(&prefs).map_err(Refusal::Records)?;
         }
         self.changed(name).await;
         Ok(())
@@ -180,11 +220,11 @@ impl Host {
     pub async fn revoke(&self, name: &str) -> Result<(), Refusal> {
         {
             let _editing = self.editing.lock().unwrap();
-            let mut approvals = self.approvals()?;
+            let mut approvals = self.approvals().map_err(Refusal::Records)?;
             if approvals.plugins.remove(name).is_none() {
                 return Err(Refusal::NotApproved(name.to_owned()));
             }
-            self.save_approvals(&approvals)?;
+            self.save_approvals(&approvals).map_err(Refusal::Records)?;
             let _ = std::fs::remove_dir_all(self.paths.versions(name));
         }
         self.changed(name).await;
@@ -201,41 +241,38 @@ impl Host {
                 .folders()
                 .remove(name)
                 .ok_or_else(|| Refusal::NoSuchPlugin(name.to_owned()))?;
-            let current = Contents::read(name, &folder)?;
+            let current = Contents::read(name, &folder).map_err(|reason| Refusal::Broken {
+                plugin: name.to_owned(),
+                reason,
+            })?;
             if !matches!(current.manifest.author, Author::Lucy) {
-                return Err(Refusal::Other(format!(
-                    "The {name} Plugin was written by a human, so Lucy won't change its files. \
-                     Its author can roll it back."
-                )));
+                return Err(Refusal::WrittenByHuman(name.to_owned()));
             }
-            let mut approvals = self.approvals()?;
+            let mut approvals = self.approvals().map_err(Refusal::Records)?;
             let Some(mut approval) = approvals.plugins.remove(name) else {
                 return Err(Refusal::NotApproved(name.to_owned()));
             };
             let Some(mut previous) = approval.previous.take() else {
-                return Err(Refusal::Other(format!(
-                    "No previous approved version of the {name} Plugin is kept."
-                )));
+                return Err(Refusal::NoPreviousVersion(name.to_owned()));
             };
             let kept = self.paths.versions(name).join(&previous.hash);
+            let damaged = || Refusal::PreviousVersionDamaged(name.to_owned());
             let (text, executable) = std::fs::read_to_string(kept.join("manifest.toml"))
                 .and_then(|text| Ok((text, std::fs::read(kept.join("executable"))?)))
                 .ok()
                 .filter(|(text, executable)| {
                     content_hash(text.as_bytes(), executable) == previous.hash
                 })
-                .ok_or_else(|| {
-                    format!("The previous version of the {name} Plugin wasn't kept intact.")
-                })?;
-            let manifest = Manifest::parse(&text, name)?;
+                .ok_or_else(damaged)?;
+            let manifest = Manifest::parse(&text, name).map_err(|_| damaged())?;
             let restore = || -> std::io::Result<()> {
                 replace_file(&folder.join(manifest.executable()), &executable, 0o755)?;
                 replace_file(&folder.join("manifest.toml"), text.as_bytes(), 0o644)
             };
-            restore().map_err(|e| format!("Its previous version couldn't be put back: {e}"))?;
+            restore().map_err(|e| Refusal::NotRestored(name.to_owned(), e))?;
             previous.previous = Some(Box::new(approval));
             approvals.plugins.insert(name.to_owned(), *previous);
-            self.save_approvals(&approvals)?;
+            self.save_approvals(&approvals).map_err(Refusal::Records)?;
         }
         self.changed(name).await;
         Ok(())
@@ -249,10 +286,7 @@ impl Host {
             .remove(name)
             .ok_or_else(|| Refusal::NoSuchPlugin(name.to_owned()))?;
         if self.is_shipped(&folder) {
-            return Err(Refusal::Other(format!(
-                "The {name} Plugin was shipped with Lucy, so it can't be removed, but it can be \
-                 disabled."
-            )));
+            return Err(Refusal::Shipped(name.to_owned()));
         }
         Ok(())
     }
@@ -282,16 +316,16 @@ impl Host {
             self.removable(name)?;
             let folder = self.paths.user.join(name);
             std::fs::remove_dir_all(&folder)
-                .map_err(|e| format!("The {name} Plugin couldn't be deleted: {e}"))?;
-            let mut approvals = self.approvals()?;
+                .map_err(|e| Refusal::NotDeleted(name.to_owned(), e))?;
+            let mut approvals = self.approvals().map_err(Refusal::Records)?;
             if approvals.plugins.remove(name).is_some() {
-                self.save_approvals(&approvals)?;
+                self.save_approvals(&approvals).map_err(Refusal::Records)?;
             }
             let _ = std::fs::remove_dir_all(self.paths.versions(name));
             let mut prefs = self.prefs();
             prefs.disabled.remove(name);
             prefs.mentioned.remove(name);
-            self.save_prefs(&prefs)?;
+            self.save_prefs(&prefs).map_err(Refusal::Records)?;
         }
         self.changed(name).await;
         Ok(())
