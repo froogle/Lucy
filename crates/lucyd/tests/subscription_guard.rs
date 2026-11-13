@@ -233,3 +233,29 @@ fn providers_status_shows_a_signed_out_claude_without_a_model_call() {
     }
     assert!(sent(work.path()).is_empty());
 }
+
+#[test]
+fn stopping_lucyd_mid_session_deletes_the_conversation_claude_kept() {
+    let work = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let claude = Claude::new(fake_claude(), work.path().to_owned())
+        .with_config_dir(config.path().to_owned());
+    let lucyd = Harness::with_thinking(None, Arc::new(claude));
+    lucyd.client().start_session().unwrap();
+    lucyd.say("Remember the word kiwi.");
+    lucyd.tts.next_sentence();
+    // Each conversation's .jsonl and dir, in every project dir.
+    let kept = || {
+        let projects = std::fs::read_dir(config.path().join("projects"));
+        projects
+            .into_iter()
+            .flatten()
+            .flat_map(|project| std::fs::read_dir(project.unwrap().path()).unwrap())
+            .count()
+    };
+    assert_ne!(kept(), 0, "claude kept no conversation");
+
+    drop(lucyd);
+
+    assert_eq!(kept(), 0);
+}

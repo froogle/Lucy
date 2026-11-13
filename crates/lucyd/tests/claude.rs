@@ -181,6 +181,75 @@ fn ending_the_session_is_not_a_death() {
     assert!(!rest.contains(&ThinkingEvent::Died), "{rest:?}");
 }
 
+/// The id claude gives the recorded conversation.
+const SESSION_ID: &str = "09dd6ca6-f8e2-473e-812c-ab5acf9cdfd5";
+
+/// The files and dirs under `config`'s projects named for `id`, whichever
+/// project dir claude keeps them in.
+fn kept(config: &Path, id: &str) -> Vec<PathBuf> {
+    let mut kept = vec![];
+    for project in std::fs::read_dir(config.join("projects"))
+        .into_iter()
+        .flatten()
+    {
+        let project = project.unwrap().path();
+        for name in [format!("{id}.jsonl"), id.to_owned()] {
+            if project.join(&name).exists() {
+                kept.push(project.join(name));
+            }
+        }
+    }
+    kept
+}
+
+/// A conversation of the user's own in the same project dir as `id`'s,
+/// which Lucy must leave alone.
+fn the_users_own(config: &Path, id: &str) -> PathBuf {
+    let theirs = kept(config, id)[0].with_file_name("their-own.jsonl");
+    std::fs::write(&theirs, "{}\n").unwrap();
+    theirs
+}
+
+#[test]
+fn a_sessions_conversation_is_deleted_from_disk_when_it_ends() {
+    let work = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude").with_config_dir(config.path().to_owned());
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model = claude.open(&fast(), tx, relay(), String::new());
+    model.send_turn("Remember the word kiwi.".into());
+    read_turn(&mut events, WAIT);
+    assert_eq!(
+        kept(config.path(), SESSION_ID).len(),
+        2,
+        "no transcript to delete"
+    );
+    let theirs = the_users_own(config.path(), SESSION_ID);
+
+    drop(model);
+
+    assert_eq!(kept(config.path(), SESSION_ID), Vec::<PathBuf>::new());
+    assert!(theirs.is_file(), "another conversation was deleted");
+}
+
+#[test]
+fn stopping_lucyd_deletes_the_conversations_still_open() {
+    let work = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude").with_config_dir(config.path().to_owned());
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model = claude.open(&fast(), tx, relay(), String::new());
+    model.send_turn("Remember the word kiwi.".into());
+    read_turn(&mut events, WAIT);
+    let theirs = the_users_own(config.path(), SESSION_ID);
+
+    claude.shutdown();
+
+    assert_eq!(kept(config.path(), SESSION_ID), Vec::<PathBuf>::new());
+    assert!(theirs.is_file(), "another conversation was deleted");
+    drop(model);
+}
+
 #[test]
 fn runs_with_an_isolated_config_naming_only_the_relay() {
     let work = tempfile::tempdir().unwrap();
@@ -311,7 +380,8 @@ fn an_interrupt_stops_the_turn_with_the_control_request_and_keeps_the_process() 
 #[test]
 fn without_the_control_interrupt_claude_gets_sigint_and_a_new_process() {
     let work = tempfile::tempdir().unwrap();
-    let claude = verified(work.path(), "fake-claude");
+    let config = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude").with_config_dir(config.path().to_owned());
     std::fs::write(work.path().join("turn1.jsonl"), unfinished_turn()).unwrap();
     std::fs::write(
         work.path().join("turn2.jsonl"),
@@ -351,6 +421,10 @@ fn without_the_control_interrupt_claude_gets_sigint_and_a_new_process() {
     model.send_turn("What word?".into());
     let (text, _) = read_turn(&mut events, WAIT);
     assert_eq!(text, "Kiwi.| You asked me to remember that word.|");
+
+    // Both processes' conversation goes with the Session.
+    drop(model);
+    assert_eq!(kept(config.path(), SESSION_ID), Vec::<PathBuf>::new());
 }
 
 /// Opt-in: `cargo test -p lucyd --test claude -- --ignored`. Uses the real

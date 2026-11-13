@@ -56,6 +56,8 @@ pub struct Daemon {
     mcp_socket_path: PathBuf,
     runtime: Option<Runtime>,
     plugins: std::sync::Arc<plugins::Host>,
+    /// Ended first on shutdown, so no model process outlives lucyd.
+    thinking: std::sync::Arc<dyn adapters::Thinking>,
 }
 
 /// Starts lucyd on its own runtime and returns once its sockets are
@@ -89,6 +91,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     runtime.spawn(fallback);
     let plugins_dir = plugin_paths.user.clone();
     let plugin_host = plugins::Host::new(plugin_paths, sessions.clone(), buses.plugins.clone());
+    let thinking = adapters.thinking.clone();
     let authoring = authoring::Authoring::new(
         adapters.thinking.clone(),
         relays.clone(),
@@ -137,6 +140,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         mcp_socket_path,
         runtime: Some(runtime),
         plugins: plugin_host,
+        thinking,
     })
 }
 
@@ -181,6 +185,7 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
+        self.thinking.shutdown();
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }

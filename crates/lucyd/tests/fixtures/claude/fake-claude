@@ -6,6 +6,11 @@
 # - anything else is `claude -p` stream-json: it records how it was run, then
 #   answers the Nth stdin line with turnN.jsonl, from here if the test hasn't
 #   put one in the working directory. The recorded turns are real transcripts.
+#   If CLAUDE_CONFIG_DIR is set (never the real ~/.claude), it keeps the
+#   conversation where claude does: each stdin line is appended to
+#   $CLAUDE_CONFIG_DIR/projects/<working dir, each non-alphanumeric as ->/
+#   <session id>.jsonl, beside a <session id>/ dir, the id being the one in
+#   the turn it answers with.
 # Each of the above appends its first argument to ./calls.
 here=$(dirname "$0")
 echo "$1" >> calls
@@ -26,9 +31,13 @@ n=0
 while IFS= read -r line; do
     n=$((n + 1))
     printf '%s\n' "$line" >> stdin
-    if [ -f "turn$n.jsonl" ]; then
-        cat "turn$n.jsonl"
-    else
-        cat "$here/turn$n.jsonl"
+    turn="turn$n.jsonl"
+    [ -f "$turn" ] || turn="$here/turn$n.jsonl"
+    id=$(grep -o '"session_id":"[^"]*"' "$turn" | head -n 1 | cut -d '"' -f 4)
+    if [ -n "$CLAUDE_CONFIG_DIR" ] && [ -n "$id" ]; then
+        project="$CLAUDE_CONFIG_DIR/projects/$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
+        mkdir -p "$project/$id/tool-results"
+        printf '%s\n' "$line" >> "$project/$id.jsonl"
     fi
+    cat "$turn"
 done

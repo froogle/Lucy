@@ -4,9 +4,9 @@
 mod guard;
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Mutex, Weak};
 use std::time::Duration;
 
 use lucy_config::Provider;
@@ -42,11 +42,38 @@ pub struct Claude {
     program: PathBuf,
     /// A Lucy-owned directory, so no project's `.mcp.json` or hooks apply.
     work_dir: PathBuf,
+    /// claude's config dir, if not the one its env gives it.
+    config_dir: Option<PathBuf>,
+    /// Every Session's and Delegate's claude still running.
+    live: Arc<Mutex<Vec<Weak<Run>>>>,
 }
 
 impl Claude {
     pub fn new(program: PathBuf, work_dir: PathBuf) -> Claude {
-        Claude { program, work_dir }
+        Claude {
+            program,
+            work_dir,
+            config_dir: None,
+            live: Arc::default(),
+        }
+    }
+
+    /// Runs claude with `config_dir` as its config dir
+    /// (`CLAUDE_CONFIG_DIR`), where it keeps its login and conversations.
+    pub fn with_config_dir(self, config_dir: PathBuf) -> Claude {
+        Claude {
+            config_dir: Some(config_dir),
+            ..self
+        }
+    }
+
+    /// Where claude keeps its config and conversations: `CLAUDE_CONFIG_DIR`,
+    /// or `~/.claude`.
+    fn config_dir(&self) -> PathBuf {
+        self.config_dir
+            .clone()
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
+            .unwrap_or_else(|| sandbox::home().join(".claude"))
     }
 
     /// `claude` run in the work dir, with the guard's env scrubbing unless
@@ -54,6 +81,9 @@ impl Claude {
     fn base_command(&self, provider: &Provider) -> Command {
         let mut command = Command::new(&self.program);
         command.current_dir(&self.work_dir).stderr(Stdio::null());
+        if let Some(config_dir) = &self.config_dir {
+            command.env("CLAUDE_CONFIG_DIR", config_dir);
+        }
         if !provider.allow_api_key {
             for name in SCRUBBED_ENV {
                 command.env_remove(name);
@@ -144,16 +174,14 @@ impl Claude {
         role: &Role,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         inputs: std_mpsc::Receiver<ToClaude>,
-        process: &Arc<Mutex<Process>>,
+        run: &Arc<Run>,
     ) {
         if let Err(reason) = self.prepare(provider) {
             eprintln!("lucyd: refusing claude: {reason}");
             let _ = events.send(ThinkingEvent::Unavailable(reason));
             return;
         }
-        // claude's id for the conversation, read from its stream.
-        let session = Arc::new(Mutex::new(None));
-        let spawn = || self.spawn(provider, role, events, process, &session);
+        let spawn = || self.spawn(provider, role, events, run);
         let Some(mut running) = spawn() else {
             return;
         };
@@ -192,7 +220,7 @@ impl Claude {
                         control_interrupt = false;
                     }
                     running.turns.lock().unwrap().retired = true;
-                    if let Process::Running(child) = &*process.lock().unwrap() {
+                    if let Process::Running(child) = &*run.process.lock().unwrap() {
                         // SAFETY: kill(2) on our own child's pid.
                         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
                     }
@@ -213,10 +241,9 @@ impl Claude {
         provider: &Provider,
         role: &Role,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
-        process: &Arc<Mutex<Process>>,
-        session: &Arc<Mutex<Option<String>>>,
+        run: &Arc<Run>,
     ) -> Option<Running> {
-        let resume = session.lock().unwrap().clone();
+        let resume = run.sessions.lock().unwrap().last().cloned();
         let resume = resume.as_deref();
         let Role {
             relay,
@@ -241,7 +268,7 @@ impl Claude {
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         {
-            let mut process = process.lock().unwrap();
+            let mut process = run.process.lock().unwrap();
             if matches!(*process, Process::Ended) {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -257,15 +284,14 @@ impl Claude {
         let turns = Arc::new(Mutex::new(Turns::default()));
         let (acks_tx, acks) = std_mpsc::channel();
         let reader_turns = turns.clone();
-        let reader_process = process.clone();
+        let reader_run = run.clone();
         let reader_events = events.clone();
-        let reader_session = session.clone();
         std::thread::spawn(move || {
             let mut stream = Stream::default();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let value: Value = serde_json::from_str(&line).unwrap_or_default();
                 if let Some(id) = value["session_id"].as_str() {
-                    *reader_session.lock().unwrap() = Some(id.to_owned());
+                    reader_run.kept(id);
                 }
                 if value["type"] == "control_response" {
                     let _ = acks_tx.send(value["response"]["subtype"] == "success");
@@ -293,7 +319,7 @@ impl Claude {
             }
             // claude stopped on its own, not because the Session ended or
             // it was interrupted with SIGINT.
-            let ended = matches!(*reader_process.lock().unwrap(), Process::Ended);
+            let ended = matches!(*reader_run.process.lock().unwrap(), Process::Ended);
             if !ended && !reader_turns.lock().unwrap().retired {
                 let _ = reader_events.send(ThinkingEvent::Died);
             }
@@ -347,17 +373,28 @@ impl Claude {
         role: Role,
     ) -> Box<dyn SessionModel> {
         let (inputs, inputs_rx) = std_mpsc::channel();
-        let process = Arc::new(Mutex::new(Process::Starting));
+        let cwd = role.workspace.as_ref().map_or(&self.work_dir, |w| &w.dir);
+        let run = Arc::new(Run {
+            process: Mutex::new(Process::Starting),
+            sessions: Mutex::default(),
+            config_dir: self.config_dir(),
+            cwd: cwd.clone(),
+        });
+        {
+            let mut live = self.live.lock().unwrap();
+            live.retain(|run| run.strong_count() > 0);
+            live.push(Arc::downgrade(&run));
+        }
         let claude = self.clone();
         let provider = provider.clone();
         let thread_events = events.clone();
-        let thread_process = process.clone();
+        let thread_run = run.clone();
         std::thread::spawn(move || {
-            claude.run_session(&provider, &role, &thread_events, inputs_rx, &thread_process);
+            claude.run_session(&provider, &role, &thread_events, inputs_rx, &thread_run);
         });
         Box::new(ClaudeSessionModel {
             inputs,
-            process,
+            run,
             _events: events,
         })
     }
@@ -402,6 +439,13 @@ impl Thinking for Claude {
     fn check(&self, provider: &Provider) -> Result<(), String> {
         self.verify(provider)
     }
+
+    fn shutdown(&self) {
+        let live = std::mem::take(&mut *self.live.lock().unwrap());
+        for run in live.iter().filter_map(Weak::upgrade) {
+            run.end();
+        }
+    }
 }
 
 /// Where a Session's `claude -p` is.
@@ -413,9 +457,59 @@ enum Process {
     Ended,
 }
 
+/// A Session's or Delegate's claude, and the conversations it keeps on
+/// disk so a new process can resume them. They go when it ends.
+struct Run {
+    process: Mutex<Process>,
+    /// claude's ids for its conversations, from its stream; a new process
+    /// resumes the last.
+    sessions: Mutex<Vec<String>>,
+    config_dir: PathBuf,
+    /// claude's working directory, which names the project dir it keeps
+    /// conversations in.
+    cwd: PathBuf,
+}
+
+impl Run {
+    fn kept(&self, id: &str) {
+        let mut sessions = self.sessions.lock().unwrap();
+        if !sessions.iter().any(|kept| kept == id) {
+            sessions.push(id.to_owned());
+        }
+    }
+
+    /// Stops claude for good, then deletes the conversations it kept:
+    /// `<id>.jsonl` and the `<id>` dir beside it. Nothing else of claude's.
+    fn end(&self) {
+        let process = std::mem::replace(&mut *self.process.lock().unwrap(), Process::Ended);
+        if let Process::Running(mut child) = process {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let project = self
+            .config_dir
+            .join("projects")
+            .join(project_dir(&self.cwd));
+        for id in std::mem::take(&mut *self.sessions.lock().unwrap()) {
+            let _ = std::fs::remove_file(project.join(format!("{id}.jsonl")));
+            let _ = std::fs::remove_dir_all(project.join(&id));
+        }
+    }
+}
+
+/// The name claude gives the dir it keeps the conversations run in `cwd`
+/// in: its real path with every character but a letter or digit as `-`.
+fn project_dir(cwd: &Path) -> String {
+    let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
+    cwd.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
 struct ClaudeSessionModel {
     inputs: std_mpsc::Sender<ToClaude>,
-    process: Arc<Mutex<Process>>,
+    run: Arc<Run>,
     _events: mpsc::UnboundedSender<ThinkingEvent>,
 }
 
@@ -432,11 +526,7 @@ impl SessionModel for ClaudeSessionModel {
 
 impl Drop for ClaudeSessionModel {
     fn drop(&mut self) {
-        let process = std::mem::replace(&mut *self.process.lock().unwrap(), Process::Ended);
-        if let Process::Running(mut child) = process {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.run.end();
     }
 }
 

@@ -120,6 +120,10 @@ pub trait Thinking: Send + Sync {
         let _ = events.send(ThinkingEvent::Unavailable(reason));
         Box::new(InertSessionModel::new(events))
     }
+
+    /// lucyd is stopping: ends every model process still open, and what
+    /// they keep on disk, as dropping each SessionModel would.
+    fn shutdown(&self) {}
 }
 
 /// Where a Delegate works, and the only other places it may touch.

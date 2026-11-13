@@ -53,6 +53,11 @@ impl Thinking for ByKind {
         self.adapter(provider)
             .open_delegate(provider, events, relay, instructions, workspace)
     }
+
+    fn shutdown(&self) {
+        self.claude.shutdown();
+        self.codex.shutdown();
+    }
 }
 
 #[cfg(test)]
