@@ -1,6 +1,8 @@
 //! The Session state machine: pure and I/O-free. The runner feeds it inputs
 //! and carries out the outputs it returns.
 
+use std::collections::VecDeque;
+
 use lucy_ipc::State;
 
 use crate::adapters::ThinkingEvent;
@@ -24,6 +26,8 @@ pub enum Input {
     EndRequested,
     /// The Wake word was heard during the Session.
     WakeWord,
+    /// The user has kept talking over Lucy long enough to cut her off.
+    BargeIn,
     /// A tool call waits on the user: say the question, then hear one
     /// utterance (Confirming).
     Ask(Question),
@@ -77,6 +81,11 @@ pub enum Output {
     End,
     /// The question asked is answered.
     Answered(Answer),
+    /// Stop playback and drop everything queued.
+    StopSpeaking,
+    /// Stop the model's Turn, and the tool calls it made that the user
+    /// hasn't confirmed.
+    Interrupt,
 }
 
 const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
@@ -88,8 +97,15 @@ pub struct Session {
     /// The user is in the middle of an utterance.
     speaking: bool,
     turn_in_progress: bool,
-    /// Sentences handed to TTS that haven't finished playing.
-    queued: usize,
+    /// Sentences handed to TTS that haven't finished playing, oldest first.
+    queued: VecDeque<String>,
+    /// The sentences of the current reply that have finished playing.
+    heard: String,
+    /// What the user heard of the reply they cut off, until the next Turn
+    /// tells the model.
+    interrupted: Option<String>,
+    /// Speech, not only the Wake word, can barge in.
+    speech_barges_in: bool,
     /// Reply text not yet handed to TTS.
     sentence: String,
     /// `end_session` was called; end once back in Listening.
@@ -112,10 +128,15 @@ impl Session {
         }
     }
 
+    /// Lets speech, not only the Wake word, barge in.
+    pub fn barge_in_by_speech(&mut self, on: bool) {
+        self.speech_barges_in = on;
+    }
+
     pub fn state(&self) -> State {
         if self.asking.is_some() {
             State::Confirming
-        } else if self.queued > 0 {
+        } else if !self.queued.is_empty() {
             State::Speaking
         } else if self.turn_in_progress {
             State::Thinking
@@ -138,7 +159,7 @@ impl Session {
     /// The wait for an answer counts once the question has been said, and
     /// not while the user is speaking or their reply is being transcribed.
     pub fn answer_timer_runs(&self) -> bool {
-        self.asking.is_some() && self.queued == 0 && !self.transcribing && !self.speaking
+        self.asking.is_some() && self.queued.is_empty() && !self.transcribing && !self.speaking
     }
 
     pub fn handle(&mut self, input: Input) -> Vec<Output> {
@@ -150,6 +171,10 @@ impl Session {
             }
             Input::Speaking(speaking) => {
                 self.speaking = speaking;
+                // The rest of the utterance arrives as `Speech`.
+                if speaking && self.speech_barges_in && self.state() == State::Thinking {
+                    return self.barge_in();
+                }
                 vec![]
             }
             // While Confirming, a reply spoken over the question counts.
@@ -160,7 +185,18 @@ impl Session {
                 self.transcribing = true;
                 vec![Output::Transcribe]
             }
-            // Speech while Lucy is busy is Barge-in, which isn't handled yet.
+            Input::Speech
+                if self.speech_barges_in
+                    && self.state() == State::Thinking
+                    && !self.transcribing =>
+            {
+                let mut outputs = self.barge_in();
+                self.transcribing = true;
+                outputs.push(Output::Transcribe);
+                outputs
+            }
+            // Lucy's own echo, or the user talking over her without cutting
+            // her off.
             Input::Speech => vec![],
             Input::Transcript(text) => {
                 self.transcribing = false;
@@ -183,8 +219,14 @@ impl Session {
                     return vec![];
                 }
                 self.turn_in_progress = true;
-                self.turn = text.to_owned();
-                vec![Output::SendTurn(text.to_owned())]
+                self.heard.clear();
+                self.turn = match self.interrupted.take() {
+                    Some(heard) => {
+                        format!("[You were interrupted; the user heard up to: \"{heard}\"]\n{text}")
+                    }
+                    None => text.to_owned(),
+                };
+                vec![Output::SendTurn(self.turn.clone())]
             }
             // Say sorry; a second failure in a row ends the Session.
             Input::TranscribeFailed => {
@@ -228,16 +270,26 @@ impl Session {
                 outputs
             }
             Input::Played => {
-                self.queued = self.queued.saturating_sub(1);
+                if let Some(sentence) = self.queued.pop_front() {
+                    push_sentence(&mut self.heard, &sentence);
+                }
                 self.turn_finished().into_iter().collect()
             }
             Input::EndRequested => {
                 self.closing = true;
                 self.turn_finished().into_iter().collect()
             }
-            // Ordinary speech: its utterance arrives as `Speech`. During
-            // Speaking it will be an instant Barge-in (ticket 09).
+            // Cuts Lucy off at once, whatever `barge_in` says.
+            Input::WakeWord if matches!(self.state(), State::Speaking | State::Thinking) => {
+                self.barge_in()
+            }
+            // Ordinary speech: its utterance arrives as `Speech`.
             Input::WakeWord => vec![],
+            // The gate also runs a little past the end of Lucy's speech.
+            Input::BargeIn if matches!(self.state(), State::Speaking | State::Thinking) => {
+                self.barge_in()
+            }
+            Input::BargeIn => vec![],
             Input::Ask(question) => {
                 // Any reply text so far is said before the question.
                 let mut outputs: Vec<Output> = self.speak_sentence().into_iter().collect();
@@ -255,6 +307,26 @@ impl Session {
                 self.turn_finished().into_iter().collect()
             }
         }
+    }
+
+    /// The user cuts in: Lucy stops speaking and the model stops its Turn,
+    /// and she listens. The next Turn says what the user heard: the reply's
+    /// sentences up to and including the one cut off.
+    fn barge_in(&mut self) -> Vec<Output> {
+        let mut outputs = vec![];
+        if let Some(playing) = self.queued.front() {
+            push_sentence(&mut self.heard, playing);
+            self.queued.clear();
+            outputs.push(Output::StopSpeaking);
+        }
+        if self.turn_in_progress {
+            self.turn_in_progress = false;
+            outputs.push(Output::Interrupt);
+        }
+        self.sentence.clear();
+        self.interrupted = Some(std::mem::take(&mut self.heard));
+        outputs.push(Output::ResetSilenceTimer);
+        outputs
     }
 
     /// The answer to the question being asked, if any, when no answer was
@@ -287,7 +359,7 @@ impl Session {
         if sentence.is_empty() {
             return None;
         }
-        self.queued += 1;
+        self.queued.push_back(sentence.to_owned());
         Some(Output::Speak(sentence.to_owned()))
     }
 
@@ -300,6 +372,14 @@ impl Session {
             _ => None,
         }
     }
+}
+
+/// Adds `sentence` to the reply text in `heard`.
+fn push_sentence(heard: &mut String, sentence: &str) {
+    if !heard.is_empty() {
+        heard.push(' ');
+    }
+    heard.push_str(sentence);
 }
 
 /// Whether `reply` is a clear yes: one of `phrases`, ignoring case,
@@ -321,6 +401,28 @@ mod tests {
 
     fn yes_phrases() -> Vec<String> {
         lucy_config::Confirmation::default().yes_phrases
+    }
+
+    #[test]
+    fn after_a_barge_in_nothing_heard_says_nothing_and_the_next_words_say_what_was_heard() {
+        let mut session = Session::new(yes_phrases());
+        session.handle(Input::Speech);
+        session.handle(Input::Transcript("count".into()));
+        session.handle(Input::Thinking(ThinkingEvent::Delta("One.".into())));
+        session.handle(Input::Thinking(ThinkingEvent::SentenceEnd));
+        session.handle(Input::WakeWord);
+
+        session.handle(Input::Speech);
+        assert_eq!(session.handle(Input::Transcript(String::new())), []);
+        assert_eq!(session.state(), State::Listening);
+
+        session.handle(Input::Speech);
+        assert_eq!(
+            session.handle(Input::Transcript("go on".into())),
+            [Output::SendTurn(
+                "[You were interrupted; the user heard up to: \"One.\"]\ngo on".into()
+            )]
+        );
     }
 
     #[test]

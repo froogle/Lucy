@@ -46,6 +46,10 @@ impl AudioIo for Cpal {
         };
         devices.is_ok_and(|mut devices| devices.any(|device| is_named(&device, name)))
     }
+
+    fn is_pipewire(&self) -> bool {
+        cpal::default_host().id() == cpal::HostId::PipeWire
+    }
 }
 
 /// Stops capture when dropped.

@@ -41,6 +41,9 @@ const MAX_QUESTIONS: usize = 10;
 const DECLINED: &str = "declined: the user didn't say yes, so nothing was done, and you've \
                         already told them so.";
 
+/// What the model hears of a call a Barge-in cancelled.
+const CANCELLED: &str = "cancelled: the user cut in, so the call was stopped.";
+
 /// How long a Plugin gets to start and answer `tools/list`.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -242,6 +245,8 @@ impl Host {
             awaiting,
             running: tokio::sync::Mutex::default(),
             watchers: Mutex::default(),
+            barge_ins: tokio::sync::watch::Sender::new(0),
+            finished: Mutex::default(),
         });
         *self.session.lock().unwrap() = Arc::downgrade(&tools);
         tools
@@ -671,9 +676,26 @@ pub struct SessionTools {
     running: tokio::sync::Mutex<HashMap<String, RunningService<RoleClient, ()>>>,
     /// The model's connections, told when the tools change.
     watchers: Mutex<Vec<Peer<RoleServer>>>,
+    /// Counts Barge-ins, so calls in flight hear of each.
+    barge_ins: tokio::sync::watch::Sender<u64>,
+    /// What confirmed calls returned after a Barge-in cut the model off,
+    /// for the next Turn.
+    finished: Mutex<Vec<String>>,
 }
 
 impl SessionTools {
+    /// The user cut in: calls in flight that they didn't confirm are
+    /// cancelled, and confirmed ones run on.
+    pub fn barge_in(&self) {
+        self.barge_ins.send_modify(|count| *count += 1);
+    }
+
+    /// What confirmed calls returned since the model was cut off, one line
+    /// each, for the next Turn.
+    pub fn take_finished(&self) -> Vec<String> {
+        std::mem::take(&mut *self.finished.lock().unwrap())
+    }
+
     /// For the model's instructions: which Plugins the scan left out and
     /// why, and which new ones await Approval, if any.
     pub fn scan_report(&self) -> Option<String> {
@@ -770,6 +792,7 @@ impl SessionTools {
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
         }
+        let mut barge_ins = self.barge_ins.subscribe();
         let outcome = async {
             let peer = {
                 let mut running = self.running.lock().await;
@@ -803,8 +826,25 @@ impl SessionTools {
             Err(format!(
                 "it asked more than {MAX_QUESTIONS} questions in one call"
             ))
-        }
-        .await;
+        };
+        let outcome = if entry.confirm {
+            let outcome = outcome.await;
+            if barge_ins.has_changed().unwrap_or(false) {
+                if let Ok(result) = &outcome {
+                    self.finished.lock().unwrap().push(format!(
+                        "[A confirmed call finished after the user cut in: {name} returned: {}]",
+                        mcp::result_text(result)
+                    ));
+                }
+            }
+            outcome
+        } else {
+            // Dropping the call sends the Plugin an MCP cancellation.
+            tokio::select! {
+                outcome = outcome => outcome,
+                _ = barge_ins.changed() => return Some(mcp::error(CANCELLED)),
+            }
+        };
         Some(match outcome {
             Ok(result) => result,
             Err(reason) => {

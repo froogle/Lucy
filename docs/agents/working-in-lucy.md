@@ -48,6 +48,7 @@ lucyd runs `python -m piper.http_server`, which needs the `http` extra: install 
 ## Hearing (mic, VAD, Whisper)
 
 - **Harness:** `Harness::hearing(config)` runs the real DSP thread and endpointing between `FakeMic` and `FakeVad`; the fake VAD reads each sample's value as the speech probability, so tests feed levels (`SPEECH`, `SILENCE`).
+- **Barge-in:** under `Harness::hearing`, `Harness::echo` is Lucy's echo canceller (set its ERLE); `FakeMic::use_pulseaudio` turns Barge-in by speech off. The gate counts time in samples, so call `mic.wait_until_heard()` before a state change whose timing matters, and end a speech feed with a little silence so its last 10 ms frame and VAD chunk are complete. Lucy's echo canceller is `sonora` (pure-Rust AEC3), not the C++ `webrtc-audio-processing` the spec names.
 - **Mid-utterance:** the DSP thread reports whether the user is speaking (`Adapters::speaking`); the Session's timers hold while they are. Without `Harness::hearing`, `Harness::start_speaking` starts an utterance and the next `say` ends it.
 - **Models:** lucyd loads `ggml-<model>.bin` from `$XDG_DATA_HOME/lucy/models`. Silero is bundled in `crates/lucyd/models/`.
 - **Wake word:** `Harness::wake()` scripts a detection. Under `Harness::hearing`, the fake wake word hears it where a run of `WAKE` frames starts, and the fake VAD hears those as speech. The real engine's model is `[wake_word] model`; unset, lucyd installs the bundled interim `hey_livekit.onnx` into `$XDG_DATA_HOME/lucy/models/wake/`. The model's file name is the phrase stripped from transcripts.

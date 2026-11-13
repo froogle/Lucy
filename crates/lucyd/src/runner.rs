@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use crate::adapters::{
     Adapters, Notification, RateLimitStatus, Sound, SpeakerEvent, SttError, ThinkingEvent,
 };
-use crate::audio::{Direction, Hearing};
+use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
 use crate::limits;
 use crate::mcp::Relays;
 use crate::notifications;
@@ -168,6 +168,9 @@ impl Runner {
         let id = SessionId(self.sessions_started);
         let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
+        if let Some(hearing) = &mut self.adapters.hearing {
+            hearing.lucy_speaking(false);
+        }
         plugin_tools.stop().await;
     }
 
@@ -189,7 +192,7 @@ impl Runner {
             first_run,
             opened,
             devices,
-        } = self.start(plugin_tools, events_tx.clone());
+        } = self.start(plugin_tools.clone(), events_tx.clone());
         let provider_name = opened.as_ref().map_or("the Thinking Provider", |opened| {
             opened.provider.kind.name()
         });
@@ -208,6 +211,7 @@ impl Runner {
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();
         let mut session = Session::new(confirmation.yes_phrases);
+        session.barge_in_by_speech(devices.speech_barge_in);
         // An utterance may have started before the Session opened, as one
         // with the Wake word in it does.
         if *self.adapters.speaking.borrow_and_update() {
@@ -326,10 +330,21 @@ impl Runner {
                         Input::TranscribeFailed
                     }
                 },
-                () = mic_lost(&mut self.adapters.hearing) => {
-                    self.end_on_lost_device(Direction::Input, id);
-                    return;
-                }
+                heard = heard(&mut self.adapters.hearing) => match heard {
+                    Heard::Lost => {
+                        self.end_on_lost_device(Direction::Input, id);
+                        return;
+                    }
+                    Heard::Gate(BargeInEvent::Duck) => {
+                        speaker.duck(true);
+                        continue;
+                    }
+                    Heard::Gate(BargeInEvent::Unduck) => {
+                        speaker.duck(false);
+                        continue;
+                    }
+                    Heard::Gate(BargeInEvent::BargeIn) => Input::BargeIn,
+                },
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
                     speaker.sound(Sound::Closing);
                     self.publish(State::Idle, None);
@@ -398,7 +413,13 @@ impl Runner {
                             let _ = transcripts.send(stt.transcribe(segment));
                         });
                     }
-                    Output::SendTurn(text) => model.send_turn(text),
+                    Output::SendTurn(text) => {
+                        // Confirmed calls that finished after a Barge-in
+                        // cut the model off.
+                        let mut finished = plugin_tools.take_finished();
+                        finished.push(text);
+                        model.send_turn(finished.join("\n"));
+                    }
                     Output::Speak(sentence) => speaker.speak(sentence),
                     Output::ResetSilenceTimer => silence.reset(),
                     Output::Error => self.publish(State::Error, Some(id)),
@@ -411,10 +432,20 @@ impl Runner {
                             let _ = reply.send(answer);
                         }
                     }
+                    Output::StopSpeaking => speaker.stop(),
+                    Output::Interrupt => {
+                        model.interrupt();
+                        plugin_tools.barge_in();
+                    }
                 }
             }
             silence.set_running(session.silence_timer_runs());
             answer_timer.set_running(session.answer_timer_runs());
+            // Before it is published, so the gate is open by the time anyone
+            // sees Lucy speaking.
+            if let Some(hearing) = &mut self.adapters.hearing {
+                hearing.lucy_speaking(session.state() == State::Speaking);
+            }
             self.publish(session.state(), Some(id));
         }
     }
@@ -437,6 +468,14 @@ impl Runner {
             state,
             session_id: session_id.map(|id| id.to_string()),
         });
+    }
+}
+
+/// What the microphone reports next, if Lucy hears through one.
+async fn heard(hearing: &mut Option<Hearing>) -> Heard {
+    match hearing {
+        Some(hearing) => hearing.next().await,
+        None => std::future::pending().await,
     }
 }
 

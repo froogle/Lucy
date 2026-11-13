@@ -5,8 +5,9 @@ mod guard;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::time::Duration;
 
 use lucy_config::Provider;
 use serde_json::Value;
@@ -19,6 +20,10 @@ use crate::sentences::Sentences;
 /// subscription. Everything above `CLAUDE_CODE_OAUTH_TOKEN` in Claude Code's
 /// credential precedence. `apiKeyHelper` lives only in settings files, which
 /// `--setting-sources ""` keeps out.
+/// How long claude gets to acknowledge the control interrupt before it gets
+/// SIGINT instead.
+const INTERRUPT_ACK_WAIT: Duration = Duration::from_secs(1);
+
 const SCRUBBED_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
@@ -87,14 +92,17 @@ impl Claude {
     }
 
     /// One Session's process: the guard's checks, then `claude -p`, fed each
-    /// Turn from `turns` until the SessionModel is dropped.
+    /// Turn and interrupt from `inputs` until the SessionModel is dropped.
+    /// A Turn is interrupted with the stream-json control interrupt; if
+    /// claude doesn't acknowledge it, with SIGINT, which ends the process,
+    /// and a new one takes over.
     fn run_session(
         &self,
         provider: &Provider,
         relay: &Relay,
         instructions: &str,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
-        turns: std_mpsc::Receiver<String>,
+        inputs: std_mpsc::Receiver<ToClaude>,
         process: &Arc<Mutex<Process>>,
     ) {
         if let Err(reason) = self.prepare(provider) {
@@ -102,49 +110,171 @@ impl Claude {
             let _ = events.send(ThinkingEvent::Unavailable(reason));
             return;
         }
+        let spawn = || self.spawn(provider, relay, instructions, events, process);
+        let Some(mut running) = spawn() else {
+            return;
+        };
+        // Whether claude understands the control interrupt: until it fails
+        // to, it is assumed to.
+        let mut control_interrupt = true;
+        let mut interrupts = 0;
+        for input in inputs {
+            match input {
+                ToClaude::Turn(text) => {
+                    running.turns.lock().unwrap().sent += 1;
+                    let message = serde_json::json!(
+                        {"type": "user", "message": {"role": "user", "content": text}}
+                    );
+                    running.write(&message);
+                }
+                ToClaude::Interrupt => {
+                    {
+                        let mut turns = running.turns.lock().unwrap();
+                        if turns.sent == turns.ended {
+                            continue;
+                        }
+                        turns.discard_until = turns.sent;
+                    }
+                    if control_interrupt {
+                        interrupts += 1;
+                        running.write(&serde_json::json!({
+                            "type": "control_request",
+                            "request_id": format!("interrupt-{interrupts}"),
+                            "request": {"subtype": "interrupt"},
+                        }));
+                        if running.acks.recv_timeout(INTERRUPT_ACK_WAIT) == Ok(true) {
+                            continue;
+                        }
+                        eprintln!("lucyd: claude didn't take the control interrupt; using SIGINT");
+                        control_interrupt = false;
+                    }
+                    running.turns.lock().unwrap().retired = true;
+                    if let Process::Running(child) = &*process.lock().unwrap() {
+                        // SAFETY: kill(2) on our own child's pid.
+                        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
+                    }
+                    running = match spawn() {
+                        Some(running) => running,
+                        None => return,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Starts `claude -p` and a thread reading its replies into `events`.
+    /// None if it couldn't start, which `events` hears, or the Session has
+    /// ended.
+    fn spawn(
+        &self,
+        provider: &Provider,
+        relay: &Relay,
+        instructions: &str,
+        events: &mpsc::UnboundedSender<ThinkingEvent>,
+        process: &Arc<Mutex<Process>>,
+    ) -> Option<Running> {
         let mut child = match self.command(provider, Some(relay), instructions).spawn() {
             Ok(child) => child,
             Err(e) => {
                 eprintln!("lucyd: can't start {}: {e}", self.program.display());
                 let reason = format!("I couldn't start Claude Code: {e}.");
                 let _ = events.send(ThinkingEvent::Unavailable(reason));
-                return;
+                return None;
             }
         };
-        let mut stdin = child.stdin.take().expect("stdin is piped");
+        let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         {
             let mut process = process.lock().unwrap();
             if matches!(*process, Process::Ended) {
                 let _ = child.kill();
                 let _ = child.wait();
-                return;
+                return None;
             }
-            *process = Process::Running(child);
+            // One that was interrupted with SIGINT ends on its own.
+            if let Process::Running(mut old) =
+                std::mem::replace(&mut *process, Process::Running(child))
+            {
+                std::thread::spawn(move || old.wait());
+            }
         }
+        let turns = Arc::new(Mutex::new(Turns::default()));
+        let (acks_tx, acks) = std_mpsc::channel();
+        let reader_turns = turns.clone();
         let reader_process = process.clone();
         let reader_events = events.clone();
         std::thread::spawn(move || {
             let mut stream = Stream::default();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                for event in stream.line(&line) {
+                let value: Value = serde_json::from_str(&line).unwrap_or_default();
+                if value["type"] == "control_response" {
+                    let _ = acks_tx.send(value["response"]["subtype"] == "success");
+                    continue;
+                }
+                let discarding = {
+                    let mut turns = reader_turns.lock().unwrap();
+                    let discarding = turns.ended < turns.discard_until;
+                    if value["type"] == "result" {
+                        turns.ended += 1;
+                    }
+                    discarding
+                };
+                let line_events = stream.line(&line);
+                if discarding {
+                    // The rest of an interrupted Turn: nothing of it is said.
+                    if value["type"] == "result" {
+                        stream = Stream::default();
+                    }
+                    continue;
+                }
+                for event in line_events {
                     let _ = reader_events.send(event);
                 }
             }
-            // claude stopped on its own, not because the Session ended.
-            if !matches!(*reader_process.lock().unwrap(), Process::Ended) {
+            // claude stopped on its own, not because the Session ended or
+            // it was interrupted with SIGINT.
+            let ended = matches!(*reader_process.lock().unwrap(), Process::Ended);
+            if !ended && !reader_turns.lock().unwrap().retired {
                 let _ = reader_events.send(ThinkingEvent::Died);
             }
         });
-        for text in turns {
-            let message =
-                serde_json::json!({"type": "user", "message": {"role": "user", "content": text}});
-            if let Err(e) = writeln!(stdin, "{message}").and_then(|()| stdin.flush()) {
-                // claude is gone; the reader reports it.
-                eprintln!("lucyd: can't reach claude: {e}");
-            }
+        Some(Running { stdin, turns, acks })
+    }
+}
+
+/// What the SessionModel hands its process.
+enum ToClaude {
+    Turn(String),
+    Interrupt,
+}
+
+/// One `claude -p` process of a Session.
+struct Running {
+    stdin: ChildStdin,
+    turns: Arc<Mutex<Turns>>,
+    /// Whether each control interrupt succeeded, as claude answers.
+    acks: std_mpsc::Receiver<bool>,
+}
+
+impl Running {
+    fn write(&mut self, message: &Value) {
+        if let Err(e) = writeln!(self.stdin, "{message}").and_then(|()| self.stdin.flush()) {
+            // claude is gone; the reader reports it.
+            eprintln!("lucyd: can't reach claude: {e}");
         }
     }
+}
+
+/// The Turns of one process, shared by its writer and reader.
+#[derive(Default)]
+struct Turns {
+    sent: u64,
+    /// Turns whose `result` has been read.
+    ended: u64,
+    /// Everything up to the end of this Turn was interrupted and is dropped.
+    discard_until: u64,
+    /// It was interrupted with SIGINT, so it ending isn't a death.
+    retired: bool,
 }
 
 impl Thinking for Claude {
@@ -157,7 +287,7 @@ impl Thinking for Claude {
         relay: Relay,
         instructions: String,
     ) -> Box<dyn SessionModel> {
-        let (turns, turns_rx) = std_mpsc::channel();
+        let (inputs, inputs_rx) = std_mpsc::channel();
         let process = Arc::new(Mutex::new(Process::Starting));
         let claude = self.clone();
         let provider = provider.clone();
@@ -169,12 +299,12 @@ impl Thinking for Claude {
                 &relay,
                 &instructions,
                 &thread_events,
-                turns_rx,
+                inputs_rx,
                 &thread_process,
             );
         });
         Box::new(ClaudeSessionModel {
-            turns,
+            inputs,
             process,
             _events: events,
         })
@@ -199,7 +329,7 @@ enum Process {
 }
 
 struct ClaudeSessionModel {
-    turns: std_mpsc::Sender<String>,
+    inputs: std_mpsc::Sender<ToClaude>,
     process: Arc<Mutex<Process>>,
     _events: mpsc::UnboundedSender<ThinkingEvent>,
 }
@@ -207,11 +337,12 @@ struct ClaudeSessionModel {
 impl SessionModel for ClaudeSessionModel {
     fn send_turn(&mut self, text: String) {
         // Only fails once the process is gone, which has ended the Turn.
-        let _ = self.turns.send(text);
+        let _ = self.inputs.send(ToClaude::Turn(text));
     }
 
-    /// Ticket 09 sends the stream-json control interrupt.
-    fn interrupt(&mut self) {}
+    fn interrupt(&mut self) {
+        let _ = self.inputs.send(ToClaude::Interrupt);
+    }
 }
 
 impl Drop for ClaudeSessionModel {
