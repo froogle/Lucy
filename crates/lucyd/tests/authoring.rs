@@ -11,6 +11,7 @@ use std::time::Duration;
 use harness::{next_state, stage_plugin, Harness};
 use lucy_config::{Config, Tier};
 use lucy_ipc::{error_code, Client, State};
+use lucyd::adapters::NotificationKind;
 use rmcp::model::CallToolResult;
 use serde_json::json;
 
@@ -225,6 +226,42 @@ fn cannot_has_lucy_state_the_limit_and_offer_the_fallback_and_ends_the_build() {
     assert!(delegate
         .call_tool_with("report_progress", json!({"text": "hi"}))
         .is_err());
+}
+
+#[test]
+fn with_no_session_open_cannot_and_ask_user_are_shown_as_notifications() {
+    let lucyd = Harness::start();
+    let _events = request_photos(&lucyd);
+    let delegate = &lucyd.thinking.delegate;
+    delegate.next_turn();
+    lucyd.client().end_session().unwrap();
+
+    ok(delegate.call_tool_with(
+        "ask_user",
+        json!({"question": "Which folder are your photos in?"}),
+    ));
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Reply);
+    assert!(
+        shown.body.contains("Which folder are your photos in?"),
+        "{shown:?}"
+    );
+    let answer = delegate.next_turn();
+    assert!(answer.contains("no Session is open"), "{answer}");
+
+    ok(delegate.call_tool_with(
+        "cannot",
+        json!({
+            "reason": "Google Photos has no API for reading your library",
+            "fallback": "open Google Photos search for Mount Rainier",
+        }),
+    ));
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Reply);
+    assert!(
+        shown
+            .body
+            .contains("Google Photos has no API for reading your library"),
+        "{shown:?}"
+    );
 }
 
 #[test]

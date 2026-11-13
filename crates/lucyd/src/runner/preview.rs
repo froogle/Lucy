@@ -4,7 +4,7 @@
 
 use tokio::sync::{mpsc, oneshot};
 
-use super::{Command, EndError, Runner, SessionId, SetupTestError, StartError};
+use super::{Runner, SessionId, StartError};
 use crate::adapters::{Sound, SpeakerEvent};
 
 /// A `test.voice_preview` request.
@@ -67,17 +67,11 @@ impl Runner {
                     }
                 },
                 command = self.commands.recv() => match command {
-                    Some(Command::Start(started)) => break Ending::Interrupted(Some(started)),
-                    Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
-                        let _ = reply.send(Err(EndError));
+                    Some(command) => {
+                        if let Some(started) = self.while_busy(command) {
+                            break Ending::Interrupted(Some(started));
+                        }
                     }
-                    // Dropped unanswered: there is no Session to ask or
-                    // tell in.
-                    Some(Command::Ask(_) | Command::Say(_) | Command::Turn(_)) => {}
-                    Some(Command::VoicePreview(other)) => {
-                        let _ = other.reply.send(Err(PreviewError::Busy));
-                    }
-                    Some(Command::SetupTest(test)) => test.refuse(SetupTestError::Busy),
                     None => break Ending::Stopped,
                 },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
