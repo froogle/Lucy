@@ -10,7 +10,7 @@ Spec: Providers and configuration. ADR 0001.
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Config edits apply at the next Session without a restart; a missing file still means defaults
 - [ ] Comment-preserving writer round-trips a commented file unchanged apart from the edited key
@@ -18,3 +18,7 @@ Spec: Providers and configuration. ADR 0001.
 - [ ] Version-change re-verification and refusal, harness-tested with a fake CLI
 - [ ] Shipped per-tier model recommendation table; any model the CLI accepts can be chosen
 - [ ] Provider failures are spoken with the fix
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-2` (0a4e21d..890dded). Health checks run at each Session start, when the CLI is spawned (spec wording updated). The live guard check (spends subscription) has not been run. `codex` is not yet in the config enum (ticket 18).

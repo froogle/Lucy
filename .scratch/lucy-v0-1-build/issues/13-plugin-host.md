@@ -6,7 +6,7 @@ Spec: Plugins; MCP tool server. ADRs 0002, 0004, 0005. Manifest shape is in the 
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Manifest parsed and validated (one-line `summary`/`handles`, ≤ 3 examples)
 - [ ] At scan, the Manifest is checked against the live `tools/list`; a mismatch marks the Plugin broken
@@ -16,3 +16,7 @@ Spec: Plugins; MCP tool server. ADRs 0002, 0004, 0005. Manifest shape is in the 
 - [ ] Private writable state dir per Plugin
 - [ ] Plugins are stopped at Session end
 - [ ] Fixture Plugins (tiny MCP stdio binaries) back every harness test here
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-2` (0a4e21d..890dded). Approvals are kept in `approvals.toml` in Lucy's state, hashed with SHA-256 over the Manifest length, the Manifest and the executable. Scan-time failures go into the Session instructions so Lucy mentions them. `tools/list_changed` is left for ticket 14.

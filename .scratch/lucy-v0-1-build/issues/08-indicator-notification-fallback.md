@@ -6,10 +6,14 @@ Spec: Processes and crates; Session state machine (Indicator table). ADR 0006.
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Idle hidden; Listening slow pulse; Thinking spinner; Speaking level meter driven by `level`; Confirming warning pulse; error red flash
 - [ ] Click ends the Session from any state
 - [ ] Exits cleanly with a log line when layer-shell is unavailable
 - [ ] Notification fallback whenever no client holds the `indicator` role, including after an Indicator crash (harness test); a third-party client can claim the role
 - [ ] `lucy-indicator.service` user unit file
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-2` (0a4e21d..890dded). The notification fallback shares the `Notifier` seam with TTS-failure notifications. Status notifications replace one another; Reply notifications never replace. The click and live theme follow need checking on a real desktop.

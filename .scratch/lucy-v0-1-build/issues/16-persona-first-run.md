@@ -6,9 +6,13 @@ Spec: Persona.
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Default `persona.md` is created when missing, and hand edits apply at the next Session
 - [ ] First-run introduction happens exactly once and stores the name
 - [ ] A Persona change by voice is read back to the user
 - [ ] Nothing personal is hard-coded
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-2` (0a4e21d..890dded). `persona.md` is written only when the introduction Turn completes. The `update_persona` Built-in tool was added to the spec table; changes reach the running process from the next Session.

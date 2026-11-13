@@ -6,10 +6,14 @@ Spec: MCP tool server (Built-in tools table).
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `open_url` rejects non-http(s) schemes
 - [ ] `launch_app` handles exactly one match, several, and none, with no fallback to `request_plugin`
 - [ ] `system_status` topics: battery, disk, memory/CPU, network, volume, time, uptime
 - [ ] None of these tools needs Confirmation
 - [ ] Harness tests for each tool's contract, using fake desktop entries and a fake launcher
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-2` (0a4e21d..890dded). Adds the `Launcher` seam; the `[desktop] launcher` override applies to `launch_app` only. The `system_status` topic is `memory_cpu`. Desktop entries are read one level deep.
