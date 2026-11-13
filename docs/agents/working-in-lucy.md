@@ -11,6 +11,7 @@ Facts about the codebase that aren't obvious from reading it.
 - **Where it is:** `crates/lucyd/tests/harness/mod.rs` starts lucyd in-process through `lucyd::spawn(Options { .. })` and connects through the real `lucy-ipc` client.
 - **Fakes:** they plug in through `Options.adapters`.
 - **Real binaries:** the harness runs the `lucy` binary cargo builds next to the test binary. `cargo test -p lucyd` on its own needs `cargo build -p lucy` first; `cargo test --workspace` handles this.
+- **Fixture Plugin:** `crates/lucyd/examples/fixture-plugin.rs`, a tiny MCP stdio server. `Harness::install_plugin` copies it into a Plugin folder and `Harness::approve` pre-seeds `approvals.toml`. `cargo test -p lucyd` builds it, but `--test <name>` alone doesn't: run `cargo build -p lucyd --examples` first.
 - **Private data:** after a Session ends, `assert_nothing_private_on_bus()` checks that nothing private reached the public socket.
 
 ## Adapters (STT, Thinking, TTS)
