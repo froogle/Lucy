@@ -2,7 +2,8 @@
 
 mod harness;
 
-use harness::Harness;
+use harness::{next_state, Harness};
+use lucy_ipc::State;
 use serde_json::json;
 
 #[test]
@@ -46,6 +47,35 @@ fn open_url_refuses_anything_but_http_and_https() {
     }
 
     assert!(lucyd.launcher.opened().is_empty());
+}
+
+#[test]
+fn the_desktop_tools_are_offered_and_run_without_confirmation() {
+    let lucyd = Harness::start();
+    lucyd.desktop_entry("firefox.desktop", "Name=Firefox");
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    lucyd.say("open github, then firefox, and how's my battery?");
+    lucyd.thinking.next_turn();
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+
+    let offered = lucyd.thinking.tool_names();
+    for (name, arguments) in [
+        ("open_url", json!({ "url": "https://github.com" })),
+        ("launch_app", json!({ "name": "firefox" })),
+        ("system_status", json!({ "topic": "battery" })),
+    ] {
+        assert!(offered.contains(&name.to_owned()), "{name} not offered");
+        let result = lucyd.thinking.call_tool_with(name, arguments).unwrap();
+        assert_ne!(result.is_error, Some(true), "{name}: {result:?}");
+    }
+
+    // Each ran straight away: nothing was asked and the Turn is still going.
+    assert_eq!(lucyd.launcher.opened(), ["https://github.com"]);
+    assert_eq!(lucyd.launcher.launched().len(), 1);
+    assert!(lucyd.tts.sentences().is_empty());
+    assert_eq!(lucyd.client().status().unwrap().state, State::Thinking);
 }
 
 /// Calls `system_status` with `topic` and returns its text.
