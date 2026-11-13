@@ -139,6 +139,10 @@ impl Runner {
             applications: self.adapters.applications.clone(),
             launcher_command: settings.desktop.launcher,
         };
+        let mut instructions = persona.text;
+        if let Some(report) = plugin_tools.scan_report() {
+            instructions = format!("{instructions}\n\n{report}");
+        }
         // Revoked when the Session ends.
         let (relay, _token) = self
             .relays
@@ -154,7 +158,7 @@ impl Runner {
             Ok(provider) => self
                 .adapters
                 .thinking
-                .open(provider, events_tx, relay, persona.text),
+                .open(provider, events_tx, relay, instructions),
             Err(reason) => {
                 eprintln!("lucyd: {reason}");
                 let _ = events_tx.send(ThinkingEvent::Unavailable(reason));

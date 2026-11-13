@@ -190,6 +190,28 @@ fn a_plugin_whose_manifest_does_not_match_its_live_tools_is_left_out() {
 }
 
 #[test]
+fn lucy_is_told_at_session_start_which_plugin_failed_its_scan_and_why() {
+    let lucyd = Harness::start();
+    let mismatched = manifest("fixture", &["echo", "pid"], "").replace(
+        "[\"./fixture-plugin\", \"echo\", \"pid\"]",
+        "[\"./fixture-plugin\", \"echo\"]",
+    );
+    lucyd.install_plugin("fixture", &mismatched);
+    lucyd.approve("fixture");
+
+    lucyd.client().start_session().unwrap();
+
+    let instructions = lucyd.thinking.instructions();
+    assert!(
+        instructions.contains(
+            "The fixture Plugin is broken: its Manifest lists the tools echo, pid but it \
+             offers echo."
+        ),
+        "{instructions}"
+    );
+}
+
+#[test]
 fn a_plugin_that_fails_a_call_is_broken_says_so_and_is_left_out() {
     let lucyd = Harness::start();
     lucyd.install_plugin("fixture", &manifest("fixture", &["echo", "crash"], ""));

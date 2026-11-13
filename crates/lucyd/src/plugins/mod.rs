@@ -99,23 +99,28 @@ impl Host {
     /// Scans the Plugin folders and returns the tools for a new Session.
     pub async fn open_session(self: &Arc<Self>) -> Arc<SessionTools> {
         let mut usable = Vec::new();
+        let mut broken = Vec::new();
         for (name, folder) in self.folders() {
             match self.approved(&name, &folder) {
                 Ok(Some(plugin)) => usable.push(plugin),
                 Ok(None) => {}
-                Err(reason) => eprintln!("lucyd: the {name} Plugin is broken: {reason}"),
+                Err(reason) => broken.push(broken_message(&name, &reason)),
             }
         }
         let mut working = Vec::new();
         for plugin in usable {
             match self.check(&plugin).await {
                 Ok(()) => working.push(plugin),
-                Err(reason) => eprintln!("lucyd: the {} Plugin is broken: {reason}", plugin.name),
+                Err(reason) => broken.push(broken_message(&plugin.name, &reason)),
             }
+        }
+        for message in &broken {
+            eprintln!("lucyd: {message}");
         }
         Arc::new(SessionTools {
             host: self.clone(),
             plugins: working,
+            broken,
             running: tokio::sync::Mutex::default(),
         })
     }
@@ -251,6 +256,11 @@ impl Host {
     }
 }
 
+/// What Lucy is told about a broken Plugin, ready to pass on to the user.
+fn broken_message(plugin: &str, reason: &str) -> String {
+    format!("The {plugin} Plugin is broken: {reason}. It's left out until it's fixed.")
+}
+
 fn names(names: &HashSet<&str>) -> String {
     let mut names: Vec<&str> = names.iter().copied().collect();
     names.sort();
@@ -279,10 +289,24 @@ fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
 pub struct SessionTools {
     host: Arc<Host>,
     plugins: Vec<Usable>,
+    /// Why each Plugin the scan left out was left out.
+    broken: Vec<String>,
     running: tokio::sync::Mutex<HashMap<String, RunningService<RoleClient, ()>>>,
 }
 
 impl SessionTools {
+    /// For the model's instructions: which Plugins the scan left out and
+    /// why, if any.
+    pub fn scan_report(&self) -> Option<String> {
+        (!self.broken.is_empty()).then(|| {
+            format!(
+                "## Broken Plugins (not part of your Persona)\n\n{}\n\nTell the user about this once, \
+                 briefly, in your first reply.",
+                self.broken.join("\n")
+            )
+        })
+    }
+
     /// Every tool of every working Plugin, as `<plugin>__<tool>`.
     pub fn list(&self) -> Vec<Tool> {
         let mut tools = Vec::new();
@@ -343,8 +367,9 @@ impl SessionTools {
                     let _ = client.cancel().await;
                 }
                 self.host.mark_broken(&plugin.hash, reason.clone());
-                CallToolResult::error(vec![ContentBlock::text(format!(
-                    "The {plugin_name} Plugin is broken: {reason}. It's left out until it's fixed."
+                CallToolResult::error(vec![ContentBlock::text(broken_message(
+                    plugin_name,
+                    &reason,
                 ))])
             }
         })
