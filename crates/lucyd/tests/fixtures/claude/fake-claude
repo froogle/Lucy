@@ -1,0 +1,13 @@
+#!/bin/sh
+# Stands in for `claude -p` stream-json: records how it was run into its
+# working directory, then answers the Nth stdin line with the recorded real
+# transcript turnN.jsonl beside this script.
+here=$(dirname "$0")
+echo $$ >> pids
+printf '%s\0' "$@" > argv
+n=0
+while IFS= read -r line; do
+    n=$((n + 1))
+    printf '%s\n' "$line" >> stdin
+    cat "$here/turn$n.jsonl"
+done

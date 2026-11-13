@@ -249,7 +249,9 @@ impl Stt for FakeStt {
 }
 
 /// A scripted Thinking Provider: the test reads each Turn's text and streams
-/// the reply event by event.
+/// the reply event by event, in the shape the real `claude` adapter streams a
+/// recorded transcript (`tests/claude.rs`): deltas, a `SentenceEnd` after each
+/// sentence, then `TurnEnd`.
 #[derive(Clone)]
 pub struct FakeThinking {
     turns_tx: std_mpsc::Sender<String>,
