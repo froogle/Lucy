@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lucy_config::Provider;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::audio::Hearing;
 
@@ -211,6 +211,9 @@ pub struct Adapters {
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
     /// One message each time the Wake word is heard.
     pub wake_word: mpsc::UnboundedReceiver<()>,
+    /// Whether the user is in the middle of an utterance. It turns false
+    /// once the utterance is on `speech`, or dropped.
+    pub speaking: watch::Receiver<bool>,
     /// What `speech` comes from, if it is the microphone: it takes
     /// `[audio]` and `[endpointing]` at each Session start.
     pub hearing: Option<Hearing>,
@@ -228,9 +231,11 @@ impl Adapters {
     pub fn inert() -> Adapters {
         let (_, speech) = mpsc::unbounded_channel();
         let (_, wake_word) = mpsc::unbounded_channel();
+        let (_, speaking) = watch::channel(false);
         Adapters {
             speech,
             wake_word,
+            speaking,
             hearing: None,
             stt: Arc::new(Inert),
             thinking: Arc::new(Inert),

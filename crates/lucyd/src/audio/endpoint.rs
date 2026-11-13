@@ -68,6 +68,12 @@ impl Endpointer {
         self.state = State::Quiet;
     }
 
+    /// Whether an utterance is under way: speech has gone on long enough
+    /// to start one, and it hasn't ended.
+    pub fn speaking(&self) -> bool {
+        matches!(self.state, State::Speaking { .. })
+    }
+
     /// Takes the next frame of audio, returning an utterance if it ended.
     pub fn push(&mut self, frame: &[f32]) -> Option<SpeechSegment> {
         self.pending.extend_from_slice(frame);

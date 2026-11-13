@@ -39,7 +39,7 @@ fn the_wake_word_and_a_request_in_one_breath_send_only_the_request() {
 
     assert_eq!(next_state(&mut events).state, State::Listening);
     assert_eq!(lucyd.thinking.next_turn(), "what's the time?");
-    // The whole utterance, wake phrase and pre-roll included, reached STT.
+    // The whole utterance, Wake word and pre-roll included, reached STT.
     let segments = lucyd.stt.segments();
     assert_eq!(segments.len(), 1);
     let expected = ms(500 + 512 + 1024 + 700);
@@ -66,6 +66,32 @@ fn with_no_speech_after_the_wake_word_the_session_ends_after_8_seconds_with_a_cl
 }
 
 #[test]
+fn a_silence_timeout_shorter_than_8_seconds_ends_a_false_wake_sooner() {
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let mut events = lucyd.state_client();
+
+    lucyd.wake();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+
+    assert_eq!(next_state_within(&mut events, 3).state, State::Idle);
+}
+
+#[test]
+fn speech_under_way_holds_off_the_end_of_a_false_wake() {
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let mut events = lucyd.state_client();
+
+    // The utterance starts before the Wake word in it is recognised.
+    lucyd.start_speaking();
+    lucyd.wake();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    std::thread::sleep(ms(800));
+    lucyd.say("what's the time");
+
+    assert_eq!(lucyd.thinking.next_turn(), "what's the time");
+}
+
+#[test]
 fn a_silence_timeout_ends_with_a_closing_sound() {
     let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
     let mut events = lucyd.state_client();
@@ -89,7 +115,7 @@ fn ending_a_session_on_request_plays_no_closing_sound() {
 }
 
 #[test]
-fn the_wake_word_while_listening_is_ordinary_speech_with_the_phrase_stripped() {
+fn the_wake_word_while_listening_is_ordinary_speech_with_the_wake_word_stripped() {
     let lucyd = Harness::with_config(HEY_LUCY);
     let mut events = lucyd.state_client();
     lucyd.wake();
@@ -108,7 +134,7 @@ fn the_wake_word_while_listening_is_ordinary_speech_with_the_phrase_stripped() {
 }
 
 #[test]
-fn only_a_leading_wake_phrase_is_stripped() {
+fn only_a_leading_wake_word_is_stripped() {
     let lucyd = Harness::with_config(HEY_LUCY);
     let mut client = lucyd.client();
     client.start_session().unwrap();
@@ -122,16 +148,41 @@ fn only_a_leading_wake_phrase_is_stripped() {
 }
 
 #[test]
-fn the_wake_phrase_alone_is_no_speech() {
-    let lucyd = Harness::with_config(HEY_LUCY);
+fn the_wake_word_alone_is_no_speech() {
+    // A Plugin's question shows what was heard: the words, or "no answer"
+    // once the wait for one is over. That wait doesn't run while a reply
+    // is being transcribed, so the reply is always heard first.
+    let lucyd = Harness::with_config(&format!("{HEY_LUCY}[confirmation]\ntimeout_secs = 0.3\n"));
+    lucyd.install_plugin(
+        "asker",
+        "name = \"asker\"\nversion = \"0.1.0\"\nauthor = \"human\"\nsummary = \"Asks\"\n\
+         command = [\"./fixture-plugin\", \"ask\"]\n\n\
+         [[tools]]\nname = \"ask\"\nhandles = \"ask something\"\n",
+    );
+    lucyd.approve("asker");
     let mut client = lucyd.client();
     client.start_session().unwrap();
+    lucyd.say("find my album");
+    lucyd.thinking.next_turn();
+    let thinking = lucyd.thinking.clone();
+    let call = std::thread::spawn(move || {
+        thinking.call_tool_with(
+            "asker__ask",
+            serde_json::json!({"question": "Which album?"}),
+        )
+    });
+    lucyd.tts.next_sentence();
 
     lucyd.say("Hey Lucy.");
-    std::thread::sleep(ms(200));
-    lucyd.say("what's the weather");
+    lucyd.tts.finish_playing();
 
-    assert_eq!(lucyd.thinking.next_turn(), "what's the weather");
+    let result = call.join().unwrap().unwrap();
+    let said: String = result
+        .content
+        .iter()
+        .filter_map(|block| block.as_text().map(|text| text.text.clone()))
+        .collect();
+    assert_eq!(said, "no answer");
 }
 
 /// Waits up to `secs` for the next state event.

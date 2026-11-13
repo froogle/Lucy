@@ -176,6 +176,28 @@ fn an_approval_needs_an_open_session_to_ask_in() {
 
     assert!(outcome.is_err(), "{outcome:?}");
     assert!(!lucyd.state_dir().join("approvals.toml").exists());
+    // The Plugin wasn't started: starting it makes its state dir.
+    assert!(!lucyd.state_dir().join("plugins").join("notes").exists());
+}
+
+#[test]
+fn an_update_to_a_plugin_approved_without_its_manifest_kept_gets_the_full_summary() {
+    let lucyd = Harness::start();
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let folder = lucyd.install_plugin("notes", &manifest(false, ""));
+    // Approved before Approvals kept the Manifest.
+    lucyd.approve("notes");
+    std::fs::write(folder.join("manifest.toml"), manifest(true, "")).unwrap();
+    let _events = in_a_session(&lucyd);
+
+    let _update = lucyd.request_approval("notes");
+
+    assert!(lucyd
+        .tts
+        .next_sentence()
+        .starts_with("The notes Plugin needs your Approval. It handles repeat a note and save"));
+    // No diff against nothing on screen.
+    lucyd.notifier.assert_no_notification();
 }
 
 #[test]

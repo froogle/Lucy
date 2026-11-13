@@ -315,7 +315,7 @@ fn open_output(
     rms: Arc<AtomicU32>,
     events: mpsc::UnboundedSender<SpeakerEvent>,
 ) -> Result<Output, String> {
-    let device = audio::cpal::find_output(device)?;
+    let device = audio::cpal::find(audio::Direction::Output, device)?;
     let channels = device
         .default_output_config()
         .map_err(|e| e.to_string())?

@@ -35,7 +35,8 @@ pub enum Command {
     EndAfterSpeech(oneshot::Sender<Result<(), EndError>>),
     /// Ask the user something and hear their answer (Confirming). Questions
     /// are asked one at a time, in order. With no open Session, or if the
-    /// Session ends first, `reply` is dropped unanswered.
+    /// Session ends or the model process dies first, `reply` is dropped
+    /// unanswered.
     Ask(Ask),
 }
 
@@ -76,6 +77,10 @@ impl fmt::Display for SessionId {
 /// How long a Session opened by the Wake word waits for the first Turn.
 const WAKE_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// How often lucyd tries to open the microphone again while it is lost
+/// outside a Session.
+const REOPEN_MIC_EVERY: Duration = Duration::from_secs(1);
+
 pub struct StartError;
 pub struct EndError;
 
@@ -90,6 +95,8 @@ pub struct Runner {
     speech_open: bool,
     /// False once the wake-word source has gone away.
     wake_open: bool,
+    /// False once the source of whether the user is speaking has gone away.
+    speaking_open: bool,
     sessions_started: u64,
 }
 
@@ -111,6 +118,7 @@ impl Runner {
             files,
             speech_open: true,
             wake_open: true,
+            speaking_open: true,
             sessions_started: 0,
         }
     }
@@ -137,6 +145,12 @@ impl Runner {
                 // Speech outside a Session is ignored.
                 speech = self.adapters.speech.recv(), if self.speech_open => {
                     self.speech_open = speech.is_some();
+                }
+                // So the Wake word is heard again once a microphone is back.
+                () = mic_lost_for(&mut self.adapters.hearing, REOPEN_MIC_EVERY) => {
+                    if let Some(hearing) = &mut self.adapters.hearing {
+                        hearing.reopen();
+                    }
                 }
             }
         }
@@ -181,7 +195,7 @@ impl Runner {
         // The model has died and been opened again since the last Turn ended.
         let mut respawned = false;
         let silence_timeout = settings.session.silence_timeout_secs;
-        let wake_phrase = wake::phrase(&settings.wake_word);
+        let wake_word = wake::word(&settings.wake_word);
         let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(&devices.speaker, speaker_tx);
@@ -189,10 +203,16 @@ impl Runner {
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();
         let mut session = Session::new(confirmation.yes_phrases);
-        let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
+        // An utterance may have started before the Session opened, as one
+        // with the Wake word in it does.
+        if *self.adapters.speaking.borrow_and_update() {
+            session.handle(Input::Speaking(true));
+        }
+        let silence_timeout = Duration::from_secs_f64(silence_timeout);
+        let mut silence = SilenceTimer::new(silence_timeout);
         if woken {
             // A false wake clears quickly.
-            silence.first_timeout(WAKE_TIMEOUT);
+            silence.first_timeout(WAKE_TIMEOUT.min(silence_timeout));
         }
         silence.set_running(session.silence_timer_runs());
         // Questions waiting to be asked, and where the answer to the one
@@ -220,15 +240,34 @@ impl Runner {
                 input
             } else if let Some(ask) = answer_to.is_none().then(|| questions.pop_front()).flatten() {
                 if let Some(shown) = ask.shown {
-                    // It offers no action, so nothing listens for one.
-                    let (actions, _) = mpsc::unbounded_channel();
-                    self.adapters.notifier.notify(shown, actions);
+                    self.notify(shown);
                 }
                 answer_to = Some(ask.reply);
                 answer_timer.reset();
                 Input::Ask(ask.question)
             } else {
                 tokio::select! {
+                // What the model and the speaker report first: a Turn that
+                // ended, or a sentence that finished playing, before a
+                // request or a reply came in is seen to have ended first.
+                biased;
+                Some(event) = events.recv() => Input::Thinking(event),
+                Some(event) = speaker_events.recv() => match event {
+                    SpeakerEvent::Played => Input::Played,
+                    // Lucy can't say it, so she shows it.
+                    SpeakerEvent::Failed(sentence) => {
+                        unspoken.push(sentence);
+                        Input::Played
+                    }
+                    SpeakerEvent::Level(rms) => {
+                        self.buses.levels.publish(rms);
+                        continue;
+                    }
+                    SpeakerEvent::DeviceLost => {
+                        self.end_on_lost_device(Direction::Output, id);
+                        return;
+                    }
+                },
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         let _ = reply.send(Err(StartError));
@@ -259,6 +298,15 @@ impl Runner {
                         continue;
                     }
                 },
+                // After `speech`: an utterance is cut before the user stops
+                // speaking.
+                changed = self.adapters.speaking.changed(), if self.speaking_open => match changed {
+                    Ok(()) => Input::Speaking(*self.adapters.speaking.borrow_and_update()),
+                    Err(_) => {
+                        self.speaking_open = false;
+                        continue;
+                    }
+                },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
                     Some(()) => Input::WakeWord,
                     None => {
@@ -267,27 +315,10 @@ impl Runner {
                     }
                 },
                 Some(transcript) = transcripts.recv() => match transcript {
-                    Ok(text) => Input::Transcript(wake::strip(&text, &wake_phrase).to_owned()),
+                    Ok(text) => Input::Transcript(wake::strip(&text, &wake_word).to_owned()),
                     Err(SttError(e)) => {
                         eprintln!("lucyd: {e}");
                         Input::TranscribeFailed
-                    }
-                },
-                Some(event) = events.recv() => Input::Thinking(event),
-                Some(event) = speaker_events.recv() => match event {
-                    SpeakerEvent::Played => Input::Played,
-                    // Lucy can't say it, so she shows it.
-                    SpeakerEvent::Failed(sentence) => {
-                        unspoken.push(sentence);
-                        Input::Played
-                    }
-                    SpeakerEvent::Level(rms) => {
-                        self.buses.levels.publish(rms);
-                        continue;
-                    }
-                    SpeakerEvent::DeviceLost => {
-                        self.end_on_lost_device(Direction::Output, id);
-                        return;
                     }
                 },
                 () = mic_lost(&mut self.adapters.hearing) => {
@@ -313,7 +344,13 @@ impl Runner {
                         if let Some(turn) = session.pending_turn() {
                             model.send_turn(turn.to_owned());
                         }
-                        continue;
+                        // Questions go unanswered rather than linger: the
+                        // resent Turn asks again if it needs to.
+                        questions.clear();
+                        if answer_to.take().is_none() {
+                            continue;
+                        }
+                        Input::Withdrawn
                     }
                     _ => {
                         eprintln!("lucyd: the model process died again");
@@ -344,10 +381,7 @@ impl Runner {
             // Once the reply is over, one notification shows what of it
             // couldn't be said.
             if !unspoken.is_empty() && session.state() == State::Listening {
-                let notification = notifications::unspoken(&std::mem::take(&mut unspoken));
-                // It offers no action, so nothing listens for one.
-                let (actions, _) = mpsc::unbounded_channel();
-                self.adapters.notifier.notify(notification, actions);
+                self.notify(notifications::unspoken(&std::mem::take(&mut unspoken)));
             }
             for output in outputs {
                 match output {
@@ -407,6 +441,12 @@ async fn mic_lost(hearing: &mut Option<Hearing>) {
         Some(hearing) => hearing.lost().await,
         None => std::future::pending().await,
     }
+}
+
+/// Resolves once the microphone has been gone for `wait`.
+async fn mic_lost_for(hearing: &mut Option<Hearing>, wait: Duration) {
+    mic_lost(hearing).await;
+    tokio::time::sleep(wait).await;
 }
 
 /// A countdown that can be paused and resumed.

@@ -102,6 +102,7 @@ fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box
     adapters.stt = Arc::new(whisper);
     adapters.speech = ears.speech;
     adapters.wake_word = ears.wake_word;
+    adapters.speaking = ears.speaking;
     adapters.hearing = Some(ears.hearing);
     Ok(())
 }

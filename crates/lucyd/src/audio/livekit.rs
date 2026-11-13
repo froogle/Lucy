@@ -16,14 +16,17 @@ use super::{Error, WakeWord, SAMPLE_RATE};
 pub(crate) const BUNDLED_NAME: &str = "hey_livekit.onnx";
 const BUNDLED: &[u8] = include_bytes!("../../models/wake/hey_livekit.onnx");
 
-/// Writes the bundled model into `dir`, unless it is already there, and
-/// returns its path: the engine loads models from files only.
+/// Writes the bundled model into `dir`, unless it is already there as it
+/// is, and returns its path: the engine loads models from files only. It is
+/// written whole or not at all.
 pub fn install_bundled_wake_model(dir: &Path) -> io::Result<PathBuf> {
     let path = dir.join(BUNDLED_NAME);
-    let installed = std::fs::metadata(&path).is_ok_and(|m| m.len() == BUNDLED.len() as u64);
+    let installed = std::fs::read(&path).is_ok_and(|model| model == BUNDLED);
     if !installed {
         std::fs::create_dir_all(dir)?;
-        std::fs::write(&path, BUNDLED)?;
+        let temp = path.with_extension("onnx.new");
+        std::fs::write(&temp, BUNDLED)?;
+        std::fs::rename(&temp, &path)?;
     }
     Ok(path)
 }
