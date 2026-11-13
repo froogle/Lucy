@@ -17,6 +17,7 @@ fn main() -> ExitCode {
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,
+        adapters: lucyd::adapters::Adapters::inert(),
     }) {
         Ok(daemon) => daemon,
         Err(e) => {

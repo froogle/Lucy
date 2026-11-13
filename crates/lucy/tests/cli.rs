@@ -14,6 +14,7 @@ fn start_lucyd(runtime_dir: &Path) -> lucyd::Daemon {
     lucyd::spawn(lucyd::Options {
         socket_path: runtime_dir.join("lucy").join("lucyd.sock"),
         config: lucy_config::Config::default(),
+        adapters: lucyd::adapters::Adapters::inert(),
     })
     .unwrap()
 }

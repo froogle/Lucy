@@ -1,8 +1,10 @@
 //! lucyd: the one process that owns audio, the Session and every child
 //! process (ADR 0006). Everything else talks to it over the public socket.
 
+pub mod adapters;
 mod ipc;
 mod runner;
+mod session;
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -18,6 +20,7 @@ pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
     pub config: Config,
+    pub adapters: adapters::Adapters,
 }
 
 /// A running lucyd. Dropping it stops lucyd and removes the socket.
@@ -31,6 +34,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
         config: _,
+        adapters,
     } = options;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -42,7 +46,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         session_id: None,
     });
     let (sessions, commands) = mpsc::unbounded_channel();
-    runtime.spawn(runner::Runner::new(commands, status).run());
+    runtime.spawn(runner::Runner::new(commands, status, adapters).run());
     runtime.spawn(ipc::serve(listener, status_rx, sessions));
 
     Ok(Daemon {
