@@ -31,7 +31,10 @@ fn commands_say_plainly_when_lucyd_is_not_running() {
 
         assert!(!output.status.success(), "lucy {command} should fail");
         let stderr = stderr(&output);
-        assert!(stderr.contains("lucyd isn't running"), "{command}: {stderr}");
+        assert!(
+            stderr.contains("lucyd isn't running"),
+            "{command}: {stderr}"
+        );
         assert!(
             stderr.contains("systemctl --user start lucyd"),
             "{command}: {stderr}"

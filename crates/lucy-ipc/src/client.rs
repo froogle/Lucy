@@ -120,7 +120,10 @@ pub enum Error {
     /// lucyd closed the connection.
     Closed,
     /// lucyd answered with a JSON-RPC error.
-    Rpc { code: i64, message: String },
+    Rpc {
+        code: i64,
+        message: String,
+    },
     /// lucyd sent something this client doesn't understand.
     Protocol(String),
     Io(io::Error),

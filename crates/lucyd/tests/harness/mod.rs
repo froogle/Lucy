@@ -37,7 +37,9 @@ impl Harness {
     /// A client that has completed the `hello` handshake.
     pub fn client(&self) -> Client {
         let client = Client::connect(self.socket_path(), "harness", None).expect("hello succeeds");
-        client.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         client
     }
 
@@ -46,7 +48,9 @@ impl Harness {
     pub fn raw_exchange(&self, line: &str) -> serde_json::Value {
         use std::io::{BufRead, BufReader, Write};
         let mut stream = UnixStream::connect(self.socket_path()).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         writeln!(stream, "{line}").unwrap();
         let mut reply = String::new();
         BufReader::new(stream).read_line(&mut reply).unwrap();

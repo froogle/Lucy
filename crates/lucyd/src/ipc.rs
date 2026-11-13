@@ -149,7 +149,11 @@ impl Connection {
         }))
     }
 
-    async fn respond(&mut self, id: Value, outcome: Result<Value, RpcError>) -> std::io::Result<()> {
+    async fn respond(
+        &mut self,
+        id: Value,
+        outcome: Result<Value, RpcError>,
+    ) -> std::io::Result<()> {
         let message = match outcome {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err(e) => json!({
