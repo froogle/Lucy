@@ -3,6 +3,7 @@
 //! lucyd runs with no config file at all; every setting has a default here.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ pub struct Config {
     pub tiers: Tiers,
     pub audio: Audio,
     pub endpointing: Endpointing,
+    pub stt: Stt,
     pub whisper: Whisper,
     pub wake_word: WakeWord,
     pub confirmation: Confirmation,
@@ -42,6 +44,7 @@ impl Default for Config {
             tiers: Tiers::default(),
             audio: Audio::default(),
             endpointing: Endpointing::default(),
+            stt: Stt::default(),
             whisper: Whisper::default(),
             wake_word: WakeWord::default(),
             confirmation: Confirmation::default(),
@@ -230,6 +233,59 @@ impl Default for Endpointing {
             max_utterance_secs: 30.0,
         }
     }
+}
+
+/// `[stt]`: which STT Provider turns utterances into text.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Stt {
+    pub kind: SttKind,
+}
+
+/// An STT Provider.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SttKind {
+    /// whisper.cpp inside lucyd, set up by `[whisper]`.
+    #[default]
+    Whisper,
+    /// The user's own Superwhisper, through its `superwhisper` CLI.
+    Superwhisper,
+}
+
+impl SttKind {
+    /// The STT Providers setup offers. Superwhisper is offered only when an
+    /// executable `superwhisper` is on `path` (a `$PATH` value).
+    pub fn options(path: Option<&OsStr>) -> Vec<SttKind> {
+        let superwhisper = path.is_some_and(|path| {
+            std::env::split_paths(path).any(|dir| is_executable(&dir.join("superwhisper")))
+        });
+        let mut options = vec![SttKind::Whisper];
+        if superwhisper {
+            options.push(SttKind::Superwhisper);
+        }
+        options
+    }
+
+    /// What the user should know before choosing it, one warning each.
+    pub fn warnings(self) -> &'static [&'static str] {
+        match self {
+            SttKind::Whisper => &[],
+            SttKind::Superwhisper => &[
+                "Superwhisper is slower: it adds about 250 ms between the end of \
+                 what you say and Lucy hearing it.",
+                "Superwhisper always runs what you say through its cleanup \
+                 language model, which is part of that delay.",
+                "Superwhisper saves everything you say to Lucy in its history, \
+                 kept for as long as its history settings say.",
+            ],
+        }
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 /// `[whisper]`: the `whisper` STT Provider.
@@ -541,6 +597,47 @@ mod tests {
             Some(Path::new("/models/computer.onnx"))
         );
         assert_eq!(config.wake_word.threshold, 0.5);
+    }
+
+    #[test]
+    fn stt_is_whisper_unless_config_chooses_superwhisper() {
+        assert_eq!(Config::default().stt.kind, SttKind::Whisper);
+
+        let config = parse("[stt]\nkind = \"superwhisper\"\n");
+
+        assert_eq!(config.stt.kind, SttKind::Superwhisper);
+    }
+
+    #[test]
+    fn superwhisper_is_offered_only_when_it_is_installed() {
+        let empty = tempfile::tempdir().unwrap();
+        let installed = tempfile::tempdir().unwrap();
+        let program = installed.path().join("superwhisper");
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        let path = |dirs: &[&Path]| std::env::join_paths(dirs).unwrap();
+        let options = |dirs: &[&Path]| SttKind::options(Some(&path(dirs)));
+
+        assert_eq!(options(&[empty.path()]), [SttKind::Whisper]);
+        // Not executable, so not installed.
+        assert_eq!(options(&[installed.path()]), [SttKind::Whisper]);
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            options(&[empty.path(), installed.path()]),
+            [SttKind::Whisper, SttKind::Superwhisper]
+        );
+        assert_eq!(SttKind::options(None), [SttKind::Whisper]);
+    }
+
+    #[test]
+    fn superwhisper_warns_of_its_latency_cleanup_model_and_history() {
+        assert!(SttKind::Whisper.warnings().is_empty());
+
+        let warnings = SttKind::Superwhisper.warnings().join(" ");
+
+        for topic in ["250 ms", "cleanup", "history"] {
+            assert!(warnings.contains(topic), "{warnings}");
+        }
     }
 
     #[test]
