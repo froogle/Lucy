@@ -17,7 +17,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::adapters::Thinking;
 use crate::notifications::{IndicatorClaim, Indicators};
 use crate::runner::Command;
-use crate::status::{LevelBus, StatusBus};
+use crate::status::Buses;
 
 /// What `providers.status` and `provider.check` need.
 #[derive(Clone)]
@@ -29,8 +29,7 @@ pub struct Providers {
 
 pub async fn serve(
     listener: UnixListener,
-    status: StatusBus,
-    levels: LevelBus,
+    buses: Buses,
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
@@ -40,8 +39,7 @@ pub async fn serve(
             Ok((stream, _)) => {
                 tokio::spawn(connection(
                     stream,
-                    status.clone(),
-                    levels.clone(),
+                    buses.clone(),
                     indicators.clone(),
                     sessions.clone(),
                     providers.clone(),
@@ -54,8 +52,7 @@ pub async fn serve(
 
 struct Connection {
     writer: OwnedWriteHalf,
-    status: StatusBus,
-    levels: LevelBus,
+    buses: Buses,
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
@@ -71,8 +68,7 @@ struct Connection {
 
 async fn connection(
     stream: UnixStream,
-    status: StatusBus,
-    levels: LevelBus,
+    buses: Buses,
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
@@ -81,8 +77,7 @@ async fn connection(
     let mut lines = BufReader::new(reader).lines();
     let mut conn = Connection {
         writer,
-        status,
-        levels,
+        buses,
         indicators,
         sessions,
         providers,
@@ -166,7 +161,7 @@ impl Connection {
         let outcome = self.dispatch(method, params).await;
         self.respond(id, outcome).await?;
         if self.state_subscribed && !was_subscribed {
-            let (status, state_events) = self.status.subscribe();
+            let (status, state_events) = self.buses.status.subscribe();
             self.state_events = Some(state_events);
             self.send_state(status).await?;
         }
@@ -194,14 +189,14 @@ impl Connection {
             ));
         }
         match method {
-            "status" => Ok(json!(self.status.snapshot())),
+            "status" => Ok(json!(self.buses.status.snapshot())),
             "subscribe" => {
                 let subscribe: Subscribe = parse_params(params)?;
                 if subscribe.topics.contains(&Topic::State) {
                     self.state_subscribed = true;
                 }
                 if subscribe.topics.contains(&Topic::Level) && self.level_events.is_none() {
-                    self.level_events = Some(self.levels.subscribe());
+                    self.level_events = Some(self.buses.levels.subscribe());
                 }
                 Ok(json!({}))
             }

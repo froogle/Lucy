@@ -1,24 +1,24 @@
 //! Runs Sessions: owns the published status and does the I/O that the
 //! `session` state machine asks for.
 
+mod start;
+
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use lucy_config::Tier;
 use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::{Adapters, SessionModel, SpeakerEvent, ThinkingEvent};
-use crate::desktop::Desktop;
-use crate::mcp::{Caller, Relays};
+use crate::adapters::{Adapters, SpeakerEvent, ThinkingEvent};
+use crate::mcp::Relays;
 use crate::notifications;
-use crate::persona::{self, Loaded, Persona};
+use crate::persona;
 use crate::plugins;
 use crate::session::{Input, Output, Session};
-use crate::status::{LevelBus, StatusBus};
+use crate::status::Buses;
+pub use start::SessionFiles;
 
 /// A request from the public socket or the MCP server.
 pub enum Command {
@@ -44,39 +44,32 @@ pub struct EndError;
 
 pub struct Runner {
     commands: mpsc::UnboundedReceiver<Command>,
-    status: StatusBus,
-    levels: LevelBus,
+    buses: Buses,
     adapters: Adapters,
     relays: Relays,
     plugin_host: Arc<plugins::Host>,
-    persona: Persona,
-    config_path: PathBuf,
+    files: SessionFiles,
     /// False once the speech source has gone away.
     speech_open: bool,
     sessions_started: u64,
 }
 
 impl Runner {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commands: mpsc::UnboundedReceiver<Command>,
-        status: StatusBus,
-        levels: LevelBus,
+        buses: Buses,
         adapters: Adapters,
         relays: Relays,
         plugin_host: Arc<plugins::Host>,
-        persona: Persona,
-        config_path: PathBuf,
+        files: SessionFiles,
     ) -> Self {
         Runner {
             commands,
-            status,
-            levels,
+            buses,
             adapters,
             relays,
             plugin_host,
-            persona,
-            config_path,
+            files,
             speech_open: true,
             sessions_started: 0,
         }
@@ -124,47 +117,13 @@ impl Runner {
         plugin_tools: Arc<plugins::SessionTools>,
     ) {
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        // Read afresh each Session, so hand edits apply at the next one.
-        let persona = self.persona.load().unwrap_or_else(|e| {
-            eprintln!("lucyd: can't load {}: {e}", self.persona.path().display());
-            Loaded::fallback()
-        });
-        let config = lucy_config::load(&self.config_path);
-        let settings = config.as_ref().cloned().unwrap_or_default();
-        if let Some(hearing) = &mut self.adapters.hearing {
-            hearing.configure(&settings.audio, &settings.endpointing);
-        }
-        let desktop = Desktop {
-            launcher: self.adapters.launcher.clone(),
-            applications: self.adapters.applications.clone(),
-            launcher_command: settings.desktop.launcher,
-        };
-        let mut instructions = persona.text;
-        if let Some(report) = plugin_tools.scan_report() {
-            instructions = format!("{instructions}\n\n{report}");
-        }
-        // Revoked when the Session ends.
-        let (relay, _token) = self
-            .relays
-            .issue(Caller::SessionModel, plugin_tools, desktop);
-        let provider = match &config {
-            Ok(config) => config.provider(Tier::Fast),
-            Err(e) => Err(format!(
-                "I {}. Fix the file and wake me again.",
-                e.to_string().lines().next().unwrap_or_default()
-            )),
-        };
-        let mut model: Box<dyn SessionModel> = match provider {
-            Ok(provider) => self
-                .adapters
-                .thinking
-                .open(provider, events_tx, relay, instructions),
-            Err(reason) => {
-                eprintln!("lucyd: {reason}");
-                let _ = events_tx.send(ThinkingEvent::Unavailable(reason));
-                Box::new(Unopened { _events: events_tx })
-            }
-        };
+        // The token is revoked when the Session ends.
+        let start::Started {
+            mut model,
+            token: _token,
+            settings,
+            first_run,
+        } = self.start(plugin_tools, events_tx);
         let silence_timeout = settings.session.silence_timeout_secs;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(speaker_tx);
@@ -176,7 +135,7 @@ impl Runner {
         // Sent before anything the user says. The first run lasts until the
         // introduction's Turn has ended, so a Provider that can't be used
         // doesn't use it up.
-        let mut introducing = persona.first_run;
+        let mut introducing = first_run;
         // Sentences of the current reply that TTS couldn't say.
         let mut unspoken = Vec::new();
         let mut opening = introducing.then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
@@ -225,7 +184,7 @@ impl Runner {
                         Input::Played
                     }
                     SpeakerEvent::Level(rms) => {
-                        self.levels.publish(rms);
+                        self.buses.levels.publish(rms);
                         continue;
                     }
                 },
@@ -237,8 +196,9 @@ impl Runner {
             };
             if introducing && matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
                 introducing = false;
-                if let Err(e) = self.persona.introduced() {
-                    eprintln!("lucyd: can't save {}: {e}", self.persona.path().display());
+                if let Err(e) = self.files.persona.introduced() {
+                    let path = self.files.persona.path().display();
+                    eprintln!("lucyd: can't save {path}: {e}");
                 }
             }
             let outputs = session.handle(input);
@@ -275,20 +235,11 @@ impl Runner {
     }
 
     fn publish(&self, state: State, session_id: Option<SessionId>) {
-        self.status.publish(Status {
+        self.buses.status.publish(Status {
             state,
             session_id: session_id.map(|id| id.to_string()),
         });
     }
-}
-
-/// Stands in for the model when no Provider could be opened.
-struct Unopened {
-    _events: mpsc::UnboundedSender<ThinkingEvent>,
-}
-
-impl SessionModel for Unopened {
-    fn send_turn(&mut self, _text: String) {}
 }
 
 /// A countdown that can be paused and resumed.

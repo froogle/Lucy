@@ -70,11 +70,13 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let listener = runtime.block_on(async { bind(&socket_path) })?;
     let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
-    let status = status::StatusBus::new();
-    let levels = status::LevelBus::new();
+    let buses = status::Buses {
+        status: status::StatusBus::new(),
+        levels: status::LevelBus::new(),
+    };
     let (sessions, commands) = mpsc::unbounded_channel();
     let (indicators, fallback) =
-        notifications::fallback(&status, adapters.notifier.clone(), sessions.clone());
+        notifications::fallback(&buses.status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
     let providers = ipc::Providers {
         thinking: adapters.thinking.clone(),
@@ -83,20 +85,19 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     runtime.spawn(
         runner::Runner::new(
             commands,
-            status.clone(),
-            levels.clone(),
+            buses.clone(),
             adapters,
             relays.clone(),
             plugins::Host::new(plugin_paths),
-            persona.clone(),
-            config_path,
+            runner::SessionFiles {
+                persona: persona.clone(),
+                config_path,
+            },
         )
         .run(),
     );
     runtime.spawn(mcp::serve(mcp_listener, relays, persona, sessions.clone()));
-    runtime.spawn(ipc::serve(
-        listener, status, levels, indicators, sessions, providers,
-    ));
+    runtime.spawn(ipc::serve(listener, buses, indicators, sessions, providers));
 
     Ok(Daemon {
         socket_path,

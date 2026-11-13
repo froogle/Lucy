@@ -56,6 +56,13 @@ impl StatusBus {
     }
 }
 
+/// The buses lucyd publishes to its clients.
+#[derive(Clone)]
+pub struct Buses {
+    pub status: StatusBus,
+    pub levels: LevelBus,
+}
+
 /// Lucy's voice level while she speaks. A subscriber that falls behind skips
 /// the levels it missed: only the latest ones matter to a meter.
 #[derive(Clone)]

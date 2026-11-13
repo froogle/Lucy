@@ -224,7 +224,7 @@ impl Thinking for Inert {
         _relay: Relay,
         _instructions: String,
     ) -> Box<dyn SessionModel> {
-        Box::new(InertSessionModel { _events: events })
+        Box::new(InertSessionModel::new(events))
     }
 
     fn health(&self, _provider: &Provider) -> Result<(), String> {
@@ -238,8 +238,16 @@ impl Thinking for Inert {
 
 const INERT_THINKING: &str = "This lucyd has no Thinking Provider.";
 
-struct InertSessionModel {
+/// A model that hears nothing and says nothing: it stands in for one that
+/// couldn't be opened.
+pub(crate) struct InertSessionModel {
     _events: mpsc::UnboundedSender<ThinkingEvent>,
+}
+
+impl InertSessionModel {
+    pub(crate) fn new(events: mpsc::UnboundedSender<ThinkingEvent>) -> Self {
+        InertSessionModel { _events: events }
+    }
 }
 
 impl SessionModel for InertSessionModel {
