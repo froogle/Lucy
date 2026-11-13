@@ -10,6 +10,7 @@ use tokio::time::Instant;
 
 use crate::adapters::Adapters;
 use crate::mcp::{Caller, Relays};
+use crate::persona::{self, Loaded, Persona};
 use crate::session::{Input, Output, Session};
 use crate::status::StatusBus;
 
@@ -40,6 +41,7 @@ pub struct Runner {
     status: StatusBus,
     adapters: Adapters,
     relays: Relays,
+    persona: Persona,
     silence_timeout: Duration,
     /// False once the speech source has gone away.
     speech_open: bool,
@@ -52,6 +54,7 @@ impl Runner {
         status: StatusBus,
         adapters: Adapters,
         relays: Relays,
+        persona: Persona,
         silence_timeout: Duration,
     ) -> Self {
         Runner {
@@ -59,6 +62,7 @@ impl Runner {
             status,
             adapters,
             relays,
+            persona,
             silence_timeout,
             speech_open: true,
             sessions_started: 0,
@@ -97,7 +101,12 @@ impl Runner {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // Revoked when the Session ends.
         let (relay, _token) = self.relays.issue(Caller::SessionModel);
-        let mut model = self.adapters.thinking.open(events_tx, relay);
+        // Read afresh each Session, so hand edits apply at the next one.
+        let persona = self.persona.load().unwrap_or_else(|e| {
+            eprintln!("lucyd: can't load {}: {e}", self.persona.path().display());
+            Loaded::fallback()
+        });
+        let mut model = self.adapters.thinking.open(events_tx, relay, persona.text);
         let (played_tx, mut played) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(played_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
@@ -105,11 +114,19 @@ impl Runner {
         let mut silence = SilenceTimer::new(self.silence_timeout);
         silence.set_running(session.silence_timer_runs());
 
+        // Sent before anything the user says.
+        let mut opening = persona
+            .created
+            .then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
+
         self.publish(session.state(), Some(id));
         let _ = started.send(Ok(id));
         loop {
             let mut segment = None;
-            let input = tokio::select! {
+            let input = if let Some(input) = opening.take() {
+                input
+            } else {
+                tokio::select! {
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         let _ = reply.send(Err(StartError));
@@ -142,6 +159,7 @@ impl Runner {
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
                     self.publish(State::Idle, None);
                     return;
+                }
                 }
             };
             for output in session.handle(input) {

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use lucy_config::Config;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Notification, NotificationAction, Notifier, Relay, SessionModel, Speaker,
+    Adapters, Launcher, Notification, NotificationAction, Notifier, Relay, SessionModel, Speaker,
     SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult};
@@ -33,28 +33,54 @@ pub struct Harness {
     pub thinking: FakeThinking,
     pub tts: FakeTts,
     pub notifier: FakeNotifier,
+    pub launcher: FakeLauncher,
+    /// Where lucyd looks for desktop entries: the user's dir, then the
+    /// system's.
+    applications: [PathBuf; 2],
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
+    persona_path: PathBuf,
     _dir: tempfile::TempDir,
 }
 
 impl Harness {
-    /// Starts lucyd with default config and a socket in a fresh runtime dir.
+    /// Starts lucyd with default config and a socket in a fresh runtime dir,
+    /// for a user who already has a Persona.
     pub fn start() -> Harness {
         Harness::with_config(Config::default())
     }
 
     pub fn with_config(config: Config) -> Harness {
+        Harness::build(config, Some("You are Lucy."))
+    }
+
+    /// Starts lucyd for a user who has never had a Session: no `persona.md`.
+    pub fn first_run() -> Harness {
+        Harness::build(Config::default(), None)
+    }
+
+    fn build(config: Config, persona: Option<&str>) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
+        let persona_path = dir.path().join("config").join("lucy").join("persona.md");
+        if let Some(persona) = persona {
+            std::fs::create_dir_all(persona_path.parent().unwrap()).unwrap();
+            std::fs::write(&persona_path, persona).unwrap();
+        }
         let (speech, speech_rx) = mpsc::unbounded_channel();
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
         let notifier = FakeNotifier::new();
+        let launcher = FakeLauncher::default();
+        let applications = ["applications", "system-applications"].map(|d| dir.path().join(d));
+        for dir in &applications {
+            std::fs::create_dir(dir).unwrap();
+        }
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config,
+            persona_path: persona_path.clone(),
             lucy_program: lucy_binary(),
             adapters: Adapters {
                 speech: speech_rx,
@@ -62,6 +88,8 @@ impl Harness {
                 thinking: Box::new(thinking.clone()),
                 tts: Box::new(tts.clone()),
                 notifier: Arc::new(notifier.clone()),
+                launcher: Arc::new(launcher.clone()),
+                applications: applications.to_vec(),
             },
         })
         .expect("lucyd starts");
@@ -72,7 +100,10 @@ impl Harness {
             thinking,
             tts,
             notifier,
+            launcher,
+            applications,
             bus: Arc::default(),
+            persona_path,
             _dir: dir,
         };
         harness.record_bus();
@@ -87,6 +118,11 @@ impl Harness {
         self.daemon.mcp_socket_path()
     }
 
+    /// The user's `persona.md`.
+    pub fn persona_path(&self) -> &Path {
+        &self.persona_path
+    }
+
     /// Runs `lucy mcp-relay` against lucyd's MCP socket with `args` after the
     /// socket option, and no input.
     pub fn relay(&self, args: &[&str]) -> Output {
@@ -98,6 +134,17 @@ impl Harness {
             .stdin(Stdio::null())
             .output()
             .unwrap()
+    }
+
+    /// Installs a user's desktop entry named `file_name`, of type
+    /// Application, with the given `[Desktop Entry]` keys. Returns its path.
+    pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
+        write_desktop_entry(&self.applications[0], file_name, keys)
+    }
+
+    /// Installs a system-wide desktop entry, as `desktop_entry` does.
+    pub fn system_desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
+        write_desktop_entry(&self.applications[1], file_name, keys)
     }
 
     /// A client that has completed the `hello` handshake.
@@ -200,6 +247,18 @@ impl Harness {
     }
 }
 
+/// Writes a desktop entry of type Application with `keys`; a `Type` key in
+/// `keys` overrides it.
+fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
+    let path = dir.join(file_name);
+    std::fs::write(
+        &path,
+        format!("[Desktop Entry]\nType=Application\n{keys}\n"),
+    )
+    .unwrap();
+    path
+}
+
 /// The next event, which must be a `state` event.
 pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {
@@ -282,6 +341,8 @@ pub struct FakeThinking {
     events: Arc<Mutex<Option<mpsc::UnboundedSender<ThinkingEvent>>>>,
     /// How the open SessionModel reaches Lucy's tools.
     relay: Arc<Mutex<Option<Relay>>>,
+    /// The instructions the open SessionModel was given.
+    instructions: Arc<Mutex<Option<String>>>,
     streamed: Arc<Mutex<Vec<String>>>,
 }
 
@@ -293,6 +354,7 @@ impl FakeThinking {
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
             relay: Arc::default(),
+            instructions: Arc::default(),
             streamed: Arc::default(),
         }
     }
@@ -321,11 +383,32 @@ impl FakeThinking {
         self.send(ThinkingEvent::TurnEnd);
     }
 
+    /// The instructions the last SessionModel was opened with.
+    pub fn instructions(&self) -> String {
+        self.instructions
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a SessionModel was opened")
+    }
+
     /// The model calls one of Lucy's tools through the real relay.
     pub fn call_tool(&self, name: &str) -> Result<CallToolResult, String> {
+        self.call_tool_with(name, serde_json::json!({}))
+    }
+
+    /// The model calls one of Lucy's tools with `arguments`, a JSON object.
+    pub fn call_tool_with(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, String> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("tool arguments are an object");
+        };
         self.with_mcp(|client| async move {
             client
-                .call_tool(CallToolRequestParams::new(name.to_owned()))
+                .call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -392,9 +475,11 @@ impl Thinking for FakeThinking {
         &self,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
+        instructions: String,
     ) -> Box<dyn SessionModel> {
         *self.events.lock().unwrap() = Some(events);
         *self.relay.lock().unwrap() = Some(relay);
+        *self.instructions.lock().unwrap() = Some(instructions);
         Box::new(FakeSessionModel {
             turns: self.turns_tx.clone(),
         })
@@ -522,5 +607,36 @@ impl Notifier for FakeNotifier {
             *self.offered.lock().unwrap() = Some((action, actions));
         }
         let _ = self.shown_tx.send(notification);
+    }
+}
+
+/// A launcher that records what it was asked to open instead of opening it.
+#[derive(Clone, Default)]
+pub struct FakeLauncher {
+    opened: Arc<Mutex<Vec<String>>>,
+    launched: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+impl FakeLauncher {
+    /// Every URL opened so far.
+    pub fn opened(&self) -> Vec<String> {
+        self.opened.lock().unwrap().clone()
+    }
+
+    /// The desktop entry of every app launched so far.
+    pub fn launched(&self) -> Vec<PathBuf> {
+        self.launched.lock().unwrap().clone()
+    }
+}
+
+impl Launcher for FakeLauncher {
+    fn open_url(&self, url: &str) -> std::io::Result<()> {
+        self.opened.lock().unwrap().push(url.to_owned());
+        Ok(())
+    }
+
+    fn launch(&self, entry: &Path) -> std::io::Result<()> {
+        self.launched.lock().unwrap().push(entry.to_owned());
+        Ok(())
     }
 }

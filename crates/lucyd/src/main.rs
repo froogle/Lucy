@@ -32,9 +32,16 @@ fn main() -> ExitCode {
     ));
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
+    adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher::new(
+        config.desktop.launcher.clone(),
+    ));
+    adapters.applications = lucyd::desktop_entries::xdg_dirs();
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,
+        persona_path: lucy_config::xdg_dir("XDG_CONFIG_HOME", ".config")
+            .join("lucy")
+            .join("persona.md"),
         lucy_program,
         adapters,
     }) {
