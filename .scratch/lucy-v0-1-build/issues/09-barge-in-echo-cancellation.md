@@ -8,7 +8,7 @@ Spec: Session state machine (Barge-in); Audio pipeline (AEC, VAD gate).
 
 **Seams:** uses `WakeWord`, its harness fake and `session::Input::WakeWord` (owned by 07); uses the dead-process `ThinkingEvent` and its `FakeThinking` helper (owned by 11); uses the Confirming step in `session::Session` (owned by 14); uses `SessionModel::interrupt` (owned by 18), adding Claude's implementation; extends `Speaker` and `SpeakerEvent` (owned by 06, resolved)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Gate: p ≥ 0.7 for 300 ms, or p ≥ 0.85 for 500 ms while AEC is unconverged (ERLE < 10 dB or first 2 s); window covers TTS plus a 300 ms tail
 - [ ] `barge_in = "speech" | "wake_word"` (default `speech`); on PulseAudio or ALSA, Barge-in is off unless forced, with a warning
@@ -22,3 +22,5 @@ Spec: Session state machine (Barge-in); Audio pipeline (AEC, VAD gate).
 ## Comments
 
 From the slice 4 review: on a Barge-in the runner must call `SessionModel::interrupt`. Codex's implementation is done (ticket 18); Claude's is still empty, and this ticket adds it.
+
+Resolved on `lucy-v0-1-slice-5` (5cf704a..5caafa4). Gate in `crates/lucyd/src/audio/gate.rs`; canceller is `sonora` (pure-Rust AEC3) behind `EchoCanceller`, not the C++ `webrtc-audio-processing` (user decision; spec updated; wayfinder 23 compares them). Config is a `[barge_in]` table (`mode`, `force`, gate values; spec updated). A Barge-in before anything played sends `[You were interrupted]` without the "heard" clause. Claude's `SessionModel::interrupt` uses the stream-json control interrupt, falling back to SIGINT plus `--resume <session_id>`; since resuming needs claude to persist the conversation, lucyd deletes Lucy's claude transcripts at Session/Delegate end and on shutdown (user decision; spec updated). Not yet checked with a person: AEC and gate thresholds on real speakers and headphones, the duck/stop/flush in `playback.rs`, and a live claude interrupt.

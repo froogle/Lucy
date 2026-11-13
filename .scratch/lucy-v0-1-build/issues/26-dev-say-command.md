@@ -8,7 +8,7 @@ Spec: Public IPC contract; Providers (Piper). Raised by the slice 3 retro: the e
 
 **Seams:** owns IPC `test.voice_preview` (also used by 20); uses `Tts`/`Speaker` and `[audio] speaker` (owned by 06 and 11, resolved)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `lucy say "hello"` is heard through lucyd's Speaker in the running voice, between the Start and Closing sounds, and exits 0 once playback ends
 - [ ] Refused while a Session is open, while another Voice preview plays, and for empty text
@@ -57,3 +57,5 @@ lucyd only speaks inside a Session. The spec's public IPC request list already n
 - A flag to turn the Start and Closing sounds off.
 - `test.mic_level` and `test.wake_word` (ticket 20).
 - Any TUI work.
+
+Resolved on `lucy-v0-1-slice-5` (5cf704a..5caafa4). `crates/lucyd/src/runner/preview.rs`; `SpeakerEvent::Failed` now carries `{ sentence, reason }`. New error codes `BUSY`, `INTERRUPTED`, `TTS_FAILED`. `test.voice_preview` takes an optional `voice` (from 20). Not yet heard on a real speaker; real Piper's failure reason reads awkwardly ("Lucy couldn't say it: Piper isn't installed, so replies are shown as text").
