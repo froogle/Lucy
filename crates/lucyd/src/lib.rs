@@ -3,6 +3,8 @@
 
 pub mod adapters;
 pub mod claude;
+mod desktop;
+mod desktop_entries;
 mod ipc;
 mod mcp;
 mod runner;
@@ -53,6 +55,10 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
+    let desktop = desktop::Desktop {
+        launcher: adapters.launcher.clone(),
+        applications: adapters.applications.clone(),
+    };
     let (sessions, commands) = mpsc::unbounded_channel();
     runtime.spawn(
         runner::Runner::new(
@@ -64,7 +70,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         )
         .run(),
     );
-    runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
+    runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone(), desktop));
     runtime.spawn(ipc::serve(listener, status, sessions));
 
     Ok(Daemon {

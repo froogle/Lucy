@@ -19,6 +19,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::adapters::Relay;
+use crate::desktop::Desktop;
 use crate::runner::Command;
 
 /// Who a token was issued to. Each sees a different set of tools.
@@ -106,11 +107,17 @@ pub async fn serve(
     listener: UnixListener,
     relays: Relays,
     commands: mpsc::UnboundedSender<Command>,
+    desktop: Desktop,
 ) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(connection(stream, relays.tokens.clone(), commands.clone()));
+                tokio::spawn(connection(
+                    stream,
+                    relays.tokens.clone(),
+                    commands.clone(),
+                    desktop.clone(),
+                ));
             }
             Err(e) => eprintln!("lucyd: MCP accept failed: {e}"),
         }
@@ -121,6 +128,7 @@ async fn connection(
     mut stream: UnixStream,
     tokens: Tokens,
     commands: mpsc::UnboundedSender<Command>,
+    desktop: Desktop,
 ) {
     let Some(token) = read_token(&mut stream).await else {
         return;
@@ -136,6 +144,7 @@ async fn connection(
         token,
         tokens,
         commands,
+        desktop,
     };
     if let Ok(service) = tools.serve(stream).await {
         let _ = service.waiting().await;
@@ -159,6 +168,7 @@ struct Tools {
     token: String,
     tokens: Tokens,
     commands: mpsc::UnboundedSender<Command>,
+    desktop: Desktop,
 }
 
 impl Tools {
@@ -205,7 +215,7 @@ impl ServerHandler for Tools {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let tools = match self.caller()? {
-            Caller::SessionModel => vec![end_session_tool()],
+            Caller::SessionModel => [vec![end_session_tool()], Desktop::tools()].concat(),
             Caller::Delegate => vec![],
         };
         Ok(ListToolsResult::with_all_items(tools))
@@ -216,12 +226,18 @@ impl ServerHandler for Tools {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let arguments = request.arguments.unwrap_or_default();
         match (self.caller()?, &*request.name) {
             (Caller::SessionModel, "end_session") => Ok(self.end_session().await.into()),
-            (_, name) => Err(ErrorData::invalid_params(
-                format!("no tool named {name}"),
-                None,
-            )),
+            (Caller::SessionModel, name) => match self.desktop.call(name, &arguments).await {
+                Some(result) => Ok(result.into()),
+                None => Err(no_tool(name)),
+            },
+            (_, name) => Err(no_tool(name)),
         }
     }
+}
+
+fn no_tool(name: &str) -> ErrorData {
+    ErrorData::invalid_params(format!("no tool named {name}"), None)
 }

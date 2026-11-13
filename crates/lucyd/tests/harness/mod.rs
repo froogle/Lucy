@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use lucy_config::Config;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
+    Adapters, Launcher, Relay, SessionModel, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent,
+    Tts,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult};
 use rmcp::service::RunningService;
@@ -31,6 +32,9 @@ pub struct Harness {
     pub stt: FakeStt,
     pub thinking: FakeThinking,
     pub tts: FakeTts,
+    pub launcher: FakeLauncher,
+    /// Where lucyd looks for desktop entries.
+    applications: PathBuf,
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
     _dir: tempfile::TempDir,
@@ -49,6 +53,9 @@ impl Harness {
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
+        let launcher = FakeLauncher::default();
+        let applications = dir.path().join("applications");
+        std::fs::create_dir(&applications).unwrap();
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config,
@@ -58,6 +65,8 @@ impl Harness {
                 stt: Arc::new(stt.clone()),
                 thinking: Box::new(thinking.clone()),
                 tts: Box::new(tts.clone()),
+                launcher: Arc::new(launcher.clone()),
+                applications: vec![applications.clone()],
             },
         })
         .expect("lucyd starts");
@@ -67,6 +76,8 @@ impl Harness {
             stt,
             thinking,
             tts,
+            launcher,
+            applications,
             bus: Arc::default(),
             _dir: dir,
         };
@@ -93,6 +104,18 @@ impl Harness {
             .stdin(Stdio::null())
             .output()
             .unwrap()
+    }
+
+    /// Installs a desktop entry named `file_name` with the given
+    /// `[Desktop Entry]` keys, returning its path.
+    pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
+        let path = self.applications.join(file_name);
+        std::fs::write(
+            &path,
+            format!("[Desktop Entry]\nType=Application\n{keys}\n"),
+        )
+        .unwrap();
+        path
     }
 
     /// A client that has completed the `hello` handshake.
@@ -309,9 +332,21 @@ impl FakeThinking {
 
     /// The model calls one of Lucy's tools through the real relay.
     pub fn call_tool(&self, name: &str) -> Result<CallToolResult, String> {
+        self.call_tool_with(name, serde_json::json!({}))
+    }
+
+    /// The model calls one of Lucy's tools with `arguments`, a JSON object.
+    pub fn call_tool_with(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, String> {
+        let serde_json::Value::Object(arguments) = arguments else {
+            panic!("tool arguments are a JSON object");
+        };
         self.with_mcp(|client| async move {
             client
-                .call_tool(CallToolRequestParams::new(name.to_owned()))
+                .call_tool(CallToolRequestParams::new(name.to_owned()).with_arguments(arguments))
                 .await
                 .map_err(|e| e.to_string())
         })
@@ -455,5 +490,36 @@ impl Speaker for FakeSpeaker {
     fn speak(&mut self, sentence: String) {
         self.spoken.lock().unwrap().push(sentence.clone());
         let _ = self.sentences.send(sentence);
+    }
+}
+
+/// A launcher that records what it was asked to open instead of opening it.
+#[derive(Clone, Default)]
+pub struct FakeLauncher {
+    opened: Arc<Mutex<Vec<String>>>,
+    launched: Arc<Mutex<Vec<PathBuf>>>,
+}
+
+impl FakeLauncher {
+    /// Every URL opened so far.
+    pub fn opened(&self) -> Vec<String> {
+        self.opened.lock().unwrap().clone()
+    }
+
+    /// The desktop entry of every app launched so far.
+    pub fn launched(&self) -> Vec<PathBuf> {
+        self.launched.lock().unwrap().clone()
+    }
+}
+
+impl Launcher for FakeLauncher {
+    fn open_url(&self, url: &str) -> std::io::Result<()> {
+        self.opened.lock().unwrap().push(url.to_owned());
+        Ok(())
+    }
+
+    fn launch(&self, entry: &Path) -> std::io::Result<()> {
+        self.launched.lock().unwrap().push(entry.to_owned());
+        Ok(())
     }
 }

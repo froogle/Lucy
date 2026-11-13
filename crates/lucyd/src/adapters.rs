@@ -5,7 +5,8 @@
 //! An adapter keeps the sender it was handed alive for as long as the handle
 //! it returned (`SessionModel`, `Speaker`).
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -96,12 +97,24 @@ pub trait Speaker: Send {
     fn speak(&mut self, sentence: String);
 }
 
+/// Starts things on the user's desktop. Blocking; lucyd calls it off the
+/// async runtime.
+pub trait Launcher: Send + Sync {
+    /// Opens an http(s) URL in the user's browser.
+    fn open_url(&self, url: &str) -> io::Result<()>;
+    /// Starts the app whose desktop entry is at `entry`.
+    fn launch(&self, entry: &Path) -> io::Result<()>;
+}
+
 pub struct Adapters {
     /// Utterances from the microphone. Ignored while no Session is open.
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
     pub stt: Arc<dyn Stt>,
     pub thinking: Box<dyn Thinking>,
     pub tts: Box<dyn Tts>,
+    pub launcher: Arc<dyn Launcher>,
+    /// Where to look for desktop entries, most important first.
+    pub applications: Vec<PathBuf>,
 }
 
 impl Adapters {
@@ -113,6 +126,8 @@ impl Adapters {
             stt: Arc::new(Inert),
             thinking: Box::new(Inert),
             tts: Box::new(Inert),
+            launcher: Arc::new(Inert),
+            applications: vec![],
         }
     }
 }
@@ -156,5 +171,15 @@ struct InertSpeaker {
 impl Speaker for InertSpeaker {
     fn speak(&mut self, _sentence: String) {
         let _ = self.played.send(());
+    }
+}
+
+impl Launcher for Inert {
+    fn open_url(&self, _url: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn launch(&self, _entry: &Path) -> io::Result<()> {
+        Ok(())
     }
 }
