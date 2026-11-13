@@ -101,6 +101,10 @@ pub enum State {
     Thinking,
     /// Lucy's speech is queued or playing.
     Speaking,
+    /// A tool call waits for the user's spoken yes.
+    Confirming,
+    /// Something went wrong. Transient: the next state follows straight after.
+    Error,
 }
 
 /// Result of `session.start`.

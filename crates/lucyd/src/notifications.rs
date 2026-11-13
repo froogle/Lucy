@@ -108,6 +108,8 @@ fn on_change(previous: State, next: State) -> Option<Notification> {
         (State::Idle, State::Idle) => None,
         (State::Idle, _) => Some(listening()),
         (_, State::Idle) => Some(ended()),
+        (State::Confirming, State::Confirming) => None,
+        (_, State::Confirming) => Some(confirming()),
         _ => None,
     }
 }
@@ -117,6 +119,7 @@ fn on_change(previous: State, next: State) -> Option<Notification> {
 fn on_indicator_lost(state: State) -> Option<Notification> {
     match state {
         State::Idle => None,
+        State::Confirming => Some(confirming()),
         _ => Some(listening()),
     }
 }
@@ -129,10 +132,39 @@ fn listening() -> Notification {
     }
 }
 
+fn confirming() -> Notification {
+    Notification {
+        summary: "Lucy is waiting for your yes".into(),
+        body: "Say yes to go ahead, or End to decline.".into(),
+        action: Some(NotificationAction::EndSession),
+    }
+}
+
 fn ended() -> Notification {
     Notification {
         summary: "Lucy has stopped listening".into(),
         body: String::new(),
         action: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // No Session reaches Confirming until ticket 14, so this is checked here
+    // rather than through the harness.
+    #[test]
+    fn confirming_without_an_indicator_is_notified_with_an_end_action() {
+        let shown = on_change(State::Thinking, State::Confirming).expect("a notification");
+
+        assert_eq!(shown.summary, "Lucy is waiting for your yes");
+        assert_eq!(shown.action, Some(NotificationAction::EndSession));
+    }
+
+    #[test]
+    fn a_transient_error_mid_session_is_not_notified() {
+        assert_eq!(on_change(State::Listening, State::Error), None);
+        assert_eq!(on_change(State::Error, State::Listening), None);
     }
 }

@@ -95,6 +95,16 @@
           "const": "speaking",
           "description": "Lucy's speech is queued or playing.",
           "type": "string"
+        },
+        {
+          "const": "confirming",
+          "description": "A tool call waits for the user's spoken yes.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Something went wrong. Transient: the next state follows straight after.",
+          "type": "string"
         }
       ]
     },
