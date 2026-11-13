@@ -8,6 +8,8 @@ use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
     let config_path = lucy_config::default_path();
+    // Read again at each Session start; the launcher, microphone, VAD
+    // endpointing and Whisper are set once, here.
     let config = match lucy_config::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
@@ -28,22 +30,39 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Ticket 12 picks the Provider from config.
-    let mut adapters = Adapters::inert();
-    adapters.thinking = Box::new(lucyd::claude::Claude::new(
+    let mut adapters = lucyd::adapters::Adapters::inert();
+    adapters.thinking = std::sync::Arc::new(lucyd::claude::Claude::new(
         "claude".into(),
         lucy_config::xdg_dir("XDG_STATE_HOME", ".local/state")
             .join("lucy")
             .join("work"),
     ));
+    // Ticket 09 feeds `take_reference()` to the echo canceller.
+    adapters.tts = Box::new(lucyd::piper::Piper::start(
+        None,
+        lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
+            .join("lucy")
+            .join("voices"),
+        lucyd::piper::DEFAULT_VOICE,
+    ));
+    adapters.notifier =
+        std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
+    adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher::new(
+        config.desktop.launcher.clone(),
+    ));
+    adapters.applications = lucyd::desktop_entries::xdg_dirs();
     if let Err(e) = hear(&config, &mut adapters) {
         eprintln!("lucyd: {e}; Lucy can't hear");
     }
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
-        config,
+        config_path,
+        persona_path: lucy_config::xdg_dir("XDG_CONFIG_HOME", ".config")
+            .join("lucy")
+            .join("persona.md"),
         lucy_program,
         adapters,
+        plugins: lucyd::plugins::Paths::from_env(),
     }) {
         Ok(daemon) => daemon,
         Err(e) => {

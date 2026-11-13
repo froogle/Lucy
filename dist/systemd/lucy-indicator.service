@@ -1,0 +1,14 @@
+[Unit]
+Description=Lucy's Indicator: shows Lucy's state in the bottom-right corner
+PartOf=graphical-session.target
+After=graphical-session.target lucyd.service
+
+[Service]
+ExecStart=/usr/bin/lucy-indicator
+# Without layer-shell (GNOME, headless) it exits 0 and stays down; lucyd
+# shows notifications instead. A crash, or lucyd going away, restarts it.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

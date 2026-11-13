@@ -4,14 +4,15 @@
 use std::sync::{Arc, Mutex};
 
 use lucy_ipc::{State, Status};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 #[derive(Clone)]
 pub struct StatusBus(Arc<Mutex<Inner>>);
 
 struct Inner {
     status: Status,
-    subscribers: Vec<mpsc::UnboundedSender<Status>>,
+    /// Each returns false once its subscriber has gone.
+    subscribers: Vec<Box<dyn Fn(Status) -> bool + Send>>,
 }
 
 impl StatusBus {
@@ -32,9 +33,16 @@ impl StatusBus {
     /// The current status, and a queue of every change after it.
     pub fn subscribe(&self) -> (Status, mpsc::UnboundedReceiver<Status>) {
         let (tx, rx) = mpsc::unbounded_channel();
+        let status = self.subscribe_with(move |status| tx.send(status).is_ok());
+        (status, rx)
+    }
+
+    /// The current status; `deliver` is then called with every change, in
+    /// order, until it returns false.
+    pub fn subscribe_with(&self, deliver: impl Fn(Status) -> bool + Send + 'static) -> Status {
         let mut inner = self.0.lock().unwrap();
-        inner.subscribers.push(tx);
-        (inner.status.clone(), rx)
+        inner.subscribers.push(Box::new(deliver));
+        inner.status.clone()
     }
 
     /// Sets the status and, if it changed, tells every subscriber.
@@ -44,8 +52,27 @@ impl StatusBus {
             return;
         }
         inner.status = status.clone();
-        inner
-            .subscribers
-            .retain(|subscriber| subscriber.send(status.clone()).is_ok());
+        inner.subscribers.retain(|deliver| deliver(status.clone()));
+    }
+}
+
+/// Lucy's voice level while she speaks. A subscriber that falls behind skips
+/// the levels it missed: only the latest ones matter to a meter.
+#[derive(Clone)]
+pub struct LoudnessBus(broadcast::Sender<f32>);
+
+impl LoudnessBus {
+    pub fn new() -> Self {
+        // About a second of levels.
+        LoudnessBus(broadcast::channel(32).0)
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<f32> {
+        self.0.subscribe()
+    }
+
+    pub fn publish(&self, rms: f32) {
+        // No subscribers is fine.
+        let _ = self.0.send(rms);
     }
 }

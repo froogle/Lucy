@@ -4,19 +4,27 @@
 pub mod adapters;
 pub mod audio;
 pub mod claude;
+mod desktop;
+pub mod desktop_entries;
 mod ipc;
+pub mod launcher;
 mod mcp;
+mod notifications;
+pub mod notify_send;
+mod persona;
+pub mod piper;
+mod playback;
+pub mod plugins;
 mod runner;
 mod session;
 mod status;
+mod system_status;
 pub mod whisper;
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use lucy_config::Config;
 use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -24,10 +32,15 @@ use tokio::sync::mpsc;
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
-    pub config: Config,
+    /// `config.toml`, read at each Session start. It need not exist.
+    pub config_path: PathBuf,
+    /// The user's Persona; normally `persona.md` beside `config.toml`.
+    pub persona_path: PathBuf,
     /// The `lucy` binary, which model processes run as `lucy mcp-relay`.
     pub lucy_program: PathBuf,
     pub adapters: adapters::Adapters,
+    /// Where Plugins and Lucy's state live; normally `plugins::Paths::from_env()`.
+    pub plugins: plugins::Paths,
 }
 
 /// A running lucyd. Dropping it stops lucyd and removes its sockets.
@@ -42,10 +55,13 @@ pub struct Daemon {
 pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
-        config,
+        config_path,
+        persona_path,
         lucy_program,
         adapters,
+        plugins,
     } = options;
+    let persona = persona::Persona::new(persona_path);
     let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -55,19 +71,42 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
+    let levels = status::LoudnessBus::new();
+    let desktop = desktop::Desktop {
+        launcher: adapters.launcher.clone(),
+        applications: adapters.applications.clone(),
+    };
     let (sessions, commands) = mpsc::unbounded_channel();
+    let (indicators, fallback) =
+        notifications::fallback(&status, adapters.notifier.clone(), sessions.clone());
+    runtime.spawn(fallback);
+    let providers = ipc::Providers {
+        thinking: adapters.thinking.clone(),
+        config_path: config_path.clone(),
+    };
     runtime.spawn(
         runner::Runner::new(
             commands,
             status.clone(),
+            levels.clone(),
             adapters,
             relays.clone(),
-            Duration::from_secs_f64(config.session.silence_timeout_secs),
+            plugins::Host::new(plugins),
+            persona.clone(),
+            config_path,
         )
         .run(),
     );
-    runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
-    runtime.spawn(ipc::serve(listener, status, sessions));
+    runtime.spawn(mcp::serve(
+        mcp_listener,
+        relays,
+        persona,
+        sessions.clone(),
+        desktop,
+    ));
+    runtime.spawn(ipc::serve(
+        listener, status, levels, indicators, sessions, providers,
+    ));
 
     Ok(Daemon {
         socket_path,

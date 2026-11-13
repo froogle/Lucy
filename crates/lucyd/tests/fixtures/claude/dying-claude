@@ -1,6 +1,10 @@
 #!/bin/sh
 # Stands in for a `claude -p` that dies mid-Turn: answers the first stdin
-# line with the start of turn1.jsonl, no `result`, then exits.
+# line with the start of turn1.jsonl, no `result`, then exits. `--version`
+# and `auth` answer as fake-claude does.
 here=$(dirname "$0")
+case "$1" in
+--version | auth) exec "$here/fake-claude" "$@" ;;
+esac
 IFS= read -r line
 head -n 8 "$here/turn1.jsonl"

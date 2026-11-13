@@ -3,7 +3,6 @@ mod harness;
 use std::time::{Duration, Instant};
 
 use harness::{next_state, Harness};
-use lucy_config::Config;
 use lucy_ipc::{error_code, Error, State, StateEvent};
 
 #[test]
@@ -59,9 +58,7 @@ fn session_end_with_no_session_is_refused() {
 }
 
 fn with_silence_timeout(secs: f64) -> Harness {
-    let mut config = Config::default();
-    config.session.silence_timeout_secs = secs;
-    Harness::with_config(config)
+    Harness::with_config(&format!("[session]\nsilence_timeout_secs = {secs}\n"))
 }
 
 #[test]

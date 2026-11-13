@@ -5,9 +5,11 @@
 //! An adapter keeps the sender it was handed alive for as long as the handle
 //! it returned (`SessionModel`, `Speaker`).
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use lucy_config::Provider;
 use tokio::sync::mpsc;
 
 /// One utterance, cut from the microphone by the VAD: 16 kHz mono.
@@ -32,6 +34,9 @@ pub enum ThinkingEvent {
     TurnEnd,
     /// Where the subscription stands against its usage limits.
     RateLimit(RateLimit),
+    /// The Provider can't be used. The text says why and how to fix it,
+    /// ready to speak; the Session says it and ends.
+    Unavailable(String),
 }
 
 /// A `rate_limit_event` from `claude`.
@@ -67,14 +72,27 @@ pub struct Relay {
 
 /// A Thinking Provider.
 pub trait Thinking: Send + Sync {
-    /// Starts the model process for a new Session, configured with `relay`
-    /// as its MCP server. The process streams its replies into `events`.
-    /// Dropping the SessionModel ends the process.
+    /// Starts the model process for a new Session with the settings in
+    /// `provider`, configured with `relay` as its MCP server and following
+    /// `instructions` (the Persona) all Session. The process streams its
+    /// replies into `events`. Dropping the SessionModel ends the process. If
+    /// the Provider can't be used, it sends `Unavailable`.
     fn open(
         &self,
+        provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         relay: Relay,
+        instructions: String,
     ) -> Box<dyn SessionModel>;
+
+    /// Checks without a model call that the CLI is installed and signed in
+    /// as `provider` requires. Blocking. The error is a reason ready to
+    /// speak, with the fix.
+    fn health(&self, provider: &Provider) -> Result<(), String>;
+
+    /// A real "Reply OK" round trip, with the subscription guard's checks
+    /// on it. Blocking. The error is a reason ready to speak, with the fix.
+    fn check(&self, provider: &Provider) -> Result<(), String>;
 }
 
 /// The model process of one Session.
@@ -85,10 +103,10 @@ pub trait SessionModel: Send {
 
 /// A TTS Provider together with playback.
 pub trait Tts: Send + Sync {
-    /// Opens playback for a new Session. Each sentence sends one `()` on
-    /// `played` once it has finished playing. Dropping the Speaker stops
-    /// playback.
-    fn open(&self, played: mpsc::UnboundedSender<()>) -> Box<dyn Speaker>;
+    /// Opens playback for a new Session. Each sentence sends one `Played` or
+    /// `Failed` on `events`, in order, and `Level` about 30 times a second
+    /// while it plays. Dropping the Speaker stops playback.
+    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker>;
 }
 
 pub trait Speaker: Send {
@@ -96,12 +114,63 @@ pub trait Speaker: Send {
     fn speak(&mut self, sentence: String);
 }
 
+/// What a Speaker reports back.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpeakerEvent {
+    /// The oldest queued sentence finished playing.
+    Played,
+    /// The oldest queued sentence couldn't be synthesised or played. Carries
+    /// its text.
+    Failed(String),
+    /// RMS of the samples just played, from 0.0 to 1.0.
+    Level(f32),
+}
+
+/// A desktop notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notification {
+    pub summary: String,
+    pub body: String,
+    /// An action button, if the notification offers one.
+    pub action: Option<NotificationAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotificationAction {
+    /// "End": ends the Session.
+    EndSession,
+}
+
+/// Desktop notifications (`org.freedesktop.Notifications`).
+pub trait Notifier: Send + Sync {
+    /// Shows `notification` without blocking. If the user picks its action,
+    /// the action is sent on `actions`.
+    fn notify(
+        &self,
+        notification: Notification,
+        actions: mpsc::UnboundedSender<NotificationAction>,
+    );
+}
+
+/// Starts things on the user's desktop. Blocking; lucyd calls it off the
+/// async runtime.
+pub trait Launcher: Send + Sync {
+    /// Opens an http(s) URL in the user's browser.
+    fn open_url(&self, url: &str) -> io::Result<()>;
+    /// Starts the app whose desktop entry is at `entry`.
+    fn launch(&self, entry: &Path) -> io::Result<()>;
+}
+
 pub struct Adapters {
     /// Utterances from the microphone. Ignored while no Session is open.
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
     pub stt: Arc<dyn Stt>,
-    pub thinking: Box<dyn Thinking>,
+    pub thinking: Arc<dyn Thinking>,
     pub tts: Box<dyn Tts>,
+    pub notifier: Arc<dyn Notifier>,
+    pub launcher: Arc<dyn Launcher>,
+    /// Where to look for desktop entries, most important first.
+    pub applications: Vec<PathBuf>,
 }
 
 impl Adapters {
@@ -111,8 +180,11 @@ impl Adapters {
         Adapters {
             speech,
             stt: Arc::new(Inert),
-            thinking: Box::new(Inert),
+            thinking: Arc::new(Inert),
             tts: Box::new(Inert),
+            notifier: Arc::new(Inert),
+            launcher: Arc::new(Inert),
+            applications: vec![],
         }
     }
 }
@@ -128,12 +200,24 @@ impl Stt for Inert {
 impl Thinking for Inert {
     fn open(
         &self,
+        _provider: &Provider,
         events: mpsc::UnboundedSender<ThinkingEvent>,
         _relay: Relay,
+        _instructions: String,
     ) -> Box<dyn SessionModel> {
         Box::new(InertSessionModel { _events: events })
     }
+
+    fn health(&self, _provider: &Provider) -> Result<(), String> {
+        Err(INERT_THINKING.to_owned())
+    }
+
+    fn check(&self, _provider: &Provider) -> Result<(), String> {
+        Err(INERT_THINKING.to_owned())
+    }
 }
+
+const INERT_THINKING: &str = "This lucyd has no Thinking Provider.";
 
 struct InertSessionModel {
     _events: mpsc::UnboundedSender<ThinkingEvent>,
@@ -144,17 +228,36 @@ impl SessionModel for InertSessionModel {
 }
 
 impl Tts for Inert {
-    fn open(&self, played: mpsc::UnboundedSender<()>) -> Box<dyn Speaker> {
-        Box::new(InertSpeaker { played })
+    fn open(&self, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
+        Box::new(InertSpeaker { events })
     }
 }
 
 struct InertSpeaker {
-    played: mpsc::UnboundedSender<()>,
+    events: mpsc::UnboundedSender<SpeakerEvent>,
 }
 
 impl Speaker for InertSpeaker {
     fn speak(&mut self, _sentence: String) {
-        let _ = self.played.send(());
+        let _ = self.events.send(SpeakerEvent::Played);
+    }
+}
+
+impl Notifier for Inert {
+    fn notify(
+        &self,
+        _notification: Notification,
+        _actions: mpsc::UnboundedSender<NotificationAction>,
+    ) {
+    }
+}
+
+impl Launcher for Inert {
+    fn open_url(&self, _url: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn launch(&self, _entry: &Path) -> io::Result<()> {
+        Ok(())
     }
 }

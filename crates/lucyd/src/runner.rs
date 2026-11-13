@@ -2,16 +2,21 @@
 //! `session` state machine asks for.
 
 use std::fmt;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use lucy_config::Tier;
 use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::Adapters;
+use crate::adapters::{Adapters, Notification, SessionModel, SpeakerEvent, ThinkingEvent};
 use crate::mcp::{Caller, Relays};
+use crate::persona::{self, Loaded, Persona};
+use crate::plugins;
 use crate::session::{Input, Output, Session};
-use crate::status::StatusBus;
+use crate::status::{LoudnessBus, StatusBus};
 
 /// A request from the public socket or the MCP server.
 pub enum Command {
@@ -38,28 +43,38 @@ pub struct EndError;
 pub struct Runner {
     commands: mpsc::UnboundedReceiver<Command>,
     status: StatusBus,
+    levels: LoudnessBus,
     adapters: Adapters,
     relays: Relays,
-    silence_timeout: Duration,
+    plugins: Arc<plugins::Host>,
+    persona: Persona,
+    config_path: PathBuf,
     /// False once the speech source has gone away.
     speech_open: bool,
     sessions_started: u64,
 }
 
 impl Runner {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commands: mpsc::UnboundedReceiver<Command>,
         status: StatusBus,
+        levels: LoudnessBus,
         adapters: Adapters,
         relays: Relays,
-        silence_timeout: Duration,
+        plugins: Arc<plugins::Host>,
+        persona: Persona,
+        config_path: PathBuf,
     ) -> Self {
         Runner {
             commands,
             status,
+            levels,
             adapters,
             relays,
-            silence_timeout,
+            plugins,
+            persona,
+            config_path,
             speech_open: true,
             sessions_started: 0,
         }
@@ -87,29 +102,73 @@ impl Runner {
         }
     }
 
-    /// Runs one Session until it ends. Status changes are published before
-    /// replying, so a client sees them as soon as its request returns.
+    /// Runs one Session until it ends, then stops the Plugins it started.
     async fn run_session(
         &mut self,
         id: SessionId,
         started: oneshot::Sender<Result<SessionId, StartError>>,
     ) {
+        let plugin_tools = self.plugins.open_session().await;
+        self.session_loop(id, started, plugin_tools.clone()).await;
+        plugin_tools.stop().await;
+    }
+
+    /// Status changes are published before replying, so a client sees them
+    /// as soon as its request returns.
+    async fn session_loop(
+        &mut self,
+        id: SessionId,
+        started: oneshot::Sender<Result<SessionId, StartError>>,
+        plugin_tools: Arc<plugins::SessionTools>,
+    ) {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // Revoked when the Session ends.
-        let (relay, _token) = self.relays.issue(Caller::SessionModel);
-        let mut model = self.adapters.thinking.open(events_tx, relay);
-        let (played_tx, mut played) = mpsc::unbounded_channel();
-        let mut speaker = self.adapters.tts.open(played_tx);
+        let (relay, _token) = self.relays.issue(Caller::SessionModel, plugin_tools);
+        // Read afresh each Session, so hand edits apply at the next one.
+        let persona = self.persona.load().unwrap_or_else(|e| {
+            eprintln!("lucyd: can't load {}: {e}", self.persona.path().display());
+            Loaded::fallback()
+        });
+        let config = lucy_config::load(&self.config_path);
+        let provider = match &config {
+            Ok(config) => config.provider(Tier::Fast),
+            Err(e) => Err(format!(
+                "I {}. Fix the file and wake me again.",
+                e.to_string().lines().next().unwrap_or_default()
+            )),
+        };
+        let mut model: Box<dyn SessionModel> = match provider {
+            Ok(provider) => self
+                .adapters
+                .thinking
+                .open(provider, events_tx, relay, persona.text),
+            Err(reason) => {
+                eprintln!("lucyd: {reason}");
+                let _ = events_tx.send(ThinkingEvent::Unavailable(reason));
+                Box::new(Unopened { _events: events_tx })
+            }
+        };
+        let silence_timeout = config.unwrap_or_default().session.silence_timeout_secs;
+        let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
+        let mut speaker = self.adapters.tts.open(speaker_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
         let mut session = Session::default();
-        let mut silence = SilenceTimer::new(self.silence_timeout);
+        let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
         silence.set_running(session.silence_timer_runs());
+
+        // Sent before anything the user says.
+        let mut opening = persona
+            .created
+            .then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
 
         self.publish(session.state(), Some(id));
         let _ = started.send(Ok(id));
         loop {
             let mut segment = None;
-            let input = tokio::select! {
+            let input = if let Some(input) = opening.take() {
+                input
+            } else {
+                tokio::select! {
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         let _ = reply.send(Err(StartError));
@@ -138,10 +197,29 @@ impl Runner {
                 },
                 Some(text) = transcripts.recv() => Input::Transcript(text),
                 Some(event) = events.recv() => Input::Thinking(event),
-                Some(()) = played.recv() => Input::Played,
+                Some(event) = speaker_events.recv() => match event {
+                    SpeakerEvent::Played => Input::Played,
+                    // Lucy can't say it, so she shows it.
+                    SpeakerEvent::Failed(sentence) => {
+                        let notification = Notification {
+                            summary: "Lucy".into(),
+                            body: sentence,
+                            action: None,
+                        };
+                        // It offers no action, so nothing listens for one.
+                        let (actions, _) = mpsc::unbounded_channel();
+                        self.adapters.notifier.notify(notification, actions);
+                        Input::Played
+                    }
+                    SpeakerEvent::Level(rms) => {
+                        self.levels.publish(rms);
+                        continue;
+                    }
+                },
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
                     self.publish(State::Idle, None);
                     return;
+                }
                 }
             };
             for output in session.handle(input) {
@@ -174,6 +252,15 @@ impl Runner {
             session_id: session_id.map(|id| id.to_string()),
         });
     }
+}
+
+/// Stands in for the model when no Provider could be opened.
+struct Unopened {
+    _events: mpsc::UnboundedSender<ThinkingEvent>,
+}
+
+impl SessionModel for Unopened {
+    fn send_turn(&mut self, _text: String) {}
 }
 
 /// A countdown that can be paused and resumed.

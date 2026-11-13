@@ -52,6 +52,101 @@
       ],
       "type": "object"
     },
+    "LoudnessEvent": {
+      "description": "Params of the `level` event: how loud Lucy's voice is right now.",
+      "properties": {
+        "rms": {
+          "description": "RMS of the samples just played, from 0.0 (silent) to 1.0.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "rms"
+      ],
+      "type": "object"
+    },
+    "ProviderCheck": {
+      "description": "Params of `provider.check`.",
+      "properties": {
+        "name": {
+          "description": "The `[providers.<name>]` name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ProviderCheckResult": {
+      "description": "Result of `provider.check`: a real \"Reply OK\" round trip through the\nProvider, with the subscription guard's checks on it.",
+      "properties": {
+        "problem": {
+          "description": "What's wrong and how to fix it, or `None` if the check passed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ProviderStatus": {
+      "properties": {
+        "kind": {
+          "description": "The CLI it drives, e.g. `claude`.",
+          "type": "string"
+        },
+        "model": {
+          "description": "The model passed to the CLI; `None` means the CLI's default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Its `[providers.<name>]` name.",
+          "type": "string"
+        },
+        "problem": {
+          "description": "What's wrong and how to fix it, or `None` if it is healthy.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tiers": {
+          "description": "The Model tiers that use it.",
+          "items": {
+            "$ref": "#/$defs/Tier"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "kind",
+        "tiers"
+      ],
+      "type": "object"
+    },
+    "ProvidersStatus": {
+      "description": "Result of `providers.status`: each Thinking Provider in `config.toml`,\nwith health checks that make no model call.",
+      "properties": {
+        "providers": {
+          "description": "Sorted by name.",
+          "items": {
+            "$ref": "#/$defs/ProviderStatus"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "providers"
+      ],
+      "type": "object"
+    },
     "Role": {
       "oneOf": [
         {
@@ -95,6 +190,16 @@
           "const": "speaking",
           "description": "Lucy's speech is queued or playing.",
           "type": "string"
+        },
+        {
+          "const": "confirming",
+          "description": "A tool call waits for the user's spoken yes.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Something went wrong. Transient: the next state follows straight after.",
+          "type": "string"
         }
       ]
     },
@@ -132,11 +237,24 @@
       ],
       "type": "object"
     },
+    "Tier": {
+      "description": "A Model tier.",
+      "enum": [
+        "fast",
+        "advanced"
+      ],
+      "type": "string"
+    },
     "Topic": {
       "oneOf": [
         {
           "const": "state",
           "description": "`state` events. The current state is sent straight after subscribing.",
+          "type": "string"
+        },
+        {
+          "const": "level",
+          "description": "`level` events, about 30 a second while Lucy is speaking.",
           "type": "string"
         }
       ]
@@ -146,6 +264,11 @@
   "description": "Newline-delimited JSON-RPC 2.0 on $XDG_RUNTIME_DIR/lucy/lucyd.sock. Send hello first. Within a major protocol version, fields are only ever added.",
   "title": "lucyd public IPC, protocol 1",
   "x-events": {
+    "level": {
+      "params": {
+        "$ref": "#/$defs/LoudnessEvent"
+      }
+    },
     "state": {
       "params": {
         "$ref": "#/$defs/Status"
@@ -159,6 +282,19 @@
       },
       "result": {
         "$ref": "#/$defs/HelloResult"
+      }
+    },
+    "provider.check": {
+      "params": {
+        "$ref": "#/$defs/ProviderCheck"
+      },
+      "result": {
+        "$ref": "#/$defs/ProviderCheckResult"
+      }
+    },
+    "providers.status": {
+      "result": {
+        "$ref": "#/$defs/ProvidersStatus"
       }
     },
     "session.end": {

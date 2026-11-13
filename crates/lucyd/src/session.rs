@@ -6,6 +6,8 @@ use lucy_ipc::State;
 use crate::adapters::ThinkingEvent;
 
 pub enum Input {
+    /// Lucy speaks first: start a Turn with these instructions.
+    Opening(String),
     /// The VAD cut an utterance.
     Speech,
     /// STT finished the utterance it was given.
@@ -61,6 +63,10 @@ impl Session {
 
     pub fn handle(&mut self, input: Input) -> Vec<Output> {
         match input {
+            Input::Opening(text) => {
+                self.turn_in_progress = true;
+                vec![Output::SendTurn(text)]
+            }
             Input::Speech if self.state() == State::Listening && !self.transcribing => {
                 self.transcribing = true;
                 vec![Output::Transcribe]
@@ -92,6 +98,13 @@ impl Session {
             }
             // Ticket 11 tells the user when they near their limit.
             Input::Thinking(ThinkingEvent::RateLimit(_)) => vec![],
+            // Say why, instead of any reply in progress, then end.
+            Input::Thinking(ThinkingEvent::Unavailable(reason)) => {
+                self.sentence = reason;
+                self.turn_in_progress = false;
+                self.closing = true;
+                self.speak_sentence().into_iter().collect()
+            }
             Input::Played => {
                 self.queued = self.queued.saturating_sub(1);
                 self.turn_finished().into_iter().collect()
