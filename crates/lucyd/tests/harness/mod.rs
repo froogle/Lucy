@@ -418,11 +418,22 @@ pub fn next_state(client: &mut Client) -> StateEvent {
     }
 }
 
-/// The real `lucy` binary, which cargo builds next to this test's binary
-/// when it builds the `lucy` package.
-fn lucy_binary() -> PathBuf {
+/// The profile dir cargo puts final binaries in (`target/debug`). Test
+/// binaries sit somewhere below it, and how deep depends on the cargo version,
+/// so walk up to the first ancestor holding `name` as a file.
+fn in_profile_dir(name: &str) -> PathBuf {
     let exe = std::env::current_exe().unwrap();
-    let lucy = exe.parent().unwrap().parent().unwrap().join("lucy");
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| exe.parent().unwrap().join(name))
+}
+
+/// The real `lucy` binary, which cargo builds when it builds the `lucy`
+/// package.
+fn lucy_binary() -> PathBuf {
+    let lucy = in_profile_dir("lucy");
     assert!(
         lucy.exists(),
         "{} not found; run `cargo build -p lucy` or `cargo test --workspace`",
@@ -431,16 +442,9 @@ fn lucy_binary() -> PathBuf {
     lucy
 }
 
-/// The fixture Plugin executable (`examples/fixture-plugin.rs`), which cargo
-/// builds beside this test's binary.
+/// The fixture Plugin executable (`examples/fixture-plugin.rs`).
 fn fixture_plugin() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let fixture = exe
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples/fixture-plugin");
+    let fixture = in_profile_dir("examples/fixture-plugin");
     assert!(
         fixture.exists(),
         "{} not found; run `cargo build -p lucyd --examples`",

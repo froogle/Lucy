@@ -252,8 +252,8 @@ impl App {
             return;
         };
         // tiny-skia's premultiplied RGBA to wl_shm's little-endian ARGB.
-        for (out, pixel) in canvas.chunks_exact_mut(4).zip(frame.pixels()) {
-            out.copy_from_slice(&[pixel.blue(), pixel.green(), pixel.red(), pixel.alpha()]);
+        for (out, pixel) in canvas.as_chunks_mut::<4>().0.iter_mut().zip(frame.pixels()) {
+            *out = [pixel.blue(), pixel.green(), pixel.red(), pixel.alpha()];
         }
         let wl_surface = surface.layer.wl_surface();
         wl_surface.damage_buffer(0, 0, SIZE as i32, SIZE as i32);

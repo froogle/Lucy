@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-rust-version = "1.88"
+rust-version = "1.100"
 
 [workspace.dependencies]
 lucy-ipc = { path = "crates/lucy-ipc" }
@@ -21,6 +21,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 rmcp = { version = "3.10", default-features = false }
+# ort-tract pins ort-sys exactly, so the two move together. The next pair
+# (ort 2.0.0-rc.14 + ort-tract 0.5.0) fails to compile with these features.
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "alternative-backend", "api-17"] }
 ort-tract = "=0.3.0"
 whisper-rs = { version = "0.16", features = ["vulkan"] }
