@@ -8,7 +8,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The whole of `config.toml`. Settings arrive with the tickets that use them.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -82,7 +82,7 @@ pub struct Provider {
 }
 
 /// Which CLI a Thinking Provider drives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Claude,
@@ -90,6 +90,11 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// What `config.toml` calls it, which is also its CLI's name.
+    pub fn config_name(self) -> String {
+        config_name(self)
+    }
+
     /// What Lucy calls it when she speaks of it.
     pub fn name(self) -> &'static str {
         match self {
@@ -202,6 +207,14 @@ pub fn recommended_model(kind: Kind, tier: Tier) -> &'static str {
         .find(|r| r.kind == kind && r.tier == tier)
         .map(|r| r.model)
         .expect("every kind has a recommendation for every tier")
+}
+
+/// How `config.toml` spells `variant`, a plain enum variant.
+fn config_name(variant: impl Serialize) -> String {
+    match toml::Value::try_from(variant) {
+        Ok(toml::Value::String(name)) => name,
+        other => panic!("not a plain enum variant: {other:?}"),
+    }
 }
 
 /// `[audio]`
@@ -332,7 +345,7 @@ pub struct Stt {
 }
 
 /// An STT Provider.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SttKind {
     /// whisper.cpp inside lucyd, set up by `[whisper]`.
@@ -343,6 +356,11 @@ pub enum SttKind {
 }
 
 impl SttKind {
+    /// What `config.toml` calls it.
+    pub fn config_name(self) -> String {
+        config_name(self)
+    }
+
     /// The STT Providers setup offers. Superwhisper is offered only when an
     /// executable `superwhisper` is on `path` (a `$PATH` value).
     pub fn options(path: Option<&OsStr>) -> Vec<SttKind> {
@@ -720,6 +738,14 @@ mod tests {
         assert_eq!(config.audio.speaker, "alsa_output.hdmi");
         assert_eq!(config.endpointing.end_silence_ms, 900);
         assert_eq!(config.endpointing.pre_roll_ms, 500);
+    }
+
+    #[test]
+    fn config_names_are_what_config_toml_says() {
+        assert_eq!(Kind::Claude.config_name(), "claude");
+        assert_eq!(Kind::Codex.config_name(), "codex");
+        assert_eq!(SttKind::Whisper.config_name(), "whisper");
+        assert_eq!(SttKind::Superwhisper.config_name(), "superwhisper");
     }
 
     #[test]

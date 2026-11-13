@@ -153,6 +153,30 @@ fn declining_piper_means_text_only_replies_and_no_voice_to_pick() {
 }
 
 #[test]
+fn without_claude_or_codex_setup_says_each_tier_is_left_as_it_was() {
+    let home = Home::with_lucyd();
+    home.fake("systemctl", "exit 0");
+
+    // No Piper: then Whisper's model, mic, keep, speaker, heard, the Wake
+    // word and the service.
+    let setup = home.setup(&home.env(), Script::new().typed("n").enters(7));
+
+    assert_eq!(setup.result, Ok(()), "{}", setup.shown);
+    let shown = setup.shown;
+    for tier in ["fast", "advanced"] {
+        assert!(
+            shown.contains(&format!(
+                "No thinking CLI for the {tier} tier is installed: install claude or codex"
+            )),
+            "{shown}"
+        );
+    }
+    // Setup carries on past the tiers, and writes none.
+    assert!(shown.contains("Whisper's model"), "{shown}");
+    assert!(!read(&home.config_path()).contains("[tiers]"));
+}
+
+#[test]
 fn piper_is_installed_after_a_yes_with_uv_when_there_is_no_distro_package() {
     let home = Home::with_lucyd();
     home.fake("claude", "exit 0");

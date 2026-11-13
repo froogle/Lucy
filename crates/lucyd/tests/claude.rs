@@ -193,7 +193,6 @@ fn runs_with_an_isolated_config_naming_only_the_relay() {
         "-p",
         "--verbose",
         "--include-partial-messages",
-        "--no-session-persistence",
         "--strict-mcp-config",
         "--disable-slash-commands",
     ] {
@@ -334,6 +333,15 @@ fn without_the_control_interrupt_claude_gets_sigint_and_a_new_process() {
         (!Path::new("/proc").join(first.trim()).exists()).then_some(())
     });
     assert_ne!(pids.lines().nth(1), Some(first.trim()));
+    // It carries on the same conversation. (The fake writes its pid before
+    // its argv.)
+    let resumed = wait_until("the new process didn't resume the conversation", || {
+        let args = args(work.path());
+        args.iter()
+            .any(|a| a == "--resume")
+            .then(|| value_of(&args, "--resume").to_owned())
+    });
+    assert_eq!(resumed, "09dd6ca6-f8e2-473e-812c-ab5acf9cdfd5");
     // The new process answers the next Turn as its first.
     std::fs::copy(
         fixtures().join("turn2.jsonl"),

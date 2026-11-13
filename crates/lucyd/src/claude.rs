@@ -13,7 +13,7 @@ use lucy_config::Provider;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 
@@ -64,13 +64,15 @@ impl Claude {
 
     /// `claude -p` stream-json, with `relay` as its only MCP server, or none,
     /// `instructions` appended to its system prompt, and of its own tools
-    /// only `own_tools`.
+    /// only `own_tools`. It carries on the conversation `resume` names, if
+    /// any; conversations are kept on disk so that it can.
     fn command(
         &self,
         provider: &Provider,
         relay: Option<&Relay>,
         instructions: &str,
         own_tools: &[&str],
+        resume: Option<&str>,
     ) -> Command {
         let servers = match relay {
             Some(relay) => serde_json::json!({"lucy": {
@@ -85,7 +87,7 @@ impl Claude {
             .args(["-p", "--verbose"])
             .args(["--input-format", "stream-json"])
             .args(["--output-format", "stream-json"])
-            .args(["--include-partial-messages", "--no-session-persistence"])
+            .arg("--include-partial-messages")
             .arg("--strict-mcp-config")
             .arg("--mcp-config")
             .arg(mcp_config.to_string())
@@ -107,6 +109,9 @@ impl Claude {
         if let Some(model) = &provider.model {
             command.args(["--model", model]);
         }
+        if let Some(session) = resume {
+            command.args(["--resume", session]);
+        }
         command.stdin(Stdio::piped()).stdout(Stdio::piped());
         command
     }
@@ -119,22 +124,12 @@ impl Claude {
         relay: &Relay,
         instructions: &str,
         workspace: &Workspace,
+        resume: Option<&str>,
     ) -> std::io::Result<Command> {
-        let mut command = self.command(provider, Some(relay), instructions, DELEGATE_TOOLS);
-        command
-            .current_dir(&workspace.dir)
-            .env("TMPDIR", &workspace.tmp);
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        let mut writable = vec![
-            workspace.dir.clone(),
-            workspace.tmp.clone(),
-            home.join(".claude"),
-            home.join(".claude.json"),
-        ];
-        writable.extend(workspace.writable.iter().cloned());
-        let mut readable = workspace.readable.clone();
-        readable.extend(sandbox::program_dir(&self.program));
-        sandbox::confine_delegate(&mut command, &readable, &writable)?;
+        let mut command = self.command(provider, Some(relay), instructions, DELEGATE_TOOLS, resume);
+        let home = sandbox::home();
+        let cli_home = [home.join(".claude"), home.join(".claude.json")];
+        sandbox::confine_cli(&mut command, workspace, &self.program, &cli_home)?;
         Ok(command)
     }
 
@@ -142,7 +137,7 @@ impl Claude {
     /// `claude -p`, fed each Turn and interrupt from `inputs` until the
     /// SessionModel is dropped. A Turn is interrupted with the stream-json
     /// control interrupt; if claude doesn't acknowledge it, with SIGINT,
-    /// which ends the process, and a new one takes over.
+    /// which ends the process, and a new one carries on the conversation.
     fn run_session(
         &self,
         provider: &Provider,
@@ -156,7 +151,9 @@ impl Claude {
             let _ = events.send(ThinkingEvent::Unavailable(reason));
             return;
         }
-        let spawn = || self.spawn(provider, role, events, process);
+        // claude's id for the conversation, read from its stream.
+        let session = Arc::new(Mutex::new(None));
+        let spawn = || self.spawn(provider, role, events, process, &session);
         let Some(mut running) = spawn() else {
             return;
         };
@@ -217,17 +214,20 @@ impl Claude {
         role: &Role,
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         process: &Arc<Mutex<Process>>,
+        session: &Arc<Mutex<Option<String>>>,
     ) -> Option<Running> {
-        let command = match role {
-            Role::Session {
-                relay,
-                instructions,
-            } => Ok(self.command(provider, Some(relay), instructions, &[])),
-            Role::Delegate {
-                relay,
-                instructions,
-                workspace,
-            } => self.delegate_command(provider, relay, instructions, workspace),
+        let resume = session.lock().unwrap().clone();
+        let resume = resume.as_deref();
+        let Role {
+            relay,
+            instructions,
+            workspace,
+        } = role;
+        let command = match workspace {
+            None => Ok(self.command(provider, Some(relay), instructions, &[], resume)),
+            Some(workspace) => {
+                self.delegate_command(provider, relay, instructions, workspace, resume)
+            }
         };
         let mut child = match command.and_then(|mut command| command.spawn()) {
             Ok(child) => child,
@@ -259,10 +259,14 @@ impl Claude {
         let reader_turns = turns.clone();
         let reader_process = process.clone();
         let reader_events = events.clone();
+        let reader_session = session.clone();
         std::thread::spawn(move || {
             let mut stream = Stream::default();
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let value: Value = serde_json::from_str(&line).unwrap_or_default();
+                if let Some(id) = value["session_id"].as_str() {
+                    *reader_session.lock().unwrap() = Some(id.to_owned());
+                }
                 if value["type"] == "control_response" {
                     let _ = acks_tx.send(value["response"]["subtype"] == "success");
                     continue;
@@ -333,19 +337,6 @@ struct Turns {
     retired: bool,
 }
 
-/// What a `claude -p` process is for.
-enum Role {
-    Session {
-        relay: Relay,
-        instructions: String,
-    },
-    Delegate {
-        relay: Relay,
-        instructions: String,
-        workspace: Workspace,
-    },
-}
-
 impl Claude {
     /// Returns at once. The guard's checks and the spawn happen on a thread
     /// of their own; Turns sent meanwhile wait for the process.
@@ -380,9 +371,10 @@ impl Thinking for Claude {
         relay: Relay,
         instructions: String,
     ) -> Box<dyn SessionModel> {
-        let role = Role::Session {
+        let role = Role {
             relay,
             instructions,
+            workspace: None,
         };
         self.open_as(provider, events, role)
     }
@@ -395,10 +387,10 @@ impl Thinking for Claude {
         instructions: String,
         workspace: Workspace,
     ) -> Box<dyn SessionModel> {
-        let role = Role::Delegate {
+        let role = Role {
             relay,
             instructions,
-            workspace,
+            workspace: Some(workspace),
         };
         self.open_as(provider, events, role)
     }
@@ -508,7 +500,7 @@ mod tests {
             program: "lucy".into(),
             args: vec![],
         };
-        let command = claude.command(&provider, Some(&relay), "", &[]);
+        let command = claude.command(&provider, Some(&relay), "", &[], None);
         command
             .get_envs()
             .filter(|(_, value)| value.is_none())

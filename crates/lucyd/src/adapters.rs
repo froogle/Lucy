@@ -136,6 +136,14 @@ pub struct Workspace {
     pub readable: Vec<PathBuf>,
 }
 
+/// What a Thinking Provider's process is for: a Session's model, or with a
+/// `workspace`, a Delegate.
+pub(crate) struct Role {
+    pub relay: Relay,
+    pub instructions: String,
+    pub workspace: Option<Workspace>,
+}
+
 /// The model process of one Session.
 pub trait SessionModel: Send {
     /// Starts a Turn with what the user said. If a Turn is still running,
@@ -149,17 +157,13 @@ pub trait SessionModel: Send {
 
 /// A TTS Provider together with playback.
 pub trait Tts: Send + Sync {
-    /// Opens playback on `speaker` (`"default"` or a pinned node name) for a
-    /// new Session. Each sentence sends one `Played` or `Failed` on `events`,
-    /// in order, and `Level` about 30 times a second while it plays. If the
-    /// device goes away it sends `DeviceLost`. Dropping the Speaker stops
-    /// playback.
-    fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker>;
-
-    /// Opens playback as `open` does, but speaking in `voice` rather than
-    /// the running voice, for a Voice preview of a voice not chosen yet. A
-    /// voice that isn't there yet is fetched first.
-    fn open_in_voice(
+    /// Opens playback on `speaker` (`"default"` or a pinned node name), in
+    /// `voice`, for a new Session or a Voice preview. A voice that isn't
+    /// there yet is fetched first. Each sentence sends one `Played` or
+    /// `Failed` on `events`, in order, and `Level` about 30 times a second
+    /// while it plays. If the device goes away it sends `DeviceLost`.
+    /// Dropping the Speaker stops playback.
+    fn open(
         &self,
         speaker: &str,
         voice: &str,
@@ -362,18 +366,10 @@ impl Tts for Inert {
     fn open(
         &self,
         _speaker: &str,
-        events: mpsc::UnboundedSender<SpeakerEvent>,
-    ) -> Box<dyn Speaker> {
-        Box::new(InertSpeaker { events })
-    }
-
-    fn open_in_voice(
-        &self,
-        speaker: &str,
         _voice: &str,
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker> {
-        Tts::open(self, speaker, events)
+        Box::new(InertSpeaker { events })
     }
 }
 

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 
-use super::{Command, EndError, PreviewError, Runner};
+use super::Runner;
 
 /// A `test.mic_level` or `test.wake_word` request.
 pub enum SetupTest {
@@ -102,21 +102,13 @@ impl Runner {
                 },
                 () = &mut deadline => break false,
                 command = self.commands.recv() => match command {
-                    Some(Command::Start(started)) => {
-                        let _ = reply.send(Err(SetupTestError::Interrupted));
-                        self.run_session(Some(started)).await;
-                        return;
+                    Some(command) => {
+                        if let Some(started) = self.while_busy(command) {
+                            let _ = reply.send(Err(SetupTestError::Interrupted));
+                            self.run_session(Some(started)).await;
+                            return;
+                        }
                     }
-                    Some(Command::End(end) | Command::EndAfterSpeech(end)) => {
-                        let _ = end.send(Err(EndError));
-                    }
-                    // Dropped unanswered: there is no Session to ask or
-                    // tell in.
-                    Some(Command::Ask(_) | Command::Say(_) | Command::Turn(_)) => {}
-                    Some(Command::VoicePreview(preview)) => {
-                        let _ = preview.reply.send(Err(PreviewError::Busy));
-                    }
-                    Some(Command::SetupTest(other)) => other.refuse(SetupTestError::Busy),
                     None => return,
                 },
                 // Speech outside a Session is ignored.

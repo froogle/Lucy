@@ -41,12 +41,13 @@ pub enum Command {
     /// Ask the user something and hear their answer (Confirming). Questions
     /// are asked one at a time, in order. With no open Session, or if the
     /// Session ends or the model process dies first, `reply` is dropped
-    /// unanswered.
+    /// unanswered; with no open Session, the question is shown instead.
     Ask(Ask),
     /// Lucy says this herself, in the open Session, straight away.
     Say(String),
     /// Starts a Turn with these instructions in the open Session, once
-    /// neither Lucy nor the user is speaking.
+    /// neither Lucy nor the user is speaking. With no open Session, they
+    /// are shown instead.
     Turn(String),
     /// `test.voice_preview`: say a sentence outside any Session.
     VoicePreview(VoicePreview),
@@ -175,15 +176,11 @@ impl Runner {
                 // The Wake word before speech: the utterance it starts
                 // belongs to the Session it opens.
                 biased;
-                command = self.commands.recv() => match command {
-                    Some(Command::Start(reply)) => self.run_session(Some(reply)).await,
-                    Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
-                        let _ = reply.send(Err(EndError));
-                    }
-                    // Dropped unanswered: there is no one to ask or tell.
-                    Some(Command::Ask(_) | Command::Say(_) | Command::Turn(_)) => {}
-                    Some(Command::VoicePreview(preview)) => self.preview(preview).await,
-                    Some(Command::SetupTest(test)) => self.setup_test(test).await,
+                command = self.commands.recv() => match command.map(|c| self.outside_session(c)) {
+                    Some(Some(Command::Start(reply))) => self.run_session(Some(reply)).await,
+                    Some(Some(Command::VoicePreview(preview))) => self.preview(preview).await,
+                    Some(Some(Command::SetupTest(test))) => self.setup_test(test).await,
+                    Some(_) => {}
                     None => return,
                 },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
@@ -202,6 +199,42 @@ impl Runner {
                 }
             }
         }
+    }
+
+    /// Handles `command` outside a Session: an end is refused, and a
+    /// question or Turn meant for the user is shown instead (ticket 23 will
+    /// keep them for the next Session). Returns any other command.
+    fn outside_session(&self, command: Command) -> Option<Command> {
+        match command {
+            Command::End(reply) | Command::EndAfterSpeech(reply) => {
+                let _ = reply.send(Err(EndError));
+            }
+            // `reply` is dropped unanswered: no one can answer.
+            Command::Ask(ask) => self.notify(notifications::unasked(&ask.question.prompt)),
+            Command::Turn(text) => self.notify(notifications::untold(&text)),
+            // Lucy's aside on a Turn of her own, which there isn't.
+            Command::Say(_) => {}
+            command => return Some(command),
+        }
+        None
+    }
+
+    /// Handles `command` while a Voice preview or setup test runs outside a
+    /// Session: as `outside_session`, and another preview or test is
+    /// refused as busy. Returns a Session start.
+    fn while_busy(
+        &self,
+        command: Command,
+    ) -> Option<oneshot::Sender<Result<SessionId, StartError>>> {
+        match self.outside_session(command)? {
+            Command::Start(started) => return Some(started),
+            Command::VoicePreview(preview) => {
+                let _ = preview.reply.send(Err(PreviewError::Busy));
+            }
+            Command::SetupTest(test) => test.refuse(SetupTestError::Busy),
+            _ => {}
+        }
+        None
     }
 
     /// Runs one Session until it ends, then stops the Plugins it started.
@@ -253,7 +286,10 @@ impl Runner {
         let wake_word = wake::word(&settings.wake_word);
         let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
-        let mut speaker = self.adapters.tts.open(&devices.speaker, speaker_tx);
+        let mut speaker =
+            self.adapters
+                .tts
+                .open(&devices.speaker, &settings.piper.voice, speaker_tx);
         speaker.sound(Sound::Start);
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();

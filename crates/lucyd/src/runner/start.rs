@@ -1,5 +1,6 @@
 //! A Session's start: the Persona and `config.toml` are read afresh, so
-//! edits apply at the next Session, and the model is opened with them.
+//! edits, `[piper] voice` among them, apply at the next Session, and the
+//! model is opened with them.
 
 use std::path::PathBuf;
 use std::sync::Arc;

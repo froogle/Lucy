@@ -84,7 +84,7 @@ fn speech_while_lucy_thinks_is_a_barge_in() {
     lucyd.say("in Paris I mean");
     assert_eq!(
         lucyd.thinking.next_turn(),
-        "[You were interrupted; the user heard up to: \"\"]\nin Paris I mean"
+        "[You were interrupted]\nin Paris I mean"
     );
     assert_eq!(lucyd.tts.stops(), 0, "nothing was playing");
 }

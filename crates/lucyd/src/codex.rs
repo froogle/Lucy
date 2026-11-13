@@ -18,7 +18,7 @@ use lucy_config::Provider;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 
@@ -64,15 +64,9 @@ impl Codex {
         let mut config = vec![r#"web_search="disabled""#.to_owned()];
         match workspace {
             Some(workspace) => {
-                let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
                 let codex_home = std::env::var_os("CODEX_HOME")
-                    .map_or_else(|| home.join(".codex"), PathBuf::from);
-                let mut writable = vec![workspace.dir.clone(), workspace.tmp.clone(), codex_home];
-                command.env("TMPDIR", &workspace.tmp);
-                writable.extend(workspace.writable.iter().cloned());
-                let mut readable = workspace.readable.clone();
-                readable.extend(sandbox::program_dir(&self.program));
-                sandbox::confine_delegate(&mut command, &readable, &writable)?;
+                    .map_or_else(|| sandbox::home().join(".codex"), PathBuf::from);
+                sandbox::confine_cli(&mut command, workspace, &self.program, &[codex_home])?;
             }
             None => config.push("features.shell_tool=false".to_owned()),
         }
@@ -207,14 +201,6 @@ impl Codex {
             }
         }
     }
-}
-
-/// What an app-server is for: a Session's model, or with a `workspace`, a
-/// Delegate.
-struct Role {
-    relay: Relay,
-    instructions: String,
-    workspace: Option<Workspace>,
 }
 
 impl Codex {
