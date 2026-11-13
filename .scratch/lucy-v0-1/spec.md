@@ -249,6 +249,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
   | `system_status` | `topic` ∈ battery, disk, memory/CPU, network, volume, time, uptime → facts | no |
   | `request_plugin` | `goal`, `clarifications` → starts Authoring | no |
   | `manage_plugin` | `plugin`, `action` ∈ enable, disable, rollback, remove → result | remove only |
+  | `update_persona` | `persona` (full new text of `persona.md`) → saved; applies in full from the next Session | no |
   | `end_session` | → ends the Session after current speech | no |
 
 - `launch_app` matches XDG desktop entries by name, generic name and keywords. It launches through `uwsm app --` when uwsm is running and `gio launch` otherwise (config override). There is no fallback to `request_plugin`.
