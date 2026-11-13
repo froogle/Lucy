@@ -30,6 +30,10 @@ fn main() -> ExitCode {
             .join("lucy")
             .join("work"),
     ));
+    adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher::new(
+        config.desktop.launcher.clone(),
+    ));
+    adapters.applications = lucyd::desktop_entries::xdg_dirs();
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,

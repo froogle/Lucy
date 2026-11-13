@@ -4,8 +4,9 @@
 pub mod adapters;
 pub mod claude;
 mod desktop;
-mod desktop_entries;
+pub mod desktop_entries;
 mod ipc;
+pub mod launcher;
 mod mcp;
 mod runner;
 mod session;

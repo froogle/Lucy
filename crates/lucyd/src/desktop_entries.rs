@@ -12,6 +12,24 @@ pub struct DesktopEntry {
     pub keywords: Vec<String>,
 }
 
+/// Where desktop entries live, most important first:
+/// `$XDG_DATA_HOME/applications`, then each of `$XDG_DATA_DIRS`.
+pub fn xdg_dirs() -> Vec<PathBuf> {
+    let data_dirs = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".to_owned());
+    std::iter::once(lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share"))
+        .chain(
+            data_dirs
+                .split(':')
+                .filter(|d| !d.is_empty())
+                .map(PathBuf::from),
+        )
+        .map(|dir| dir.join("applications"))
+        .collect()
+}
+
 /// The apps shown to the user from the entries in `dirs`. An entry in an
 /// earlier dir replaces one with the same file name in a later dir, even
 /// when the earlier one is hidden.
