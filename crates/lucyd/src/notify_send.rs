@@ -82,6 +82,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::notifications::{ended, listening};
 
     /// A stand-in `notify-send` that appends each call's arguments to
     /// `calls`, one call per line, and prints `output`.
@@ -103,22 +104,6 @@ mod tests {
     fn calls(dir: &Path) -> Vec<String> {
         let calls = std::fs::read_to_string(dir.join("calls")).unwrap();
         calls.lines().map(str::to_owned).collect()
-    }
-
-    fn listening() -> Notification {
-        Notification {
-            summary: "Lucy is listening".into(),
-            body: String::new(),
-            action: Some(NotificationAction::EndSession),
-        }
-    }
-
-    fn stopped() -> Notification {
-        Notification {
-            summary: "Lucy has stopped listening".into(),
-            body: String::new(),
-            action: None,
-        }
     }
 
     #[tokio::test]
@@ -145,7 +130,7 @@ mod tests {
         // The action is read after the id.
         picked.recv().await;
 
-        notifier.notify(stopped(), actions);
+        notifier.notify(ended(), actions);
 
         // Every sender has gone once both calls have finished.
         while picked.recv().await.is_some() {}
@@ -161,8 +146,8 @@ mod tests {
         let notifier = NotifySend::new(fake_notify_send(dir.path(), "7\\n"));
         let (actions, mut picked) = mpsc::unbounded_channel();
 
-        notifier.notify(stopped(), actions.clone());
-        notifier.notify(stopped(), actions);
+        notifier.notify(ended(), actions.clone());
+        notifier.notify(ended(), actions);
 
         assert_eq!(picked.recv().await, None);
         let calls = calls(dir.path());

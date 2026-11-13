@@ -124,7 +124,7 @@ fn on_indicator_lost(state: State) -> Option<Notification> {
     }
 }
 
-fn listening() -> Notification {
+pub fn listening() -> Notification {
     Notification {
         summary: "Lucy is listening".into(),
         body: String::new(),
@@ -132,7 +132,7 @@ fn listening() -> Notification {
     }
 }
 
-fn confirming() -> Notification {
+pub fn confirming() -> Notification {
     Notification {
         summary: "Lucy is waiting for your yes".into(),
         body: "Say yes to go ahead, or End to decline.".into(),
@@ -140,7 +140,7 @@ fn confirming() -> Notification {
     }
 }
 
-fn ended() -> Notification {
+pub fn ended() -> Notification {
     Notification {
         summary: "Lucy has stopped listening".into(),
         body: String::new(),
