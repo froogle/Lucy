@@ -8,7 +8,11 @@ See `docs/agents/working-in-lucy.md` (lucyd test harness, Fake executables).
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Both write their executables the way `fake_notify_send` does (or another way that leaves no write fd in the test process)
 - [ ] `cargo test -p lucyd` run 50x under load shows no "Text file busy" failure
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-4` (80a2620..5e4e5a8). piper's test `script()` writes through `/bin/sh`; the harness installs Plugins with `cp`. 50 runs of `cargo test -p lucyd` under load (before the slice-4 merges) showed no "Text file busy". The one failure seen (run 45) was the fake `claude` argv race, fixed in review (fakes write `argv.tmp` then `mv`).

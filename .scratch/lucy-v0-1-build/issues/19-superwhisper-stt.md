@@ -8,8 +8,12 @@ Spec: Providers and configuration (Superwhisper).
 
 **Seams:** owns the `[stt]` config section choosing `whisper` or `superwhisper`, and the Superwhisper warnings the TUI reads (also used by 20); uses the failure result from `Stt::transcribe` (owned by 11)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Selectable in config; absent from the options when Superwhisper isn't installed
 - [ ] Failures follow the STT error path from 11
 - [ ] The latency, cleanup-model and history warnings are available for the TUI (20)
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-4` (80a2620..5e4e5a8). `[stt] kind` in lucy-config (`SttKind::options`, `SttKind::warnings` for 20); adapter in `crates/lucyd/src/superwhisper.rs`. Uses `raw` before `text`. How a failed transcription appears in `read` is assumed (an `error` field, plus a 10 s timeout); not checked against the real service. Utterance WAVs go in `$XDG_RUNTIME_DIR/lucy`. Switching back to Whisper after a start without its model needs a lucyd restart. Combination test with Codex: `superwhisper_hears_a_session_on_codex_and_its_reply_is_spoken`.

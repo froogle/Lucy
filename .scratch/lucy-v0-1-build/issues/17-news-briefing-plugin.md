@@ -8,7 +8,7 @@ Spec: News Plugin; Persona. Wayfinder 11 lists the success checks.
 
 **Seams:** owns the Plugin fixtures test harness the authoring template copies (also used by 22)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Plugin ships with a Manifest and is approved at setup
 - [ ] Feed text is treated as untrusted input
@@ -17,3 +17,7 @@ Spec: News Plugin; Persona. Wayfinder 11 lists the success checks.
 - [ ] "Show me that story" opens the item's link; "don't open anything" is respected
 - [ ] Detailed roundup (~2 min) built from feed descriptions only
 - [ ] Tested through its MCP interface against recorded feed fixtures (no live network); doubles as the template's fixtures example
+
+## Comments
+
+Resolved on `lucy-v0-1-slice-4` (80a2620..5e4e5a8). New crate `crates/lucy-news`; fixtures harness in `crates/lucy-news/tests/support/mod.rs` (fake web from `tests/fixtures/web/<host>/<path>`, made-up stories, one prompt-injection item). Shipped Plugins are now approved when lucyd scans them, not at setup (spec updated; note on 20). Items carry `published`, and the briefing tells the model to skip stale stories: CNN's official feed was serving April 2023 items in a live check, so reconsider CNN in the default rotation before release. A named site outside the catalogue is checked for an official feed (`<link rel="alternate">`, then common paths); if found it is added as `unvetted` and Lucy says its AI-summary terms haven't been checked. Model behaviour (greeting, `open_url`, "don't open anything", Barge-in in the roundup) is left to 24. Sky's terms remain unverified.
