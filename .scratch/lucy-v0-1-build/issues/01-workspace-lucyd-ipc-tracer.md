@@ -9,7 +9,7 @@ Spec: [../../lucy-v0-1/spec.md](../../lucy-v0-1/spec.md) (Processes and crates; 
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Workspace has the binaries `lucyd`, `lucy` and `lucy-indicator` (stub) and the libraries `lucy-ipc` and `lucy-config`; `lucy` and `lucy-indicator` don't depend on any audio or ML crates
 - [ ] lucyd runs with no config file, using defaults from `lucy-config`
@@ -19,3 +19,7 @@ Spec: [../../lucy-v0-1/spec.md](../../lucy-v0-1/spec.md) (Processes and crates; 
 - [ ] JSON Schema is generated from the `lucy-ipc` types and committed; CI fails if it drifts
 - [ ] `cargo-deny` licence allow-list (permissive only) runs in CI
 - [ ] Harness test: start lucyd, handshake, assert an Idle `status`
+
+## Comments
+
+Resolved on `lucy-v0-1-foundation` (3c4d73e..f172c4e). Harness: `crates/lucyd/tests/harness/mod.rs`. The GitHub Actions workflow has not run yet (no remote).

@@ -6,10 +6,14 @@ Spec: MCP tool server; Session state machine (End). ADRs 0005, 0006.
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Private MCP socket separate from the public socket; no TCP port is opened
 - [ ] `lucy mcp-relay <token>` pipes stdio to the private socket; an unknown or missing token is refused
 - [ ] Tool listing depends on caller type (Session model vs Delegate), ready for later tickets
 - [ ] `end_session` ends the Session after queued speech finishes
 - [ ] Harness test: the fake Thinking calls `end_session` through the real relay and the Session ends after speech; a call with a bad token is refused
+
+## Comments
+
+Resolved on `lucy-v0-1-foundation` (1d5aa76..f95426e). MSRV raised to 1.88 for rmcp. `end_session` ends at Listening, once the Turn is over and speech has played. `Caller::Delegate` exists, but nothing issues Delegate tokens until ticket 22.

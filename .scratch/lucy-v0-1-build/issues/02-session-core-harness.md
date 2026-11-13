@@ -6,7 +6,7 @@ Spec: Session state machine; Testing Decisions.
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Fake adapters exist for capture/VAD speech segments, STT, Thinking (scripted stream with deltas, sentence ends and turn end) and TTS (records sentences)
 - [ ] Thinking means a Turn is in progress with nothing playing; Speaking means TTS audio is queued or playing; one Turn can alternate between them
@@ -15,3 +15,7 @@ Spec: Session state machine; Testing Decisions.
 - [ ] "No speech recognised" returns to Listening without resetting the timer
 - [ ] No transcript or spoken text ever appears in an IPC message (harness assertion reused by later tickets)
 - [ ] Harness tests cover each transition above
+
+## Comments
+
+Resolved on `lucy-v0-1-foundation` (8f94183..9aecaed). Review fix f96d34a: each subscriber gets its own queue so no `state` change is lost. 13a114d: the silence timer no longer pauses during STT (spec: runs only in Listening), so a slow transcription can now hit the timeout.
