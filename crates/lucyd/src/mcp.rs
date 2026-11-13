@@ -19,6 +19,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::adapters::Relay;
+use crate::desktop::Desktop;
+use crate::persona::Persona;
 use crate::plugins::SessionTools;
 use crate::runner::Command;
 
@@ -117,12 +119,20 @@ fn random_token() -> String {
 pub async fn serve(
     listener: UnixListener,
     relays: Relays,
+    persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
+    desktop: Desktop,
 ) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
-                tokio::spawn(connection(stream, relays.tokens.clone(), commands.clone()));
+                tokio::spawn(connection(
+                    stream,
+                    relays.tokens.clone(),
+                    persona.clone(),
+                    commands.clone(),
+                    desktop.clone(),
+                ));
             }
             Err(e) => eprintln!("lucyd: MCP accept failed: {e}"),
         }
@@ -132,7 +142,9 @@ pub async fn serve(
 async fn connection(
     mut stream: UnixStream,
     tokens: Tokens,
+    persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
+    desktop: Desktop,
 ) {
     let Some(token) = read_token(&mut stream).await else {
         return;
@@ -147,7 +159,9 @@ async fn connection(
     let tools = Tools {
         token,
         tokens,
+        persona,
         commands,
+        desktop,
     };
     if let Ok(service) = tools.serve(stream).await {
         let _ = service.waiting().await;
@@ -170,7 +184,9 @@ async fn read_token(stream: &mut UnixStream) -> Option<String> {
 struct Tools {
     token: String,
     tokens: Tokens,
+    persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
+    desktop: Desktop,
 }
 
 impl Tools {
@@ -192,6 +208,33 @@ impl Tools {
             _ => CallToolResult::error(vec![ContentBlock::text("No Session is open.")]),
         }
     }
+
+    /// Needs no Approval: the Persona is the user's to shape by voice.
+    fn update_persona(&self, request: &CallToolRequestParams) -> CallToolResult {
+        let text = request
+            .arguments
+            .as_ref()
+            .and_then(|arguments| arguments.get("persona"))
+            .and_then(|persona| persona.as_str())
+            .filter(|persona| !persona.trim().is_empty());
+        let Some(text) = text else {
+            return CallToolResult::error(vec![ContentBlock::text(
+                "persona must be the whole new Persona text.",
+            )]);
+        };
+        match self.persona.save(text) {
+            Ok(()) => CallToolResult::success(vec![ContentBlock::text(format!(
+                "Saved. Your Persona now reads:\n\n{text}\n\nTell the user what changed, in \
+                 one short sentence."
+            ))]),
+            Err(e) => {
+                eprintln!("lucyd: can't save {}: {e}", self.persona.path().display());
+                CallToolResult::error(vec![ContentBlock::text(
+                    "The Persona couldn't be saved. Tell the user it didn't change.",
+                )])
+            }
+        }
+    }
 }
 
 fn no_tool(name: &str) -> ErrorData {
@@ -211,6 +254,29 @@ fn end_session_tool() -> Tool {
     )
 }
 
+fn update_persona_tool() -> Tool {
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": {"persona": {
+            "type": "string",
+            "description": "The whole new Persona text, keeping everything the user didn't \
+                            ask to change.",
+        }},
+        "required": ["persona"],
+    });
+    let serde_json::Value::Object(schema) = schema else {
+        unreachable!()
+    };
+    Tool::new(
+        "update_persona",
+        "Rewrite your Persona: the instructions you were given about who you are, how you \
+         speak and what to call the user. Call it when the user asks you to change your manner \
+         (\"be a bit more sarcastic\") or tells you what to call them. It applies fully from \
+         the next Session.",
+        Arc::new(schema),
+    )
+}
+
 impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
@@ -223,7 +289,12 @@ impl ServerHandler for Tools {
     ) -> Result<ListToolsResult, ErrorData> {
         let grant = self.grant()?;
         let tools = match grant.caller {
-            Caller::SessionModel => [vec![end_session_tool()], grant.plugins.list()].concat(),
+            Caller::SessionModel => [
+                vec![end_session_tool(), update_persona_tool()],
+                Desktop::tools(),
+                grant.plugins.list(),
+            ]
+            .concat(),
             Caller::Delegate => vec![],
         };
         Ok(ListToolsResult::with_all_items(tools))
@@ -234,10 +305,15 @@ impl ServerHandler for Tools {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let arguments = request.arguments.clone().unwrap_or_default();
         let grant = self.grant()?;
         match (grant.caller, &*request.name) {
             (Caller::SessionModel, "end_session") => Ok(self.end_session().await.into()),
+            (Caller::SessionModel, "update_persona") => Ok(self.update_persona(&request).into()),
             (Caller::SessionModel, name) => {
+                if let Some(result) = self.desktop.call(name, &arguments).await {
+                    return Ok(result.into());
+                }
                 match grant.plugins.call(name, request.arguments).await {
                     Some(result) => Ok(result.into()),
                     None => Err(no_tool(name)),
