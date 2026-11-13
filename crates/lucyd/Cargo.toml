@@ -18,6 +18,7 @@ rtrb.workspace = true
 ort.workspace = true
 ort-tract.workspace = true
 whisper-rs.workspace = true
+cpal.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

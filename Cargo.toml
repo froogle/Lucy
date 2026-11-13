@@ -25,6 +25,7 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "
 ort-tract = "=0.3.0"
 hound = "3"
 whisper-rs = { version = "0.16", features = ["vulkan"] }
+cpal = { version = "0.18", features = ["pipewire", "pulseaudio"] }
 
 # tract runs the VAD; unoptimised it is far slower than real time.
 [profile.dev.package."tract-core"]

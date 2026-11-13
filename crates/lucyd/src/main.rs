@@ -1,4 +1,10 @@
+use std::error::Error;
 use std::process::ExitCode;
+use std::sync::Arc;
+
+use lucyd::adapters::Adapters;
+use lucyd::audio::{self, Cpal, Silero};
+use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
     let config_path = lucy_config::default_path();
@@ -23,13 +29,16 @@ fn main() -> ExitCode {
         }
     };
     // Ticket 12 picks the Provider from config.
-    let mut adapters = lucyd::adapters::Adapters::inert();
+    let mut adapters = Adapters::inert();
     adapters.thinking = Box::new(lucyd::claude::Claude::new(
         "claude".into(),
         lucy_config::xdg_dir("XDG_STATE_HOME", ".local/state")
             .join("lucy")
             .join("work"),
     ));
+    if let Err(e) = hear(&config, &mut adapters) {
+        eprintln!("lucyd: {e}; Lucy can't hear");
+    }
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,
@@ -48,4 +57,17 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+/// Loads Whisper once and cuts the microphone into utterances for it.
+fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box<dyn Error>> {
+    let models = lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
+        .join("lucy")
+        .join("models");
+    let whisper = Whisper::load(&config.whisper, &models)?;
+    let vad = Silero::load()?;
+    let speech = audio::listen(&Cpal, &config.audio, Box::new(vad), &config.endpointing)?;
+    adapters.stt = Arc::new(whisper);
+    adapters.speech = speech;
+    Ok(())
 }

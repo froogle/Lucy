@@ -2,6 +2,7 @@
 //! the VAD's endpointing, which together turn the microphone into
 //! utterances for STT.
 
+mod cpal;
 mod endpoint;
 mod silero;
 
@@ -11,6 +12,7 @@ use std::time::Duration;
 use lucy_config::{Audio, Endpointing};
 use tokio::sync::mpsc;
 
+pub use self::cpal::Cpal;
 use crate::adapters::SpeechSegment;
 use endpoint::Endpointer;
 pub use silero::Silero;
