@@ -189,10 +189,11 @@ impl Runner {
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();
         let mut session = Session::new(confirmation.yes_phrases);
-        let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
+        let silence_timeout = Duration::from_secs_f64(silence_timeout);
+        let mut silence = SilenceTimer::new(silence_timeout);
         if woken {
             // A false wake clears quickly.
-            silence.first_timeout(WAKE_TIMEOUT);
+            silence.first_timeout(WAKE_TIMEOUT.min(silence_timeout));
         }
         silence.set_running(session.silence_timer_runs());
         // Questions waiting to be asked, and where the answer to the one

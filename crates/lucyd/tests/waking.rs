@@ -66,6 +66,17 @@ fn with_no_speech_after_the_wake_word_the_session_ends_after_8_seconds_with_a_cl
 }
 
 #[test]
+fn a_silence_timeout_shorter_than_8_seconds_ends_a_false_wake_sooner() {
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let mut events = lucyd.state_client();
+
+    lucyd.wake();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+
+    assert_eq!(next_state_within(&mut events, 3).state, State::Idle);
+}
+
+#[test]
 fn a_silence_timeout_ends_with_a_closing_sound() {
     let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
     let mut events = lucyd.state_client();
