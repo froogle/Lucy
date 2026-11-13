@@ -4,6 +4,7 @@
 //! announced as `plugins.changed`.
 
 use std::fmt;
+use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::Path;
 
@@ -354,14 +355,28 @@ impl Host {
 }
 
 /// Writes `bytes` to `path` with `mode`, replacing it all at once, so a
-/// running copy of it is never written to.
+/// running copy of it is never written to. A child process writes it: a
+/// write fd held here could leak into a Plugin lucyd forks meanwhile and
+/// make running the file fail with "Text file busy".
 fn replace_file(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut temp = path.as_os_str().to_owned();
     temp.push(".rollback");
-    std::fs::write(&temp, bytes)?;
+    let mut writer = std::process::Command::new("/bin/sh")
+        .args(["-c", "cat > \"$1\"", "sh"])
+        .arg(&temp)
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    let written = writer.stdin.take().expect("piped").write_all(bytes);
+    let status = writer.wait()?;
+    written?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "writing it failed: {status}"
+        )));
+    }
     std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))?;
     std::fs::rename(&temp, path)
 }
