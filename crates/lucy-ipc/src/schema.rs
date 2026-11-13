@@ -4,8 +4,9 @@ use schemars::generate::SchemaSettings;
 use serde_json::{json, Value};
 
 use crate::{
-    Hello, HelloResult, LevelEvent, ProviderCheck, ProviderCheckResult, ProvidersStatus,
-    SessionStarted, StateEvent, Status, Subscribe, PROTOCOL,
+    ApprovalsList, Hello, HelloResult, LevelEvent, PluginsChanged, PluginsList, ProviderCheck,
+    ProviderCheckResult, ProvidersStatus, RevokeApproval, SessionStarted, SetPluginEnabled,
+    StateEvent, Status, Subscribe, PROTOCOL,
 };
 
 /// The schema committed as `schema/lucy-ipc.schema.json`. `x-methods` maps
@@ -23,6 +24,11 @@ pub fn schema() -> Value {
     let providers_status = generator.subschema_for::<ProvidersStatus>();
     let provider_check = generator.subschema_for::<ProviderCheck>();
     let provider_check_result = generator.subschema_for::<ProviderCheckResult>();
+    let plugins_list = generator.subschema_for::<PluginsList>();
+    let set_plugin_enabled = generator.subschema_for::<SetPluginEnabled>();
+    let approvals_list = generator.subschema_for::<ApprovalsList>();
+    let revoke_approval = generator.subschema_for::<RevokeApproval>();
+    let plugins_changed = generator.subschema_for::<PluginsChanged>();
 
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -37,10 +43,15 @@ pub fn schema() -> Value {
             "session.end": {"result": {"type": "object"}},
             "providers.status": {"result": providers_status},
             "provider.check": {"params": provider_check, "result": provider_check_result},
+            "plugins.list": {"result": plugins_list},
+            "plugins.set_enabled": {"params": set_plugin_enabled, "result": {"type": "object"}},
+            "approvals.list": {"result": approvals_list},
+            "approvals.revoke": {"params": revoke_approval, "result": {"type": "object"}},
         },
         "x-events": {
             "state": {"params": state_event},
             "level": {"params": level_event},
+            "plugins.changed": {"params": plugins_changed},
         },
         "$defs": generator.take_definitions(true),
     })

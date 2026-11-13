@@ -44,6 +44,8 @@ fn main() -> ExitCode {
         let update = match client.next_event() {
             Ok(Event::State(status)) => Update::State(status.state),
             Ok(Event::Level(level)) => Update::Level(level.rms),
+            // Not subscribed to.
+            Ok(Event::PluginsChanged(_)) => continue,
             Err(e) => Update::Lost(e.to_string()),
         };
         let lost = matches!(update, Update::Lost(_));
