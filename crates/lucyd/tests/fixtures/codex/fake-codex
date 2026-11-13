@@ -1,0 +1,48 @@
+#!/bin/sh
+# Stands in for `codex app-server`. Everything it reads and writes is in its
+# working directory, so each test scripts its own:
+# - `account/read` answers with ./account.json, or a ChatGPT login;
+# - the Nth `turn/start` starts turn `turn-N` and streams turnN.jsonl, from
+#   here if the test hasn't put one in the working directory;
+# - `turn/interrupt` completes the turn in progress as interrupted;
+# - if ./dies exists, it exits once it has streamed a turn.
+# It records its pid in ./pids, its arguments in ./argv and each stdin line
+# in ./stdin. Lucy's lines are compact JSON with keys in order, so sed can
+# pick out the id and method.
+here=$(dirname "$0")
+echo $$ >> pids
+printf '%s\0' "$@" > argv
+n=0
+while IFS= read -r line; do
+    printf '%s\n' "$line" >> stdin
+    id=$(printf '%s' "$line" | sed -n 's/^{"id":\([0-9]*\),.*/\1/p')
+    method=$(printf '%s' "$line" | sed -n 's/.*"method":"\([^"]*\)".*/\1/p')
+    case "$method" in
+    initialize)
+        echo '{"id":'"$id"',"result":{"userAgent":"lucy/0.169.0 (Arch Linux Rolling Release; x86_64) (lucy; 0.1.0)","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"linux"}}'
+        ;;
+    account/read)
+        account=$(cat account.json 2>/dev/null ||
+            echo '{"account":{"type":"chatgpt","email":"user@example.com","planType":"plus","workspaceName":null},"userId":"user-1","requiresOpenaiAuth":true}')
+        echo '{"id":'"$id"',"result":'"$account"'}'
+        ;;
+    thread/start)
+        echo '{"id":'"$id"',"result":{"thread":{"id":"thread-1","sessionId":"thread-1","forkedFromId":null,"parentThreadId":null,"preview":"","ephemeral":true},"model":"gpt-6-luna","modelProvider":"openai","serviceTier":null,"disabledPluginIds":[],"cwd":"/work","instructionSources":[],"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":{"type":"readOnly"},"reasoningEffort":null}}'
+        echo '{"method":"thread/started","params":{"thread":{"id":"thread-1"}}}'
+        ;;
+    turn/start)
+        n=$((n + 1))
+        echo '{"id":'"$id"',"result":{"turn":{"id":"turn-'"$n"'","rootTurnId":"turn-'"$n"'","items":[],"itemsView":"full","status":"inProgress","error":null,"startedAt":null,"completedAt":null,"durationMs":null}}}'
+        if [ -f "turn$n.jsonl" ]; then
+            cat "turn$n.jsonl"
+        else
+            cat "$here/turn$n.jsonl"
+        fi
+        [ -f dies ] && exit 1
+        ;;
+    turn/interrupt)
+        echo '{"id":'"$id"',"result":{}}'
+        echo '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-'"$n"'","rootTurnId":"turn-'"$n"'","items":[],"itemsView":"notLoaded","status":"interrupted","error":null,"startedAt":1794579100,"completedAt":1794579101,"durationMs":900}}}'
+        ;;
+    esac
+done

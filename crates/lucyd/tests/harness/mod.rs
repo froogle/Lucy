@@ -906,6 +906,8 @@ impl SessionModel for FakeSessionModel {
     fn send_turn(&mut self, text: String) {
         let _ = self.turns.send(text);
     }
+
+    fn interrupt(&mut self) {}
 }
 
 /// TTS that records each sentence and "plays" it until the test finishes it,

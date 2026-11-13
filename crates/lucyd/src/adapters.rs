@@ -106,8 +106,13 @@ pub trait Thinking: Send + Sync {
 
 /// The model process of one Session.
 pub trait SessionModel: Send {
-    /// Starts a Turn with what the user said.
+    /// Starts a Turn with what the user said. If a Turn is still running,
+    /// this one starts once it has ended.
     fn send_turn(&mut self, text: String);
+
+    /// Stops the Turn in progress, for a Barge-in. The interrupted Turn
+    /// sends no more events, not even `TurnEnd`. Does nothing between Turns.
+    fn interrupt(&mut self);
 }
 
 /// A TTS Provider together with playback.
@@ -291,6 +296,8 @@ impl InertSessionModel {
 
 impl SessionModel for InertSessionModel {
     fn send_turn(&mut self, _text: String) {}
+
+    fn interrupt(&mut self) {}
 }
 
 impl Tts for Inert {

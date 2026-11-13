@@ -208,6 +208,9 @@ impl SessionModel for ClaudeSessionModel {
         // Only fails once the process is gone, which has ended the Turn.
         let _ = self.turns.send(text);
     }
+
+    /// Ticket 09 sends the stream-json control interrupt.
+    fn interrupt(&mut self) {}
 }
 
 impl Drop for ClaudeSessionModel {
@@ -262,7 +265,7 @@ impl Stream {
 /// followed by whitespace. Each sentence is closed as soon as the text that
 /// proves it complete arrives.
 #[derive(Default)]
-struct Sentences {
+pub(crate) struct Sentences {
     /// Non-blank text has been passed on since the last `SentenceEnd`.
     open: bool,
     /// The last character passed on ends a sentence if whitespace follows.
@@ -270,7 +273,7 @@ struct Sentences {
 }
 
 impl Sentences {
-    fn push(&mut self, text: &str) -> Vec<ThinkingEvent> {
+    pub(crate) fn push(&mut self, text: &str) -> Vec<ThinkingEvent> {
         let mut events = vec![];
         let mut start = 0;
         for (i, c) in text.char_indices() {
@@ -293,7 +296,7 @@ impl Sentences {
     }
 
     /// Ends the sentence in progress, if any.
-    fn finish(&mut self) -> Option<ThinkingEvent> {
+    pub(crate) fn finish(&mut self) -> Option<ThinkingEvent> {
         self.after_terminator = false;
         std::mem::take(&mut self.open).then_some(ThinkingEvent::SentenceEnd)
     }
