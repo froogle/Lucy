@@ -1,0 +1,17 @@
+[package]
+name = "lucyd"
+description = "Lucy's daemon: owns audio, the Session and every child process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+lucy-ipc.workspace = true
+lucy-config.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

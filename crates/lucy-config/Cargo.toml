@@ -1,0 +1,15 @@
+[package]
+name = "lucy-config"
+description = "Lucy's config types and defaults"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+lucy-ipc = { path = "crates/lucy-ipc" }
+lucy-config = { path = "crates/lucy-config" }
+lucyd = { path = "crates/lucyd" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+toml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "signal"] }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"

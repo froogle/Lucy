@@ -1,0 +1,12 @@
+[package]
+name = "lucy-ipc"
+description = "Protocol types, client and JSON Schema for lucyd's public socket"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true

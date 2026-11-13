@@ -1,0 +1,17 @@
+[package]
+name = "lucy"
+description = "Lucy's CLI and TUI, a client of lucyd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+lucy-ipc.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+lucyd.workspace = true
+lucy-config.workspace = true
+tempfile.workspace = true
