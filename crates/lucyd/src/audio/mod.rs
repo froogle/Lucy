@@ -3,6 +3,7 @@
 //! utterances for STT.
 
 mod endpoint;
+mod silero;
 
 use std::fmt;
 use std::time::Duration;
@@ -12,6 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::adapters::SpeechSegment;
 use endpoint::Endpointer;
+pub use silero::Silero;
 
 /// Lucy's internal sample rate: mono f32 at 16 kHz.
 pub const SAMPLE_RATE: u32 = 16_000;

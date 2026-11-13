@@ -15,8 +15,11 @@ serde_json.workspace = true
 tokio.workspace = true
 rmcp = { workspace = true, features = ["server"] }
 rtrb.workspace = true
+ort.workspace = true
+ort-tract.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+hound.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 tokio = { workspace = true, features = ["process"] }

@@ -21,3 +21,22 @@ clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 rmcp = { version = "3.10", default-features = false }
 rtrb = "0.3"
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "alternative-backend", "api-17"] }
+ort-tract = "=0.3.0"
+hound = "3"
+
+# tract runs the VAD; unoptimised it is far slower than real time.
+[profile.dev.package."tract-core"]
+opt-level = 3
+
+[profile.dev.package."tract-linalg"]
+opt-level = 3
+
+[profile.dev.package."tract-onnx"]
+opt-level = 3
+
+[profile.dev.package."tract-hir"]
+opt-level = 3
+
+[profile.dev.package."tract-data"]
+opt-level = 3
