@@ -8,13 +8,14 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::runner::Command;
+use crate::status::StatusBus;
 
 pub async fn serve(
     listener: UnixListener,
-    status: watch::Receiver<Status>,
+    status: StatusBus,
     sessions: mpsc::UnboundedSender<Command>,
 ) {
     loop {
@@ -29,15 +30,17 @@ pub async fn serve(
 
 struct Connection {
     writer: OwnedWriteHalf,
-    status: watch::Receiver<Status>,
+    status: StatusBus,
     sessions: mpsc::UnboundedSender<Command>,
     greeted: bool,
     state_subscribed: bool,
+    /// Every state change since subscribing, once subscribed.
+    state_events: Option<mpsc::UnboundedReceiver<Status>>,
 }
 
 async fn connection(
     stream: UnixStream,
-    status: watch::Receiver<Status>,
+    status: StatusBus,
     sessions: mpsc::UnboundedSender<Command>,
 ) {
     let (reader, writer) = stream.into_split();
@@ -48,6 +51,7 @@ async fn connection(
         sessions,
         greeted: false,
         state_subscribed: false,
+        state_events: None,
     };
     loop {
         let sent = tokio::select! {
@@ -55,14 +59,19 @@ async fn connection(
                 Ok(Some(line)) => conn.handle_line(&line).await,
                 _ => return,
             },
-            changed = conn.status.changed(), if conn.state_subscribed => match changed {
-                Ok(()) => conn.send_state().await,
-                Err(_) => return,
-            },
+            Some(status) = next_state(&mut conn.state_events) => conn.send_state(status).await,
         };
         if sent.is_err() {
             return;
         }
+    }
+}
+
+/// The next state change, or never if not subscribed.
+async fn next_state(state_events: &mut Option<mpsc::UnboundedReceiver<Status>>) -> Option<Status> {
+    match state_events {
+        Some(state_events) => state_events.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -100,14 +109,14 @@ impl Connection {
         let outcome = self.dispatch(method, params).await;
         self.respond(id, outcome).await?;
         if self.state_subscribed && !was_subscribed {
-            self.send_state().await?;
+            let (status, state_events) = self.status.subscribe();
+            self.state_events = Some(state_events);
+            self.send_state(status).await?;
         }
         Ok(())
     }
 
-    /// Sends the current state as a `state` event.
-    async fn send_state(&mut self) -> std::io::Result<()> {
-        let status = self.status.borrow_and_update().clone();
+    async fn send_state(&mut self, status: Status) -> std::io::Result<()> {
         let event = Event::State(StateEvent {
             state: status.state,
             session_id: status.session_id,
@@ -128,7 +137,7 @@ impl Connection {
             ));
         }
         match method {
-            "status" => Ok(json!(*self.status.borrow())),
+            "status" => Ok(json!(self.status.snapshot())),
             "subscribe" => {
                 let subscribe: Subscribe = parse_params(params)?;
                 if subscribe.topics.contains(&Topic::State) {

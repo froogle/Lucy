@@ -170,6 +170,34 @@ fn a_turn_goes_from_listening_through_thinking_and_speaking_back_to_listening() 
 }
 
 #[test]
+fn every_state_change_reaches_subscribers_even_in_a_quick_burst() {
+    let lucyd = Harness::start();
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+
+    // Drive a whole Turn without reading any state event in between.
+    lucyd.say("hi");
+    lucyd.thinking.next_turn();
+    lucyd.thinking.delta("Hello.");
+    lucyd.thinking.turn_end();
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    events.end_session().unwrap();
+
+    let states: Vec<State> = (0..5).map(|_| next_state(&mut events).state).collect();
+    assert_eq!(
+        states,
+        [
+            State::Listening,
+            State::Thinking,
+            State::Speaking,
+            State::Listening,
+            State::Idle
+        ]
+    );
+}
+
+#[test]
 fn one_turn_alternates_between_thinking_and_speaking() {
     let lucyd = Harness::start();
     let mut events = lucyd.state_client();

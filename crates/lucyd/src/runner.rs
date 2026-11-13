@@ -4,12 +4,13 @@
 use std::time::Duration;
 
 use lucy_ipc::{State, Status};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::adapters::Adapters;
 use crate::mcp::{Caller, Relays};
 use crate::session::{Input, Output, Session};
+use crate::status::StatusBus;
 
 /// A request from the public socket or the MCP server.
 pub enum Command {
@@ -25,7 +26,7 @@ pub struct EndError;
 
 pub struct Runner {
     commands: mpsc::UnboundedReceiver<Command>,
-    status: watch::Sender<Status>,
+    status: StatusBus,
     adapters: Adapters,
     relays: Relays,
     silence_timeout: Duration,
@@ -37,7 +38,7 @@ pub struct Runner {
 impl Runner {
     pub fn new(
         commands: mpsc::UnboundedReceiver<Command>,
-        status: watch::Sender<Status>,
+        status: StatusBus,
         adapters: Adapters,
         relays: Relays,
         silence_timeout: Duration,
@@ -157,14 +158,9 @@ impl Runner {
     }
 
     fn publish(&self, state: State, session_id: Option<&str>) {
-        self.status.send_if_modified(|status| {
-            let new = Status {
-                state,
-                session_id: session_id.map(str::to_owned),
-            };
-            let changed = *status != new;
-            *status = new;
-            changed
+        self.status.publish(Status {
+            state,
+            session_id: session_id.map(str::to_owned),
         });
     }
 }

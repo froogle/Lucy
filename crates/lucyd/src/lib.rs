@@ -7,6 +7,7 @@ mod ipc;
 mod mcp;
 mod runner;
 mod session;
+mod status;
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -14,10 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use lucy_config::Config;
-use lucy_ipc::Status;
 use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
@@ -52,15 +52,12 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let listener = runtime.block_on(async { bind(&socket_path) })?;
     let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
-    let (status, status_rx) = watch::channel(Status {
-        state: lucy_ipc::State::Idle,
-        session_id: None,
-    });
+    let status = status::StatusBus::new();
     let (sessions, commands) = mpsc::unbounded_channel();
     runtime.spawn(
         runner::Runner::new(
             commands,
-            status,
+            status.clone(),
             adapters,
             relays.clone(),
             Duration::from_secs_f64(config.session.silence_timeout_secs),
@@ -68,7 +65,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         .run(),
     );
     runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
-    runtime.spawn(ipc::serve(listener, status_rx, sessions));
+    runtime.spawn(ipc::serve(listener, status, sessions));
 
     Ok(Daemon {
         socket_path,
