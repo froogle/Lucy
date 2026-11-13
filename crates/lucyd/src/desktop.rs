@@ -9,6 +9,7 @@ use serde_json::json;
 
 use crate::adapters::Launcher;
 use crate::desktop_entries::{self, Found};
+use crate::system_status;
 
 /// What the desktop tools act on.
 #[derive(Clone)]
@@ -41,6 +42,16 @@ impl Desktop {
                     "required": ["name"],
                 }),
             ),
+            tool(
+                "system_status",
+                "Facts about this machine: battery, disk space, memory and CPU load, network, \
+                 volume, the date and time, or uptime.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {"topic": {"type": "string", "enum": system_status::TOPICS}},
+                    "required": ["topic"],
+                }),
+            ),
         ]
     }
 
@@ -49,6 +60,7 @@ impl Desktop {
         match name {
             "open_url" => Some(self.open_url(string(arguments, "url")).await),
             "launch_app" => Some(self.launch_app(string(arguments, "name")).await),
+            "system_status" => Some(system_status(string(arguments, "topic")).await),
             _ => None,
         }
     }
@@ -89,6 +101,17 @@ impl Desktop {
             Ok(Err(e)) => error(format!("Couldn't launch it: {e}")),
             Err(e) => error(format!("Couldn't launch it: {e}")),
         }
+    }
+}
+
+async fn system_status(topic: String) -> CallToolResult {
+    match tokio::task::spawn_blocking(move || system_status::facts(&topic)).await {
+        Ok(Some(facts)) => text(facts),
+        Ok(None) => error(format!(
+            "The topic must be one of {}.",
+            system_status::TOPICS.join(", ")
+        )),
+        Err(e) => error(format!("Couldn't read it: {e}")),
     }
 }
 

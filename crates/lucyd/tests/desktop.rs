@@ -48,6 +48,52 @@ fn open_url_refuses_anything_but_http_and_https() {
     assert!(lucyd.launcher.opened().is_empty());
 }
 
+/// Calls `system_status` with `topic` and returns its text.
+fn system_status(lucyd: &Harness, topic: &str) -> Result<String, String> {
+    let result = lucyd
+        .thinking
+        .call_tool_with("system_status", json!({ "topic": topic }))
+        .unwrap();
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+        .collect::<String>();
+    match result.is_error {
+        Some(true) => Err(text),
+        _ => Ok(text),
+    }
+}
+
+#[test]
+fn system_status_answers_every_topic_with_facts() {
+    let lucyd = Harness::start();
+    lucyd.client().start_session().unwrap();
+
+    for topic in [
+        "battery",
+        "disk",
+        "memory_cpu",
+        "network",
+        "volume",
+        "time",
+        "uptime",
+    ] {
+        let facts = system_status(&lucyd, topic).unwrap_or_else(|e| panic!("{topic}: {e}"));
+        assert!(!facts.trim().is_empty(), "{topic} said nothing");
+    }
+}
+
+#[test]
+fn system_status_refuses_an_unknown_topic() {
+    let lucyd = Harness::start();
+    lucyd.client().start_session().unwrap();
+
+    let refused = system_status(&lucyd, "weather").unwrap_err();
+
+    assert!(refused.contains("battery"), "lists the topics: {refused}");
+}
+
 /// Calls `launch_app` with `name` and returns its structured result.
 fn launch_app(lucyd: &Harness, name: &str) -> serde_json::Value {
     let result = lucyd

@@ -10,6 +10,7 @@ mod mcp;
 mod runner;
 mod session;
 mod status;
+mod system_status;
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
