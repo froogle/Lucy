@@ -72,8 +72,8 @@ impl Paths {
         self.state.join("approvals.toml")
     }
 
-    /// What Lucy remembers about Plugins besides their Approvals.
-    fn remembered(&self) -> PathBuf {
+    /// The user's Plugin preferences.
+    fn prefs(&self) -> PathBuf {
         self.state.join("plugins.toml")
     }
 
@@ -110,10 +110,10 @@ struct Approval {
     previous: Option<Box<Approval>>,
 }
 
-/// `plugins.toml`: what Lucy remembers about Plugins besides their
-/// Approvals.
+/// `plugins.toml`: the user's Plugin preferences besides their Approvals,
+/// and which Plugins they've been told await Approval.
 #[derive(Default, Deserialize, Serialize)]
-struct Remembered {
+struct PluginPrefs {
     /// Plugins left out of selection, keeping their files and Approval.
     #[serde(default)]
     disabled: BTreeSet<String>,
@@ -202,7 +202,7 @@ impl Host {
         let mut usable = Vec::new();
         let mut broken = Vec::new();
         let mut awaiting = Vec::new();
-        let disabled = self.remembered().disabled;
+        let disabled = self.prefs().disabled;
         for (name, folder) in self.folders() {
             if disabled.contains(&name) {
                 continue;
@@ -372,17 +372,17 @@ impl Host {
         save_state(&self.paths.state, &self.paths.approvals(), &text).map_err(|e| e.to_string())
     }
 
-    /// `plugins.toml`, or nothing remembered if it can't be read.
-    fn remembered(&self) -> Remembered {
-        std::fs::read_to_string(self.paths.remembered())
+    /// `plugins.toml`, or no preferences if it can't be read.
+    fn prefs(&self) -> PluginPrefs {
+        std::fs::read_to_string(self.paths.prefs())
             .ok()
             .and_then(|text| toml::from_str(&text).ok())
             .unwrap_or_default()
     }
 
-    fn save_remembered(&self, remembered: &Remembered) -> Result<(), String> {
-        let text = toml::to_string(remembered).map_err(|e| format!("plugins.toml: {e}"))?;
-        save_state(&self.paths.state, &self.paths.remembered(), &text)
+    fn save_prefs(&self, prefs: &PluginPrefs) -> Result<(), String> {
+        let text = toml::to_string(prefs).map_err(|e| format!("plugins.toml: {e}"))?;
+        save_state(&self.paths.state, &self.paths.prefs(), &text)
             .map_err(|e| format!("plugins.toml couldn't be saved: {e}"))
     }
 
@@ -391,20 +391,20 @@ impl Host {
     /// they now have.
     fn mention_once(&self, awaiting: Vec<(String, Contents)>) -> Vec<String> {
         let _editing = self.editing.lock().unwrap();
-        let mut remembered = self.remembered();
+        let mut prefs = self.prefs();
         let mut lines = Vec::new();
         for (name, contents) in awaiting {
-            if remembered.mentioned.get(&name) == Some(&contents.hash) {
+            if prefs.mentioned.get(&name) == Some(&contents.hash) {
                 continue;
             }
             lines.push(format!(
                 "The {name} Plugin ({}) is awaiting the user's Approval.",
                 contents.manifest.summary
             ));
-            remembered.mentioned.insert(name, contents.hash);
+            prefs.mentioned.insert(name, contents.hash);
         }
         if !lines.is_empty() {
-            if let Err(e) = self.save_remembered(&remembered) {
+            if let Err(e) = self.save_prefs(&prefs) {
                 eprintln!("lucyd: {e}");
             }
             self.changes.publish();

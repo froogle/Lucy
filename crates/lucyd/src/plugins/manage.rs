@@ -103,7 +103,7 @@ impl SessionTools {
 impl Host {
     /// `plugins.list`.
     pub fn list(&self) -> PluginsList {
-        let disabled = self.remembered().disabled;
+        let disabled = self.prefs().disabled;
         let plugins = self
             .folders()
             .into_iter()
@@ -163,13 +163,13 @@ impl Host {
             if !self.folders().contains_key(name) {
                 return Err(Refusal::NoSuchPlugin(name.to_owned()));
             }
-            let mut remembered = self.remembered();
+            let mut prefs = self.prefs();
             if enabled {
-                remembered.disabled.remove(name);
+                prefs.disabled.remove(name);
             } else {
-                remembered.disabled.insert(name.to_owned());
+                prefs.disabled.insert(name.to_owned());
             }
-            self.save_remembered(&remembered)?;
+            self.save_prefs(&prefs)?;
         }
         self.changed(name).await;
         Ok(())
@@ -288,10 +288,10 @@ impl Host {
                 self.save_approvals(&approvals)?;
             }
             let _ = std::fs::remove_dir_all(self.paths.versions(name));
-            let mut remembered = self.remembered();
-            remembered.disabled.remove(name);
-            remembered.mentioned.remove(name);
-            self.save_remembered(&remembered)?;
+            let mut prefs = self.prefs();
+            prefs.disabled.remove(name);
+            prefs.mentioned.remove(name);
+            self.save_prefs(&prefs)?;
         }
         self.changed(name).await;
         Ok(())
@@ -342,7 +342,7 @@ impl Host {
 
     /// The Plugin `name`, if it is enabled, approved and works.
     async fn usable(&self, name: &str) -> Option<Usable> {
-        if self.remembered().disabled.contains(name) {
+        if self.prefs().disabled.contains(name) {
             return None;
         }
         let folder = self.folders().remove(name)?;
