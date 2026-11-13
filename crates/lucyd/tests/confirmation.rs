@@ -353,3 +353,22 @@ fn a_reply_stt_fails_on_declines_with_an_error_flash() {
     assert_eq!(next_state(&mut events).state, State::Error);
     assert_eq!(next_state(&mut events).state, State::Speaking);
 }
+
+#[test]
+fn an_argument_that_looks_like_a_placeholder_is_said_as_it_is() {
+    let lucyd = with_files_plugin("");
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    lucyd.say("save hello for me");
+    lucyd.thinking.next_turn();
+    let path = lucyd.scratch().join("{text}");
+    let thinking = lucyd.thinking.clone();
+    let arguments = json!({"path": path, "text": "hello"});
+    let _call = std::thread::spawn(move || thinking.call_tool_with("files__write_file", arguments));
+
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        format!("Write hello to {}?", path.display())
+    );
+}

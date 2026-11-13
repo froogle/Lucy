@@ -158,20 +158,24 @@ impl Host {
     /// says whether the user approved; `Err` says why they couldn't be
     /// asked.
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
+        const NO_SESSION: &str = "no Session is open to ask in";
+        if self.session.lock().unwrap().upgrade().is_none() {
+            return Err(NO_SESSION.into());
+        }
         let candidate = self.candidate(name).await?;
-        let (prompt, shown) = match &candidate.previous {
-            Some(previous) => {
-                let old = Manifest::parse(previous, name).ok();
-                let prompt = match &old {
-                    Some(old) => approval::changes(old, &candidate.plugin.manifest),
-                    None => approval::summary(&candidate.plugin.manifest),
-                };
+        let old = candidate
+            .previous
+            .as_deref()
+            .and_then(|previous| Some((previous, Manifest::parse(previous, name).ok()?)));
+        let (prompt, shown) = match old {
+            Some((previous, old)) => {
                 let shown = Notification {
                     summary: format!("Changes to the {name} Plugin"),
                     body: approval::diff(previous, &candidate.text),
                     action: None,
                     kind: NotificationKind::Details,
                 };
+                let prompt = approval::changes(&old, &candidate.plugin.manifest);
                 (prompt, Some(shown))
             }
             None => (approval::summary(&candidate.plugin.manifest), None),
@@ -183,7 +187,7 @@ impl Host {
         match runner::ask(&self.commands, question, shown).await {
             Some(Answer::Yes) => {}
             Some(_) => return Ok(false),
-            None => return Err("no Session is open to ask in".into()),
+            None => return Err(NO_SESSION.into()),
         }
         self.record(&candidate)?;
         self.offer(candidate.plugin).await;
@@ -207,7 +211,7 @@ impl Host {
             Some(approval) if approval.hash == hash => {
                 return Err(format!("the {name} Plugin is already approved"))
             }
-            Some(approval) => Some(approval.manifest.unwrap_or_default()),
+            Some(approval) => approval.manifest,
             None => None,
         };
         let mut plugin = Usable {
@@ -420,8 +424,8 @@ struct Candidate {
     plugin: Usable,
     /// Its Manifest.
     text: String,
-    /// The Manifest it had when last approved, if it was; empty if that
-    /// wasn't kept.
+    /// The Manifest it had when last approved, if it was and that was
+    /// kept.
     previous: Option<String>,
 }
 
@@ -644,11 +648,7 @@ impl SessionTools {
         let empty = JsonObject::new();
         let arguments = arguments.unwrap_or(&empty);
         let prompt = match &tool.confirm_prompt {
-            Some(prompt) => arguments
-                .iter()
-                .fold(prompt.clone(), |prompt, (name, value)| {
-                    prompt.replace(&format!("{{{name}}}"), &spoken(value))
-                }),
+            Some(prompt) => fill(prompt, arguments),
             None => format!("Shall I use the {plugin} Plugin to {}?", tool.handles),
         };
         let mut body = format!("{plugin}__{}", tool.name);
@@ -685,6 +685,32 @@ impl SessionTools {
             .cloned()
             .collect()
     }
+}
+
+/// `template` with each `{name}` of an argument replaced by its value, in one
+/// pass, so a value is never filled in itself.
+fn fill(template: &str, arguments: &JsonObject) -> String {
+    let mut filled = String::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        filled.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let value = rest
+            .find('}')
+            .and_then(|close| Some((close, arguments.get(&rest[1..close])?)));
+        match value {
+            Some((close, value)) => {
+                filled.push_str(&spoken(value));
+                rest = &rest[close + 1..];
+            }
+            None => {
+                filled.push('{');
+                rest = &rest[1..];
+            }
+        }
+    }
+    filled.push_str(rest);
+    filled
 }
 
 /// An argument as Lucy says it: a string as it is, anything else as JSON.
