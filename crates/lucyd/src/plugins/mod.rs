@@ -12,10 +12,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
-use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool};
-use rmcp::service::{Peer, RunningService};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ElicitRequestParams, ElicitResult,
+    ElicitationAction, InputRequest, InputRequests, InputResponses, JsonObject, ProtocolVersion,
+    Tool,
+};
+use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, Peer, RunningService};
 use rmcp::transport::TokioChildProcess;
-use rmcp::{RoleClient, RoleServer, ServiceExt};
+use rmcp::{RoleClient, RoleServer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -26,6 +30,9 @@ use crate::mcp;
 use crate::runner::{self, Command};
 use crate::session::{Answer, Expects, Question};
 use manifest::{Manifest, ToolEntry};
+
+/// How many mid-call questions one call may ask before it counts as broken.
+const MAX_QUESTIONS: usize = 10;
 
 /// How long a Plugin gets to start and answer `tools/list`.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -391,10 +398,19 @@ impl Host {
         .map_err(|e| format!("its sandbox can't be set up: {e}"))?;
         let transport =
             TokioChildProcess::new(command).map_err(|e| format!("it doesn't start: {e}"))?;
-        tokio::time::timeout(START_TIMEOUT, ().serve(transport))
-            .await
-            .map_err(|_| "it didn't start in time".to_owned())?
-            .map_err(|e| format!("it didn't start: {e}"))
+        // Mid-call questions (`input_required`) need the 2026-07-28 protocol,
+        // which has no `initialize`; older Plugins get the handshake.
+        let lifecycle = ClientLifecycleMode::Auto {
+            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            legacy_version: None,
+        };
+        tokio::time::timeout(
+            START_TIMEOUT,
+            serve_client_with_lifecycle((), transport, lifecycle),
+        )
+        .await
+        .map_err(|_| "it didn't start in time".to_owned())?
+        .map_err(|e| format!("it didn't start: {e}"))
     }
 }
 
@@ -549,12 +565,26 @@ impl SessionTools {
             if let Some(arguments) = arguments {
                 request = request.with_arguments(arguments);
             }
-            match peer.call_tool(request).await {
-                Ok(result) => Ok(result),
-                // The Plugin answered, refusing the call: it still works.
-                Err(rmcp::ServiceError::McpError(e)) => Ok(mcp::error(e.message.into_owned())),
-                Err(e) => Err(format!("its call failed: {e}")),
+            // Each `input_required` answer asks the user, then calls again.
+            for _ in 0..MAX_QUESTIONS {
+                match peer.call_tool_once(request.clone()).await {
+                    Ok(CallToolResponse::Complete(result)) => return Ok(result),
+                    Ok(CallToolResponse::InputRequired(asked)) => {
+                        let requests = asked.input_requests.unwrap_or_default();
+                        request.input_responses = Some(self.answers(requests).await);
+                        request.request_state = asked.request_state;
+                    }
+                    Ok(_) => return Err("it answered with a task, which Lucy can't follow".into()),
+                    // The Plugin answered, refusing the call: it still works.
+                    Err(rmcp::ServiceError::McpError(e)) => {
+                        return Ok(mcp::error(e.message.into_owned()))
+                    }
+                    Err(e) => return Err(format!("its call failed: {e}")),
+                }
             }
+            Err(format!(
+                "it asked more than {MAX_QUESTIONS} questions in one call"
+            ))
         }
         .await;
         Some(match outcome {
@@ -567,6 +597,40 @@ impl SessionTools {
                 mcp::error(broken_message(plugin_name, &reason))
             }
         })
+    }
+
+    /// Asks the user each of a Plugin's mid-call questions out loud. A
+    /// question is answered when it wants one field and the user says
+    /// something; anything else is declined.
+    async fn answers(&self, requests: InputRequests) -> InputResponses {
+        let mut answers = InputResponses::new();
+        for (key, request) in requests {
+            let mut answer = ElicitResult::new(ElicitationAction::Decline);
+            if let InputRequest::Elicitation(request) = request {
+                if let ElicitRequestParams::FormElicitationParams {
+                    message,
+                    requested_schema,
+                    ..
+                } = request.params
+                {
+                    let mut fields = requested_schema.properties.into_keys();
+                    if let (Some(field), None) = (fields.next(), fields.next()) {
+                        let question = Question {
+                            prompt: message,
+                            expects: Expects::Words,
+                        };
+                        if let Some(Answer::Said(said)) =
+                            runner::ask(&self.host.commands, question, None).await
+                        {
+                            answer = ElicitResult::new(ElicitationAction::Accept)
+                                .with_content(serde_json::json!({ field: said }));
+                        }
+                    }
+                }
+            }
+            answers.insert(key, serde_json::to_value(answer).unwrap());
+        }
+        answers
     }
 
     /// Asks the user's spoken yes to a call of `tool`, showing its full

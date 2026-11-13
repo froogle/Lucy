@@ -252,3 +252,63 @@ fn without_an_indicator_confirming_is_notified_and_its_end_action_declines() {
     }
     assert!(!file.exists());
 }
+
+/// lucyd with the `asker` Plugin, whose `ask` tool asks the user a question
+/// mid-call, approved and a Session open in Thinking.
+fn with_asker(config: &str) -> (Harness, Client) {
+    let lucyd = Harness::with_config(config);
+    lucyd.install_plugin(
+        "asker",
+        "name = \"asker\"\nversion = \"0.1.0\"\nauthor = \"human\"\nsummary = \"Asks\"\n\
+         command = [\"./fixture-plugin\", \"ask\"]\n\n\
+         [[tools]]\nname = \"ask\"\nhandles = \"ask something\"\n",
+    );
+    lucyd.approve("asker");
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    lucyd.say("find my album");
+    lucyd.thinking.next_turn();
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+    (lucyd, events)
+}
+
+fn model_calls_ask(lucyd: &Harness) -> JoinHandle<Result<rmcp::model::CallToolResult, String>> {
+    let thinking = lucyd.thinking.clone();
+    std::thread::spawn(move || {
+        thinking.call_tool_with(
+            "asker__ask",
+            json!({"question": "Which album, the summer one?"}),
+        )
+    })
+}
+
+#[test]
+fn a_plugins_mid_call_question_is_asked_and_the_answer_relayed_to_it() {
+    let (lucyd, mut events) = with_asker("");
+    let call = model_calls_ask(&lucyd);
+
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    assert_eq!(lucyd.tts.next_sentence(), "Which album, the summer one?");
+    lucyd.tts.finish_playing();
+    lucyd.say("The one from Rainier.");
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(text(&result), "heard: The one from Rainier.");
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+}
+
+#[test]
+fn a_mid_call_question_met_with_silence_goes_unanswered() {
+    let (lucyd, mut events) = with_asker("[confirmation]\ntimeout_secs = 0.3\n");
+    let call = model_calls_ask(&lucyd);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+
+    let result = call.join().unwrap().unwrap();
+
+    assert_eq!(text(&result), "no answer");
+    // Only a declined Confirmation is answered "Okay, I won't".
+    assert!(!lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned()));
+}
