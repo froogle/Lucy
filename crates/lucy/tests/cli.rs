@@ -19,7 +19,7 @@ fn start_lucyd(runtime_dir: &Path) -> lucyd::Daemon {
         persona_path: runtime_dir.join("persona.md"),
         lucy_program: env!("CARGO_BIN_EXE_lucy").into(),
         adapters: lucyd::adapters::Adapters::inert(),
-        plugins: lucyd::plugins::Paths {
+        plugin_paths: lucyd::plugins::Paths {
             user: runtime_dir.join("plugins"),
             shipped: runtime_dir.join("shipped"),
             state: runtime_dir.join("state"),
