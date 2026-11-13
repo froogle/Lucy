@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent};
-use crate::claude::Sentences;
+use crate::sentences::Sentences;
 
 /// How long app-server may take to answer a request.
 const REQUEST_WAIT: Duration = Duration::from_secs(30);

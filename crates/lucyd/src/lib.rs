@@ -19,6 +19,7 @@ pub mod piper;
 mod playback;
 pub mod plugins;
 mod runner;
+mod sentences;
 mod session;
 mod status;
 pub mod superwhisper;
