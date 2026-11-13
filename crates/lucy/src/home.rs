@@ -8,7 +8,7 @@
 use lucy_ipc::{ApprovalInfo as Approval, Client, ProviderKind, ProviderStatus, Tier};
 use ratatui::backend::Backend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, List, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
@@ -89,16 +89,12 @@ impl Page {
                 None
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let selected = self.selected_mut();
+                let (selected, _) = self.focused();
                 *selected = selected.saturating_sub(1);
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let len = match self.focus {
-                    Pane::Providers => self.providers.len(),
-                    Pane::Approvals => self.approvals.len(),
-                };
-                let selected = self.selected_mut();
+                let (selected, len) = self.focused();
                 *selected = (*selected + 1).min(len.saturating_sub(1));
                 None
             }
@@ -112,11 +108,21 @@ impl Page {
         }
     }
 
-    fn selected_mut(&mut self) -> &mut usize {
+    /// The selected row of the list the arrows move in, and its length.
+    fn focused(&mut self) -> (&mut usize, usize) {
         match self.focus {
-            Pane::Providers => &mut self.provider,
-            Pane::Approvals => &mut self.approval,
+            Pane::Providers => (&mut self.provider, self.providers.len()),
+            Pane::Approvals => (&mut self.approval, self.approvals.len()),
         }
+    }
+
+    /// The selected row of `pane`'s list, if it is focused and has rows.
+    fn selected(&self, pane: Pane) -> Option<usize> {
+        let (selected, len) = match pane {
+            Pane::Providers => (self.provider, self.providers.len()),
+            Pane::Approvals => (self.approval, self.approvals.len()),
+        };
+        (self.focus == pane && len > 0).then_some(selected)
     }
 
     fn check(&mut self) -> Option<Action> {
@@ -132,6 +138,26 @@ impl Page {
         }
         None
     }
+}
+
+/// Draws a bordered list: bold if it is focused, dim if not.
+fn draw_list(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    rows: Vec<String>,
+    focused: bool,
+    selected: Option<usize>,
+) {
+    let style = match focused {
+        true => Style::new().add_modifier(Modifier::BOLD),
+        false => Style::new().add_modifier(Modifier::DIM),
+    };
+    let list = List::new(rows)
+        .block(Block::bordered().title(title).border_style(style))
+        .highlight_symbol("> ");
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 /// Renders `page` across the whole frame.
@@ -150,45 +176,26 @@ pub fn draw(frame: &mut Frame, page: &Page) {
         title,
     );
 
-    let focused = |pane| match page.focus == pane {
-        true => Style::new().add_modifier(Modifier::BOLD),
-        false => Style::new().add_modifier(Modifier::DIM),
-    };
-    let rows: Vec<String> = page.providers.iter().map(provider_row).collect();
-    let list = List::new(rows)
-        .block(
-            Block::bordered()
-                .title("Providers")
-                .border_style(focused(Pane::Providers)),
-        )
-        .highlight_symbol("> ");
-    let mut state = ListState::default().with_selected(
-        (page.focus == Pane::Providers && !page.providers.is_empty()).then_some(page.provider),
+    draw_list(
+        frame,
+        providers,
+        "Providers",
+        page.providers.iter().map(provider_row).collect(),
+        page.focus == Pane::Providers,
+        page.selected(Pane::Providers),
     );
-    frame.render_stateful_widget(list, providers, &mut state);
-
-    let rows: Vec<String> = match page.approvals.is_empty() {
+    let rows = match page.approvals.is_empty() {
         true => vec!["none".to_owned()],
-        false => page
-            .approvals
-            .iter()
-            .map(|approval| {
-                let hash: String = approval.hash.chars().take(12).collect();
-                format!("{} ({hash})", approval.plugin)
-            })
-            .collect(),
+        false => page.approvals.iter().map(approval_row).collect(),
     };
-    let list = List::new(rows)
-        .block(
-            Block::bordered()
-                .title("Approvals (granted only by voice, in a Session)")
-                .border_style(focused(Pane::Approvals)),
-        )
-        .highlight_symbol("> ");
-    let mut state = ListState::default().with_selected(
-        (page.focus == Pane::Approvals && !page.approvals.is_empty()).then_some(page.approval),
+    draw_list(
+        frame,
+        approvals,
+        "Approvals (granted only by voice, in a Session)",
+        rows,
+        page.focus == Pane::Approvals,
+        page.selected(Pane::Approvals),
     );
-    frame.render_stateful_widget(list, approvals, &mut state);
 
     let text = match page.confirming {
         Some(i) => format!(
@@ -208,6 +215,11 @@ pub fn draw(frame: &mut Frame, page: &Page) {
             .style(Style::new().add_modifier(Modifier::DIM)),
         hint,
     );
+}
+
+fn approval_row(approval: &Approval) -> String {
+    let hash: String = approval.hash.chars().take(12).collect();
+    format!("{} ({hash})", approval.plugin)
 }
 
 fn provider_row(provider: &ProviderStatus) -> String {
