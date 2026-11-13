@@ -18,3 +18,7 @@ Spec: Session state machine (Barge-in); Audio pipeline (AEC, VAD gate).
 - [ ] Unconfirmed in-flight tool calls get an MCP cancellation; confirmed ones run to completion and are reported in the next Turn
 - [ ] Interrupt feature detection falls back to SIGINT plus respawn (harness test with the fake)
 - [ ] PipeWire echo-cancel module is supported as an opt-in (in-process AEC disabled)
+
+## Comments
+
+From the slice 4 review: on a Barge-in the runner must call `SessionModel::interrupt`. Codex's implementation is done (ticket 18); Claude's is still empty, and this ticket adds it.
