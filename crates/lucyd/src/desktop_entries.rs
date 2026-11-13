@@ -1,5 +1,6 @@
 //! XDG desktop entries, and finding the app a spoken name means.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// An installed app, from its `.desktop` file.
@@ -11,8 +12,11 @@ pub struct DesktopEntry {
     pub keywords: Vec<String>,
 }
 
-/// The app entries in `dirs`.
+/// The apps shown to the user from the entries in `dirs`. An entry in an
+/// earlier dir replaces one with the same file name in a later dir, even
+/// when the earlier one is hidden.
 pub fn read_all(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
+    let mut seen = HashSet::new();
     let mut entries = Vec::new();
     for dir in dirs {
         let Ok(files) = std::fs::read_dir(dir) else {
@@ -20,7 +24,7 @@ pub fn read_all(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
         };
         for file in files.flatten() {
             let path = file.path();
-            if path.extension().is_some_and(|e| e == "desktop") {
+            if path.extension().is_some_and(|e| e == "desktop") && seen.insert(file.file_name()) {
                 entries.extend(parse(&path));
             }
         }
@@ -28,12 +32,15 @@ pub fn read_all(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
     entries
 }
 
+/// The entry at `path`, if it is an app the user can see.
 fn parse(path: &Path) -> Option<DesktopEntry> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut in_entry = false;
     let mut name = None;
     let mut generic_name = None;
     let mut keywords = Vec::new();
+    let mut app = false;
+    let mut hidden = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
             in_entry = line == "[Desktop Entry]";
@@ -47,6 +54,8 @@ fn parse(path: &Path) -> Option<DesktopEntry> {
         };
         let value = value.trim_start();
         match key.trim_end() {
+            "Type" => app = value == "Application",
+            "Hidden" | "NoDisplay" => hidden |= value == "true",
             "Name" => name = Some(value.to_owned()),
             "GenericName" => generic_name = Some(value.to_owned()),
             "Keywords" => {
@@ -59,6 +68,9 @@ fn parse(path: &Path) -> Option<DesktopEntry> {
             }
             _ => {}
         }
+    }
+    if !app || hidden {
+        return None;
     }
     Some(DesktopEntry {
         path: path.to_owned(),

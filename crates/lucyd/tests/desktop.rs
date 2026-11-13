@@ -122,12 +122,52 @@ fn launch_app_offers_candidates_when_several_apps_match_and_launches_none() {
 }
 
 #[test]
+fn a_users_desktop_entry_replaces_the_system_one_with_the_same_id() {
+    let lucyd = Harness::start();
+    lucyd.system_desktop_entry("firefox.desktop", "Name=Firefox");
+    let mine = lucyd.desktop_entry("firefox.desktop", "Name=Firefox");
+    lucyd.client().start_session().unwrap();
+
+    let result = launch_app(&lucyd, "firefox");
+
+    assert_eq!(result, json!({ "result": "launched", "app": "Firefox" }));
+    assert_eq!(lucyd.launcher.launched(), [mine]);
+}
+
+#[test]
+fn a_user_can_hide_a_system_app() {
+    let lucyd = Harness::start();
+    lucyd.system_desktop_entry("firefox.desktop", "Name=Firefox");
+    lucyd.desktop_entry("firefox.desktop", "Name=Firefox\nHidden=true");
+    lucyd.client().start_session().unwrap();
+
+    assert_eq!(
+        launch_app(&lucyd, "firefox"),
+        json!({ "result": "not_found" })
+    );
+}
+
+#[test]
 fn launch_app_says_not_found_when_nothing_matches() {
     let lucyd = Harness::start();
     lucyd.desktop_entry("firefox.desktop", "Name=Firefox");
     lucyd.client().start_session().unwrap();
 
     let result = launch_app(&lucyd, "photoshop");
+
+    assert_eq!(result, json!({ "result": "not_found" }));
+    assert!(lucyd.launcher.launched().is_empty());
+}
+
+#[test]
+fn launch_app_ignores_hidden_entries_and_entries_that_are_not_apps() {
+    let lucyd = Harness::start();
+    lucyd.desktop_entry("a.desktop", "Name=Notes\nHidden=true");
+    lucyd.desktop_entry("b.desktop", "Name=Notes\nNoDisplay=true");
+    lucyd.desktop_entry("c.desktop", "Name=Notes\nType=Link");
+    lucyd.client().start_session().unwrap();
+
+    let result = launch_app(&lucyd, "notes");
 
     assert_eq!(result, json!({ "result": "not_found" }));
     assert!(lucyd.launcher.launched().is_empty());

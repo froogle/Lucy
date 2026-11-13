@@ -33,8 +33,9 @@ pub struct Harness {
     pub thinking: FakeThinking,
     pub tts: FakeTts,
     pub launcher: FakeLauncher,
-    /// Where lucyd looks for desktop entries.
-    applications: PathBuf,
+    /// Where lucyd looks for desktop entries: the user's dir, then the
+    /// system's.
+    applications: [PathBuf; 2],
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
     _dir: tempfile::TempDir,
@@ -54,8 +55,10 @@ impl Harness {
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
         let launcher = FakeLauncher::default();
-        let applications = dir.path().join("applications");
-        std::fs::create_dir(&applications).unwrap();
+        let applications = ["applications", "system-applications"].map(|d| dir.path().join(d));
+        for dir in &applications {
+            std::fs::create_dir(dir).unwrap();
+        }
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config,
@@ -66,7 +69,7 @@ impl Harness {
                 thinking: Box::new(thinking.clone()),
                 tts: Box::new(tts.clone()),
                 launcher: Arc::new(launcher.clone()),
-                applications: vec![applications.clone()],
+                applications: applications.to_vec(),
             },
         })
         .expect("lucyd starts");
@@ -106,16 +109,15 @@ impl Harness {
             .unwrap()
     }
 
-    /// Installs a desktop entry named `file_name` with the given
-    /// `[Desktop Entry]` keys, returning its path.
+    /// Installs a user's desktop entry named `file_name`, of type
+    /// Application, with the given `[Desktop Entry]` keys. Returns its path.
     pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
-        let path = self.applications.join(file_name);
-        std::fs::write(
-            &path,
-            format!("[Desktop Entry]\nType=Application\n{keys}\n"),
-        )
-        .unwrap();
-        path
+        write_desktop_entry(&self.applications[0], file_name, keys)
+    }
+
+    /// Installs a system-wide desktop entry, as `desktop_entry` does.
+    pub fn system_desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
+        write_desktop_entry(&self.applications[1], file_name, keys)
     }
 
     /// A client that has completed the `hello` handshake.
@@ -207,6 +209,18 @@ impl Harness {
         let idle = |line: &String| line.contains(r#""state":"idle""#);
         bus.len() > 1 && bus.last().is_some_and(idle)
     }
+}
+
+/// Writes a desktop entry of type Application with `keys`; a `Type` key in
+/// `keys` overrides it.
+fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
+    let path = dir.join(file_name);
+    std::fs::write(
+        &path,
+        format!("[Desktop Entry]\nType=Application\n{keys}\n"),
+    )
+    .unwrap();
+    path
 }
 
 /// The next event, which must be a `state` event.
