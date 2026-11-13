@@ -51,14 +51,11 @@ pub struct Access {
     pub write: Vec<String>,
     /// Hosts: declared and shown, not enforced in v0.1.
     #[serde(default)]
-    #[allow(dead_code)]
     pub network: Vec<String>,
     /// Names only.
     #[serde(default)]
-    #[allow(dead_code)]
     pub credentials: Vec<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub commands: Vec<String>,
 }
 

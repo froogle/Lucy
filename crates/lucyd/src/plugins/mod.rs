@@ -2,20 +2,21 @@
 //! approved, working ones, and runs each in its sandbox on first use in a
 //! Session, forwarding the model's calls to it over MCP stdio.
 
+mod approval;
 mod manifest;
 mod sandbox;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, JsonObject, Tool};
-use rmcp::service::RunningService;
+use rmcp::service::{Peer, RunningService};
 use rmcp::transport::TokioChildProcess;
-use rmcp::{RoleClient, ServiceExt};
-use serde::Deserialize;
+use rmcp::{RoleClient, RoleServer, ServiceExt};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -63,18 +64,21 @@ impl Paths {
 }
 
 /// `approvals.toml`.
-#[derive(Default, Deserialize)]
+#[derive(Default, Deserialize, Serialize)]
 struct Approvals {
     #[serde(default)]
-    plugins: HashMap<String, Approval>,
+    plugins: BTreeMap<String, Approval>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Approval {
     /// The `content_hash` that was approved.
     hash: String,
     /// Each tool's input schema as approved, as JSON.
-    schemas: HashMap<String, String>,
+    schemas: BTreeMap<String, String>,
+    /// The Manifest as approved, so an update can be told apart from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest: Option<String>,
 }
 
 /// Lives as long as lucyd. Remembers which approved Plugin contents work.
@@ -85,6 +89,8 @@ pub struct Host {
     /// By content hash: whether that content matched its Manifest and has
     /// not failed a call, or why not.
     verdicts: Mutex<HashMap<String, Result<(), String>>>,
+    /// The open Session's tools, which an Approval adds to.
+    session: Mutex<Weak<SessionTools>>,
 }
 
 /// An approved Plugin, ready to start.
@@ -102,6 +108,7 @@ impl Host {
             paths,
             commands,
             verdicts: Mutex::default(),
+            session: Mutex::default(),
         })
     }
 
@@ -126,12 +133,144 @@ impl Host {
         for message in &broken {
             eprintln!("lucyd: {message}");
         }
-        Arc::new(SessionTools {
+        let tools = Arc::new(SessionTools {
             host: self.clone(),
-            plugins: working,
+            plugins: RwLock::new(working.into_iter().map(Arc::new).collect()),
             broken,
             running: tokio::sync::Mutex::default(),
+            watchers: Mutex::default(),
+        });
+        *self.session.lock().unwrap() = Arc::downgrade(&tools);
+        tools
+    }
+
+    /// Asks the user's spoken Approval of the Plugin `name` as it is now,
+    /// in the open Session: the full summary for a new Plugin, or only what
+    /// changed for an update, with the diff on screen. On a yes it is
+    /// recorded and the open Session's model is offered its tools. `Ok`
+    /// says whether the user approved; `Err` says why they couldn't be
+    /// asked.
+    pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
+        let candidate = self.candidate(name).await?;
+        let (prompt, shown) = match &candidate.previous {
+            Some(previous) => {
+                let old = Manifest::parse(previous, name).ok();
+                let prompt = match &old {
+                    Some(old) => approval::changes(old, &candidate.plugin.manifest),
+                    None => approval::summary(&candidate.plugin.manifest),
+                };
+                let shown = Notification {
+                    summary: format!("Changes to the {name} Plugin"),
+                    body: approval::diff(previous, &candidate.text),
+                    action: None,
+                    kind: NotificationKind::Details,
+                };
+                (prompt, Some(shown))
+            }
+            None => (approval::summary(&candidate.plugin.manifest), None),
+        };
+        let question = Question {
+            prompt,
+            expects: Expects::Yes,
+        };
+        match runner::ask(&self.commands, question, shown).await {
+            Some(Answer::Yes) => {}
+            Some(_) => return Ok(false),
+            None => return Err("no Session is open to ask in".into()),
+        }
+        self.record(&candidate)?;
+        self.offer(candidate.plugin).await;
+        Ok(true)
+    }
+
+    /// The Plugin `name` as it is now, checked against its live tools and
+    /// ready to approve.
+    async fn candidate(&self, name: &str) -> Result<Candidate, String> {
+        let folder = self
+            .folders()
+            .remove(name)
+            .ok_or_else(|| format!("there's no Plugin called {name}"))?;
+        let text = std::fs::read_to_string(folder.join("manifest.toml"))
+            .map_err(|e| format!("its Manifest can't be read: {e}"))?;
+        let manifest = Manifest::parse(&text, name)?;
+        let executable = std::fs::read(folder.join(manifest.executable()))
+            .map_err(|e| format!("its executable can't be read: {e}"))?;
+        let hash = content_hash(text.as_bytes(), &executable);
+        let previous = match self.approvals()?.plugins.remove(name) {
+            Some(approval) if approval.hash == hash => {
+                return Err(format!("the {name} Plugin is already approved"))
+            }
+            Some(approval) => Some(approval.manifest.unwrap_or_default()),
+            None => None,
+        };
+        let mut plugin = Usable {
+            name: name.to_owned(),
+            folder,
+            manifest,
+            hash,
+            schemas: HashMap::new(),
+        };
+        let listed = self.live_tools(&plugin).await?;
+        matches_manifest(&plugin.manifest, &listed)?;
+        plugin.schemas = listed
+            .into_iter()
+            .map(|tool| (tool.name.into_owned(), tool.input_schema))
+            .collect();
+        Ok(Candidate {
+            plugin,
+            text,
+            previous,
         })
+    }
+
+    /// Writes the Approval of `candidate` to `approvals.toml`.
+    fn record(&self, candidate: &Candidate) -> Result<(), String> {
+        let plugin = &candidate.plugin;
+        let mut approvals = self.approvals()?;
+        let schemas = plugin
+            .schemas
+            .iter()
+            .map(|(tool, schema)| (tool.clone(), serde_json::to_string(&**schema).unwrap()))
+            .collect();
+        approvals.plugins.insert(
+            plugin.name.clone(),
+            Approval {
+                hash: plugin.hash.clone(),
+                schemas,
+                manifest: Some(candidate.text.clone()),
+            },
+        );
+        let text = toml::to_string(&approvals).map_err(|e| format!("approvals.toml: {e}"))?;
+        let write = || -> std::io::Result<()> {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&self.paths.state)?;
+            let path = self.paths.approvals();
+            let temp = path.with_extension("toml.new");
+            std::fs::write(&temp, text)?;
+            std::fs::rename(&temp, &path)
+        };
+        write().map_err(|e| format!("its Approval couldn't be saved: {e}"))
+    }
+
+    /// Offers the newly approved `plugin` in the open Session, if any.
+    async fn offer(&self, plugin: Usable) {
+        let session = self.session.lock().unwrap().upgrade();
+        self.verdicts
+            .lock()
+            .unwrap()
+            .insert(plugin.hash.clone(), Ok(()));
+        if let Some(session) = session {
+            session.replace(plugin).await;
+        }
+    }
+
+    fn approvals(&self) -> Result<Approvals, String> {
+        match std::fs::read_to_string(self.paths.approvals()) {
+            Ok(text) => toml::from_str(&text).map_err(|e| format!("approvals.toml: {e}")),
+            Err(_) => Ok(Approvals::default()),
+        }
     }
 
     /// Every Plugin folder by name, a user one overriding a shipped one.
@@ -161,10 +300,7 @@ impl Host {
             .map_err(|e| format!("its executable can't be read: {e}"))?;
         let hash = content_hash(text.as_bytes(), &executable);
 
-        let approvals: Approvals = match std::fs::read_to_string(self.paths.approvals()) {
-            Ok(text) => toml::from_str(&text).map_err(|e| format!("approvals.toml: {e}"))?,
-            Err(_) => Approvals::default(),
-        };
+        let approvals = self.approvals()?;
         let Some(approval) = approvals.plugins.get(name).filter(|a| a.hash == hash) else {
             return Ok(None);
         };
@@ -192,22 +328,8 @@ impl Host {
             return verdict;
         }
         let verdict = async {
-            let client = self.start(plugin).await?;
-            let listed = tokio::time::timeout(START_TIMEOUT, client.list_all_tools())
-                .await
-                .map_err(|_| "it didn't list its tools in time".to_owned())?
-                .map_err(|e| format!("it failed to list its tools: {e}"))?;
-            let _ = client.cancel().await;
-            let live: HashSet<&str> = listed.iter().map(|tool| &*tool.name).collect();
-            let declared: HashSet<&str> = plugin.manifest.tools.iter().map(|t| &*t.name).collect();
-            if live != declared {
-                return Err(format!(
-                    "its Manifest lists the tools {} but it offers {}",
-                    names(&declared),
-                    names(&live)
-                ));
-            }
-            Ok(())
+            let listed = self.live_tools(plugin).await?;
+            matches_manifest(&plugin.manifest, &listed)
         }
         .await;
         self.verdicts
@@ -215,6 +337,17 @@ impl Host {
             .unwrap()
             .insert(plugin.hash.clone(), verdict.clone());
         verdict
+    }
+
+    /// Starts the Plugin just to ask for its `tools/list`.
+    async fn live_tools(&self, plugin: &Usable) -> Result<Vec<Tool>, String> {
+        let client = self.start(plugin).await?;
+        let listed = tokio::time::timeout(START_TIMEOUT, client.list_all_tools())
+            .await
+            .map_err(|_| "it didn't list its tools in time".to_owned())?
+            .map_err(|e| format!("it failed to list its tools: {e}"))?;
+        let _ = client.cancel().await;
+        Ok(listed)
     }
 
     fn verdict(&self, hash: &str) -> Option<Result<(), String>> {
@@ -265,6 +398,31 @@ impl Host {
     }
 }
 
+/// A Plugin as it is now, ready to approve.
+struct Candidate {
+    /// With the input schemas it lists live.
+    plugin: Usable,
+    /// Its Manifest.
+    text: String,
+    /// The Manifest it had when last approved, if it was; empty if that
+    /// wasn't kept.
+    previous: Option<String>,
+}
+
+/// Whether the Plugin offers exactly the tools its Manifest lists.
+fn matches_manifest(manifest: &Manifest, listed: &[Tool]) -> Result<(), String> {
+    let live: HashSet<&str> = listed.iter().map(|tool| &*tool.name).collect();
+    let declared: HashSet<&str> = manifest.tools.iter().map(|t| &*t.name).collect();
+    if live != declared {
+        return Err(format!(
+            "its Manifest lists the tools {} but it offers {}",
+            names(&declared),
+            names(&live)
+        ));
+    }
+    Ok(())
+}
+
 /// What Lucy is told about a broken Plugin, ready to pass on to the user.
 fn broken_message(plugin: &str, reason: &str) -> String {
     format!("The {plugin} Plugin is broken: {reason}. It's left out until it's fixed.")
@@ -297,10 +455,12 @@ fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
 /// The Plugin tools of one Session, and the Plugins it has started.
 pub struct SessionTools {
     host: Arc<Host>,
-    plugins: Vec<Usable>,
+    plugins: RwLock<Vec<Arc<Usable>>>,
     /// Why each Plugin the scan left out was left out.
     broken: Vec<String>,
     running: tokio::sync::Mutex<HashMap<String, RunningService<RoleClient, ()>>>,
+    /// The model's connections, told when the tools change.
+    watchers: Mutex<Vec<Peer<RoleServer>>>,
 }
 
 impl SessionTools {
@@ -314,6 +474,33 @@ impl SessionTools {
                 self.broken.join("\n")
             )
         })
+    }
+
+    /// Tells `peer` with `tools/list_changed` whenever the tools change.
+    pub fn watch(&self, peer: Peer<RoleServer>) {
+        self.watchers.lock().unwrap().push(peer);
+    }
+
+    /// Offers `plugin` in place of any Plugin of the same name, stopping
+    /// that one, and tells the watchers.
+    async fn replace(&self, plugin: Usable) {
+        let name = plugin.name.clone();
+        {
+            let mut plugins = self.plugins.write().unwrap();
+            plugins.retain(|p| p.name != name);
+            plugins.push(Arc::new(plugin));
+        }
+        if let Some(client) = self.running.lock().await.remove(&name) {
+            let _ = client.cancel().await;
+        }
+        let watchers: Vec<_> = {
+            let mut watchers = self.watchers.lock().unwrap();
+            watchers.retain(|peer| !peer.is_transport_closed());
+            watchers.clone()
+        };
+        for peer in watchers {
+            let _ = peer.notify_tool_list_changed().await;
+        }
     }
 
     /// Every tool of every working Plugin, as `<plugin>__<tool>`.
@@ -341,7 +528,7 @@ impl SessionTools {
     /// use. `None` if no working Plugin offers that tool.
     pub async fn call(&self, name: &str, arguments: Option<JsonObject>) -> Option<CallToolResult> {
         let (plugin_name, tool) = name.split_once("__")?;
-        let plugin = self.working().find(|p| p.name == plugin_name)?;
+        let plugin = self.working().into_iter().find(|p| p.name == plugin_name)?;
         let entry = plugin.manifest.tools.iter().find(|t| t.name == tool)?;
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(
@@ -353,7 +540,7 @@ impl SessionTools {
             let peer = {
                 let mut running = self.running.lock().await;
                 if !running.contains_key(plugin_name) {
-                    let client = self.host.start(plugin).await?;
+                    let client = self.host.start(&plugin).await?;
                     running.insert(plugin_name.to_owned(), client);
                 }
                 running[plugin_name].peer().clone()
@@ -425,10 +612,14 @@ impl SessionTools {
         }
     }
 
-    fn working(&self) -> impl Iterator<Item = &Usable> {
+    fn working(&self) -> Vec<Arc<Usable>> {
         self.plugins
+            .read()
+            .unwrap()
             .iter()
             .filter(|p| !matches!(self.host.verdict(&p.hash), Some(Err(_))))
+            .cloned()
+            .collect()
     }
 }
 
