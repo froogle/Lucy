@@ -90,6 +90,8 @@ impl Session {
                 outputs.extend(self.turn_finished());
                 outputs
             }
+            // Ticket 11 tells the user when they near their limit.
+            Input::Thinking(ThinkingEvent::RateLimit(_)) => vec![],
             Input::Played => {
                 self.queued = self.queued.saturating_sub(1);
                 self.turn_finished().into_iter().collect()

@@ -22,7 +22,7 @@ pub trait Stt: Send + Sync {
 }
 
 /// What the model streams back during a Turn.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ThinkingEvent {
     /// More of the reply's text.
     Delta(String),
@@ -30,6 +30,31 @@ pub enum ThinkingEvent {
     SentenceEnd,
     /// The model has finished the Turn.
     TurnEnd,
+    /// Where the subscription stands against its usage limits.
+    RateLimit(RateLimit),
+}
+
+/// A `rate_limit_event` from `claude`.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimit {
+    pub status: RateLimitStatus,
+    /// Which window this is about, e.g. `five_hour` or `seven_day`.
+    pub rate_limit_type: Option<String>,
+    /// Unix seconds.
+    pub resets_at: Option<u64>,
+    /// Fraction of the window used, when reported.
+    pub utilization: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitStatus {
+    Allowed,
+    AllowedWarning,
+    Rejected,
+    #[serde(other)]
+    Unknown,
 }
 
 /// The command a model process runs as its one MCP server, to reach Lucy's
