@@ -1,0 +1,12 @@
+# Rust build output
+target/
+
+# Prototype artifacts: downloaded models, voices, venvs, logs, recordings
+.scratch/**/prototypes/**/models/
+.scratch/**/prototypes/**/voices/
+.scratch/**/prototypes/**/.piper-venv/
+.scratch/**/prototypes/**/*.log
+.scratch/**/prototypes/**/*.wav
+
+# Prototypes are throwaway, often nested repos
+.scratch/**/prototypes/
