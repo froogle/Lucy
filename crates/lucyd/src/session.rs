@@ -13,6 +13,8 @@ pub enum Input {
     Thinking(ThinkingEvent),
     /// TTS finished playing one sentence.
     Played,
+    /// The model called `end_session`.
+    EndRequested,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -23,6 +25,8 @@ pub enum Output {
     Speak(String),
     /// Start the silence timer over.
     ResetSilenceTimer,
+    /// End the Session.
+    End,
 }
 
 /// An open Session.
@@ -34,6 +38,8 @@ pub struct Session {
     queued: usize,
     /// Reply text not yet handed to TTS.
     sentence: String,
+    /// `end_session` was called; end once back in Listening.
+    closing: bool,
 }
 
 impl Session {
@@ -88,6 +94,10 @@ impl Session {
                 self.queued = self.queued.saturating_sub(1);
                 self.turn_finished().into_iter().collect()
             }
+            Input::EndRequested => {
+                self.closing = true;
+                self.turn_finished().into_iter().collect()
+            }
         }
     }
 
@@ -101,8 +111,13 @@ impl Session {
         Some(Output::Speak(sentence.to_owned()))
     }
 
-    /// Back to Listening once the Turn is over and its speech has played.
+    /// Back to Listening once the Turn is over and its speech has played,
+    /// unless the Session is closing.
     fn turn_finished(&self) -> Option<Output> {
-        (self.state() == State::Listening).then_some(Output::ResetSilenceTimer)
+        match self.state() {
+            State::Listening if self.closing => Some(Output::End),
+            State::Listening => Some(Output::ResetSilenceTimer),
+            _ => None,
+        }
     }
 }

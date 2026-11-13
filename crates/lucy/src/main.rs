@@ -1,6 +1,8 @@
 //! `lucy`: a thin client of lucyd's public socket.
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -24,6 +26,16 @@ enum Command {
     Listen,
     /// End the open Session.
     End,
+    /// Bridge stdio to lucyd's private MCP socket. A model process that
+    /// lucyd spawns runs this as its MCP server.
+    #[command(hide = true)]
+    McpRelay {
+        /// The per-spawn token lucyd issued.
+        token: String,
+        /// The MCP socket; defaults to `$XDG_RUNTIME_DIR/lucy/mcp.sock`.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -33,6 +45,7 @@ fn main() -> ExitCode {
         Command::Events => events(),
         Command::Listen => connect().and_then(|mut client| client.start_session().map(drop)),
         Command::End => connect().and_then(|mut client| client.end_session()),
+        Command::McpRelay { token, socket } => return mcp_relay(&token, socket),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -78,5 +91,59 @@ fn events() -> Result<(), lucy_ipc::Error> {
             // The reader went away (e.g. `lucy events | head`).
             return Ok(());
         }
+    }
+}
+
+/// Sends `token`, then pipes stdin to the socket and the socket to stdout
+/// until lucyd hangs up.
+fn mcp_relay(token: &str, socket: Option<PathBuf>) -> ExitCode {
+    let Some(socket) = socket
+        .or_else(|| lucy_ipc::default_socket_path().map(|path| path.with_file_name("mcp.sock")))
+    else {
+        eprintln!("lucy: mcp-relay: XDG_RUNTIME_DIR is not set");
+        return ExitCode::FAILURE;
+    };
+    match relay(token, &socket) {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => {
+            eprintln!("lucy: mcp-relay: lucyd refused the token");
+            ExitCode::FAILURE
+        }
+        Err(e) => {
+            eprintln!("lucy: mcp-relay: {}: {e}", socket.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `Ok(false)` if lucyd refused the token.
+fn relay(token: &str, socket: &std::path::Path) -> std::io::Result<bool> {
+    let mut stream = UnixStream::connect(socket)?;
+    writeln!(stream, "{token}")?;
+    // Byte by byte, so nothing after the answer line is consumed.
+    let mut answer = Vec::new();
+    let mut byte = [0u8];
+    while stream.read(&mut byte)? == 1 && byte[0] != b'\n' {
+        answer.push(byte[0]);
+    }
+    if answer != b"ok" {
+        return Ok(false);
+    }
+    let mut to_lucyd = stream.try_clone()?;
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut std::io::stdin().lock(), &mut to_lucyd);
+        let _ = to_lucyd.shutdown(std::net::Shutdown::Write);
+    });
+    // By hand: io::copy from the socket to a stdout pipe stalled, holding
+    // replies back.
+    let mut stdout = std::io::stdout().lock();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            return Ok(true);
+        }
+        stdout.write_all(&buf[..n])?;
+        stdout.flush()?;
     }
 }

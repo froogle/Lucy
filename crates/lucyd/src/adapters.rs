@@ -5,6 +5,7 @@
 //! An adapter keeps the sender it was handed alive for as long as the handle
 //! it returned (`Conversation`, `Speaker`).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -31,11 +32,24 @@ pub enum ThinkingEvent {
     TurnEnd,
 }
 
+/// The command a model process runs as its one MCP server, to reach Lucy's
+/// tools: `lucy mcp-relay` with a token that names this caller.
+#[derive(Debug, Clone)]
+pub struct Relay {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+}
+
 /// A Thinking Provider.
 pub trait Thinking: Send + Sync {
-    /// Starts the model process for a new Session. The process streams its
-    /// replies into `events`. Dropping the Conversation ends the process.
-    fn open(&self, events: mpsc::UnboundedSender<ThinkingEvent>) -> Box<dyn Conversation>;
+    /// Starts the model process for a new Session, configured with `relay`
+    /// as its MCP server. The process streams its replies into `events`.
+    /// Dropping the Conversation ends the process.
+    fn open(
+        &self,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+    ) -> Box<dyn Conversation>;
 }
 
 /// The model process of one Session.
@@ -87,7 +101,11 @@ impl Stt for Inert {
 }
 
 impl Thinking for Inert {
-    fn open(&self, events: mpsc::UnboundedSender<ThinkingEvent>) -> Box<dyn Conversation> {
+    fn open(
+        &self,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        _relay: Relay,
+    ) -> Box<dyn Conversation> {
         Box::new(InertConversation { _events: events })
     }
 }

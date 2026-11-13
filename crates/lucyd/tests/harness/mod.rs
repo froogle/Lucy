@@ -5,15 +5,20 @@
 
 use std::collections::VecDeque;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lucy_config::Config;
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Conversation, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
+    Adapters, Conversation, Relay, Speaker, SpeechSegment, Stt, Thinking, ThinkingEvent, Tts,
 };
+use rmcp::model::{CallToolRequestParams, CallToolResult};
+use rmcp::service::RunningService;
+use rmcp::transport::TokioChildProcess;
+use rmcp::{RoleClient, ServiceExt};
 use tokio::sync::mpsc;
 
 /// How long the harness waits for something lucyd should do.
@@ -47,6 +52,7 @@ impl Harness {
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config,
+            lucy_program: lucy_binary(),
             adapters: Adapters {
                 speech: speech_rx,
                 stt: Arc::new(stt.clone()),
@@ -70,6 +76,23 @@ impl Harness {
 
     pub fn socket_path(&self) -> &Path {
         self.daemon.socket_path()
+    }
+
+    pub fn mcp_socket_path(&self) -> &Path {
+        self.daemon.mcp_socket_path()
+    }
+
+    /// Runs `lucy mcp-relay` against lucyd's MCP socket with `args` after the
+    /// socket option, and no input.
+    pub fn relay(&self, args: &[&str]) -> Output {
+        Command::new(lucy_binary())
+            .arg("mcp-relay")
+            .arg("--socket")
+            .arg(self.mcp_socket_path())
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
     }
 
     /// A client that has completed the `hello` handshake.
@@ -170,6 +193,19 @@ pub fn next_state(client: &mut Client) -> StateEvent {
     }
 }
 
+/// The real `lucy` binary, which cargo builds next to this test's binary
+/// when it builds the `lucy` package.
+fn lucy_binary() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let lucy = exe.parent().unwrap().parent().unwrap().join("lucy");
+    assert!(
+        lucy.exists(),
+        "{} not found; run `cargo build -p lucy` or `cargo test --workspace`",
+        lucy.display()
+    );
+    lucy
+}
+
 /// Waits for `receiver`, failing the test rather than hanging.
 fn recv<T>(receiver: &Mutex<std_mpsc::Receiver<T>>, what: &str) -> T {
     receiver
@@ -220,6 +256,8 @@ pub struct FakeThinking {
     turns: Arc<Mutex<std_mpsc::Receiver<String>>>,
     /// The open Conversation's event stream.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<ThinkingEvent>>>>,
+    /// How the open Conversation's model reaches Lucy's tools.
+    relay: Arc<Mutex<Option<Relay>>>,
     streamed: Arc<Mutex<Vec<String>>>,
 }
 
@@ -230,6 +268,7 @@ impl FakeThinking {
             turns_tx,
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
+            relay: Arc::default(),
             streamed: Arc::default(),
         }
     }
@@ -258,6 +297,59 @@ impl FakeThinking {
         self.send(ThinkingEvent::TurnEnd);
     }
 
+    /// The model calls one of Lucy's tools through the real relay.
+    pub fn call_tool(&self, name: &str) -> Result<CallToolResult, String> {
+        self.with_mcp(|client| async move {
+            client
+                .call_tool(CallToolRequestParams::new(name.to_owned()))
+                .await
+                .map_err(|e| e.to_string())
+        })
+    }
+
+    /// The names of the tools the model is offered.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.with_mcp(|client| async move {
+            let tools = client.list_all_tools().await.map_err(|e| e.to_string())?;
+            Ok(tools
+                .into_iter()
+                .map(|tool| tool.name.into_owned())
+                .collect())
+        })
+        .unwrap()
+    }
+
+    /// Spawns the relay the last Conversation was given, as the model
+    /// process would, and runs `f` against it as an MCP client.
+    fn with_mcp<F, Fut, T>(&self, f: F) -> Result<T, String>
+    where
+        F: FnOnce(RunningService<RoleClient, ()>) -> Fut,
+        Fut: std::future::Future<Output = Result<T, String>>,
+    {
+        let relay = self
+            .relay
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a Conversation was opened");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut command = tokio::process::Command::new(&relay.program);
+            command.args(&relay.args);
+            let transport = TokioChildProcess::new(command).map_err(|e| e.to_string())?;
+            let client = tokio::time::timeout(WAIT, ().serve(transport))
+                .await
+                .map_err(|_| "timed out connecting".to_owned())?
+                .map_err(|e| e.to_string())?;
+            tokio::time::timeout(WAIT, f(client))
+                .await
+                .map_err(|_| "timed out calling".to_owned())?
+        })
+    }
+
     fn send(&self, event: ThinkingEvent) {
         let events = self.events.lock().unwrap();
         let events = events.as_ref().expect("a Conversation is open");
@@ -272,8 +364,13 @@ impl FakeThinking {
 }
 
 impl Thinking for FakeThinking {
-    fn open(&self, events: mpsc::UnboundedSender<ThinkingEvent>) -> Box<dyn Conversation> {
+    fn open(
+        &self,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+    ) -> Box<dyn Conversation> {
         *self.events.lock().unwrap() = Some(events);
+        *self.relay.lock().unwrap() = Some(relay);
         Box::new(FakeConversation {
             turns: self.turns_tx.clone(),
         })

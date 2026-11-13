@@ -3,6 +3,7 @@
 
 pub mod adapters;
 mod ipc;
+mod mcp;
 mod runner;
 mod session;
 
@@ -21,27 +22,35 @@ pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
     pub config: Config,
+    /// The `lucy` binary, which model processes run as `lucy mcp-relay`.
+    pub lucy_program: PathBuf,
     pub adapters: adapters::Adapters,
 }
 
-/// A running lucyd. Dropping it stops lucyd and removes the socket.
+/// A running lucyd. Dropping it stops lucyd and removes its sockets.
 pub struct Daemon {
     socket_path: PathBuf,
+    mcp_socket_path: PathBuf,
     runtime: Option<Runtime>,
 }
 
-/// Starts lucyd on its own runtime and returns once the socket is listening.
+/// Starts lucyd on its own runtime and returns once its sockets are
+/// listening. The private MCP socket sits beside the public one.
 pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
         config,
+        lucy_program,
         adapters,
     } = options;
+    let mcp_socket_path = socket_path.with_file_name("mcp.sock");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
 
     let listener = runtime.block_on(async { bind(&socket_path) })?;
+    let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
+    let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let (status, status_rx) = watch::channel(Status {
         state: lucy_ipc::State::Idle,
         session_id: None,
@@ -52,14 +61,17 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             commands,
             status,
             adapters,
+            relays.clone(),
             Duration::from_secs_f64(config.session.silence_timeout_secs),
         )
         .run(),
     );
+    runtime.spawn(mcp::serve(mcp_listener, relays, sessions.clone()));
     runtime.spawn(ipc::serve(listener, status_rx, sessions));
 
     Ok(Daemon {
         socket_path,
+        mcp_socket_path,
         runtime: Some(runtime),
     })
 }
@@ -67,6 +79,10 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
 impl Daemon {
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    pub fn mcp_socket_path(&self) -> &Path {
+        &self.mcp_socket_path
     }
 
     /// Blocks until SIGINT or SIGTERM.
@@ -89,6 +105,7 @@ impl Drop for Daemon {
             runtime.shutdown_background();
         }
         let _ = std::fs::remove_file(&self.socket_path);
+        let _ = std::fs::remove_file(&self.mcp_socket_path);
     }
 }
 

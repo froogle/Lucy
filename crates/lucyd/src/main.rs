@@ -14,9 +14,18 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
+    // `lucy` is installed beside `lucyd`.
+    let lucy_program = match std::env::current_exe() {
+        Ok(exe) => exe.with_file_name("lucy"),
+        Err(e) => {
+            eprintln!("lucyd: can't find own executable: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,
+        lucy_program,
         adapters: lucyd::adapters::Adapters::inert(),
     }) {
         Ok(daemon) => daemon,

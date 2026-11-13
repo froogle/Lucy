@@ -8,12 +8,16 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
 use crate::adapters::Adapters;
+use crate::mcp::{Caller, Relays};
 use crate::session::{Input, Output, Session};
 
-/// A request from the public socket.
+/// A request from the public socket or the MCP server.
 pub enum Command {
     Start(oneshot::Sender<Result<String, StartError>>),
+    /// End now, from any state.
     End(oneshot::Sender<Result<(), EndError>>),
+    /// `end_session`: end once the reply has been spoken.
+    EndAfterSpeech(oneshot::Sender<Result<(), EndError>>),
 }
 
 pub struct StartError;
@@ -23,6 +27,7 @@ pub struct Runner {
     commands: mpsc::UnboundedReceiver<Command>,
     status: watch::Sender<Status>,
     adapters: Adapters,
+    relays: Relays,
     silence_timeout: Duration,
     /// False once the speech source has gone away.
     speech_open: bool,
@@ -34,12 +39,14 @@ impl Runner {
         commands: mpsc::UnboundedReceiver<Command>,
         status: watch::Sender<Status>,
         adapters: Adapters,
+        relays: Relays,
         silence_timeout: Duration,
     ) -> Self {
         Runner {
             commands,
             status,
             adapters,
+            relays,
             silence_timeout,
             speech_open: true,
             sessions_started: 0,
@@ -55,7 +62,7 @@ impl Runner {
                         let id = self.sessions_started.to_string();
                         self.run_session(id, reply).await;
                     }
-                    Some(Command::End(reply)) => {
+                    Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
                         let _ = reply.send(Err(EndError));
                     }
                     None => return,
@@ -76,7 +83,9 @@ impl Runner {
         started: oneshot::Sender<Result<String, StartError>>,
     ) {
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let mut conversation = self.adapters.thinking.open(events_tx);
+        // Revoked when the Session ends.
+        let (relay, _token) = self.relays.issue(Caller::SessionModel);
+        let mut conversation = self.adapters.thinking.open(events_tx, relay);
         let (played_tx, mut played) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(played_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
@@ -98,6 +107,10 @@ impl Runner {
                         self.publish(State::Idle, None);
                         let _ = reply.send(Ok(()));
                         return;
+                    }
+                    Some(Command::EndAfterSpeech(reply)) => {
+                        let _ = reply.send(Ok(()));
+                        Input::EndRequested
                     }
                     None => return,
                 },
@@ -132,6 +145,10 @@ impl Runner {
                     Output::SendTurn(text) => conversation.send_turn(text),
                     Output::Speak(sentence) => speaker.speak(sentence),
                     Output::ResetSilenceTimer => silence.reset(),
+                    Output::End => {
+                        self.publish(State::Idle, None);
+                        return;
+                    }
                 }
             }
             silence.set_running(session.silence_timer_runs());
