@@ -77,6 +77,10 @@ impl fmt::Display for SessionId {
 /// How long a Session opened by the Wake word waits for the first Turn.
 const WAKE_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// How often lucyd tries to open the microphone again while it is lost
+/// outside a Session.
+const REOPEN_MIC_EVERY: Duration = Duration::from_secs(1);
+
 pub struct StartError;
 pub struct EndError;
 
@@ -138,6 +142,12 @@ impl Runner {
                 // Speech outside a Session is ignored.
                 speech = self.adapters.speech.recv(), if self.speech_open => {
                     self.speech_open = speech.is_some();
+                }
+                // So the Wake word is heard again once a microphone is back.
+                () = mic_lost_for(&mut self.adapters.hearing, REOPEN_MIC_EVERY) => {
+                    if let Some(hearing) = &mut self.adapters.hearing {
+                        hearing.reopen();
+                    }
                 }
             }
         }
@@ -413,6 +423,12 @@ async fn mic_lost(hearing: &mut Option<Hearing>) {
         Some(hearing) => hearing.lost().await,
         None => std::future::pending().await,
     }
+}
+
+/// Resolves once the microphone has been gone for `wait`.
+async fn mic_lost_for(hearing: &mut Option<Hearing>, wait: Duration) {
+    mic_lost(hearing).await;
+    tokio::time::sleep(wait).await;
 }
 
 /// A countdown that can be paused and resumed.

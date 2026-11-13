@@ -215,21 +215,35 @@ impl Hearing {
         let mic = pick(Direction::Input, &audio.mic);
         let speaker = pick(Direction::Output, &audio.speaker);
         if mic != self.mic || *self.lost.borrow() {
-            let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
-            match self.io.capture(&mic, producer) {
-                Ok(capture) => {
-                    let _ = self.changes.send(Change::Mic(capture, consumer));
-                    self.lost.send_replace(false);
-                    self.mic = mic;
-                }
-                Err(e) => eprintln!("lucyd: can't open the microphone {mic}: {e}"),
-            }
+            self.open(mic);
         }
         if *endpointing != self.endpointing {
             let _ = self.changes.send(Change::Endpointing(endpointing.clone()));
             self.endpointing = endpointing.clone();
         }
         Devices { speaker, missing }
+    }
+
+    /// Opens the microphone that went away again, or the default if it is
+    /// pinned and not there. If it can't be opened, it stays lost.
+    pub fn reopen(&mut self) {
+        let mic = resolve(self.io.as_ref(), Direction::Input, &self.mic)
+            .unwrap_or_else(|_| DEFAULT.to_owned());
+        self.open(mic);
+    }
+
+    /// Hands the DSP thread capture of `mic`, or leaves the current
+    /// microphone in use if it can't be opened.
+    fn open(&mut self, mic: String) {
+        let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
+        match self.io.capture(&mic, producer) {
+            Ok(capture) => {
+                let _ = self.changes.send(Change::Mic(capture, consumer));
+                self.lost.send_replace(false);
+                self.mic = mic;
+            }
+            Err(e) => eprintln!("lucyd: can't open the microphone {mic}: {e}"),
+        }
     }
 
     /// Resolves once the open microphone has gone away.

@@ -119,6 +119,20 @@ fn losing_the_mic_mid_session_ends_it_with_a_notification() {
 }
 
 #[test]
+fn after_losing_the_mic_outside_a_session_the_wake_word_is_heard_again() {
+    let lucyd = Harness::hearing("");
+    let mut events = lucyd.state_client();
+
+    lucyd.mic.lose();
+    lucyd.mic.wait_until_open();
+    lucyd
+        .mic
+        .feed(harness::WAKE, std::time::Duration::from_millis(512));
+
+    assert_eq!(next_state(&mut events).state, State::Listening);
+}
+
+#[test]
 fn losing_the_speaker_mid_session_ends_it_with_a_notification() {
     let lucyd = Harness::start();
     let _indicator = lucyd.indicator("lucy-indicator");

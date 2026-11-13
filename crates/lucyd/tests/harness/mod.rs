@@ -1130,6 +1130,15 @@ impl FakeMic {
         drop(self.ring.lock().unwrap().take());
     }
 
+    /// Waits until lucyd has a microphone open.
+    pub fn wait_until_open(&self) {
+        let deadline = Instant::now() + WAIT;
+        while self.ring.lock().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "timed out waiting for capture");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     /// Feeds `duration` of samples at `level`, waiting while the ring is full.
     pub fn feed(&self, level: f32, duration: Duration) {
         let len = (duration.as_secs_f64() * 16_000.0).round() as usize;
