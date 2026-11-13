@@ -165,8 +165,6 @@ pub fn unspoken(sentences: &[String]) -> Notification {
 mod tests {
     use super::*;
 
-    // No Session reaches Confirming until ticket 14, so this is checked here
-    // rather than through the harness.
     #[test]
     fn confirming_without_an_indicator_is_notified_with_an_end_action() {
         let shown = on_change(State::Thinking, State::Confirming).expect("a notification");

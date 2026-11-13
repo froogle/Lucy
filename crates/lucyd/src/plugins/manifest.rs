@@ -37,9 +37,8 @@ pub struct ToolEntry {
     #[serde(default)]
     pub examples: Vec<String>,
     #[serde(default)]
-    #[allow(dead_code)] // Read once Confirmation lands.
     pub confirm: bool,
-    #[allow(dead_code)] // Read once Confirmation lands.
+    /// Said to ask for the Confirmation, with each `{arg}` filled in.
     pub confirm_prompt: Option<String>,
 }
 
@@ -52,14 +51,11 @@ pub struct Access {
     pub write: Vec<String>,
     /// Hosts: declared and shown, not enforced in v0.1.
     #[serde(default)]
-    #[allow(dead_code)]
     pub network: Vec<String>,
     /// Names only.
     #[serde(default)]
-    #[allow(dead_code)]
     pub credentials: Vec<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub commands: Vec<String>,
 }
 

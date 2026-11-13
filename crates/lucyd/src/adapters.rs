@@ -160,6 +160,9 @@ pub enum NotificationKind {
     /// A reply Lucy couldn't speak. It replaces nothing, so the End button
     /// stays.
     Reply,
+    /// What a Confirmation or Approval is about, too long to say: a call's
+    /// full arguments, or the diff of a Plugin update. It replaces nothing.
+    Details,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

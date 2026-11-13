@@ -3,6 +3,7 @@
 
 mod start;
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,12 +12,12 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::{Adapters, Sound, SpeakerEvent, ThinkingEvent};
+use crate::adapters::{Adapters, Notification, Sound, SpeakerEvent, ThinkingEvent};
 use crate::mcp::Relays;
 use crate::notifications;
 use crate::persona;
 use crate::plugins;
-use crate::session::{Input, Output, Session};
+use crate::session::{Answer, Input, Output, Question, Session};
 use crate::status::Buses;
 use crate::wake;
 pub use start::SessionFiles;
@@ -28,6 +29,34 @@ pub enum Command {
     End(oneshot::Sender<Result<(), EndError>>),
     /// `end_session`: end once the reply has been spoken.
     EndAfterSpeech(oneshot::Sender<Result<(), EndError>>),
+    /// Ask the user something and hear their answer (Confirming). Questions
+    /// are asked one at a time, in order. With no open Session, or if the
+    /// Session ends first, `reply` is dropped unanswered.
+    Ask(Ask),
+}
+
+pub struct Ask {
+    pub question: Question,
+    /// Shown when the question is asked: details too long to say.
+    pub shown: Option<Notification>,
+    pub reply: oneshot::Sender<Answer>,
+}
+
+/// Asks the user `question` in the open Session, showing `shown` as it is
+/// asked. `None` if it went unanswered because no Session was open or it
+/// ended first.
+pub async fn ask(
+    commands: &mpsc::UnboundedSender<Command>,
+    question: Question,
+    shown: Option<Notification>,
+) -> Option<Answer> {
+    let (reply, answer) = oneshot::channel();
+    let _ = commands.send(Command::Ask(Ask {
+        question,
+        shown,
+        reply,
+    }));
+    answer.await.ok()
 }
 
 /// Names one Session to clients.
@@ -93,6 +122,8 @@ impl Runner {
                     Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
                         let _ = reply.send(Err(EndError));
                     }
+                    // Dropped unanswered: there is no one to ask.
+                    Some(Command::Ask(_)) => {}
                     None => return,
                 },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
@@ -140,17 +171,24 @@ impl Runner {
         } = self.start(plugin_tools, events_tx);
         let silence_timeout = settings.session.silence_timeout_secs;
         let wake_phrase = wake::phrase(&settings.wake_word);
+        let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(speaker_tx);
         speaker.sound(Sound::Start);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel::<String>();
-        let mut session = Session::default();
+        let mut session = Session::new(confirmation.yes_phrases);
         let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
         if woken {
             // A false wake clears quickly.
             silence.first_timeout(WAKE_TIMEOUT);
         }
         silence.set_running(session.silence_timer_runs());
+        // Questions waiting to be asked, and where the answer to the one
+        // being asked goes.
+        let mut questions: VecDeque<Ask> = VecDeque::new();
+        let mut answer_to = None;
+        let mut answer_timer =
+            SilenceTimer::new(Duration::from_secs_f64(confirmation.timeout_secs));
 
         // Sent before anything the user says. The first run lasts until the
         // introduction's Turn has ended, so a Provider that can't be used
@@ -168,6 +206,15 @@ impl Runner {
             let mut segment = None;
             let input = if let Some(input) = opening.take() {
                 input
+            } else if let Some(ask) = answer_to.is_none().then(|| questions.pop_front()).flatten() {
+                if let Some(shown) = ask.shown {
+                    // It offers no action, so nothing listens for one.
+                    let (actions, _) = mpsc::unbounded_channel();
+                    self.adapters.notifier.notify(shown, actions);
+                }
+                answer_to = Some(ask.reply);
+                answer_timer.reset();
+                Input::Ask(ask.question)
             } else {
                 tokio::select! {
                 command = self.commands.recv() => match command {
@@ -183,6 +230,10 @@ impl Runner {
                     Some(Command::EndAfterSpeech(reply)) => {
                         let _ = reply.send(Ok(()));
                         Input::EndRequested
+                    }
+                    Some(Command::Ask(ask)) => {
+                        questions.push_back(ask);
+                        continue;
                     }
                     None => return,
                 },
@@ -224,6 +275,9 @@ impl Runner {
                     self.publish(State::Idle, None);
                     return;
                 }
+                () = tokio::time::sleep_until(answer_timer.deadline()), if answer_timer.is_running() => {
+                    Input::AnswerTimedOut
+                }
                 }
             };
             if introducing && matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
@@ -259,9 +313,15 @@ impl Runner {
                         self.publish(State::Idle, None);
                         return;
                     }
+                    Output::Answered(answer) => {
+                        if let Some(reply) = answer_to.take() {
+                            let _ = reply.send(answer);
+                        }
+                    }
                 }
             }
             silence.set_running(session.silence_timer_runs());
+            answer_timer.set_running(session.answer_timer_runs());
             self.publish(session.state(), Some(id));
         }
     }

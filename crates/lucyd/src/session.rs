@@ -19,7 +19,42 @@ pub enum Input {
     EndRequested,
     /// The Wake word was heard during the Session.
     WakeWord,
+    /// A tool call waits on the user: say the question, then hear one
+    /// utterance (Confirming).
+    Ask(Question),
+    /// The question went unanswered for too long.
+    AnswerTimedOut,
 }
+
+/// Something Lucy asks the user in the middle of a tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    /// What she says.
+    pub prompt: String,
+    pub expects: Expects,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Expects {
+    /// A yes: one of the yes-phrases. Anything else is a no.
+    Yes,
+    /// Any words: a mid-call question from a Plugin.
+    Words,
+}
+
+/// How the user answered a `Question`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    No,
+    /// What they said, to a question that expects words.
+    Said(String),
+    /// Nothing, to a question that expects words.
+    Silence,
+}
+
+/// Said after any answer to a Confirmation but a yes.
+pub const DECLINED: &str = "Okay, I won't.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Output {
@@ -31,6 +66,8 @@ pub enum Output {
     ResetSilenceTimer,
     /// End the Session.
     End,
+    /// The question asked is answered.
+    Answered(Answer),
 }
 
 /// An open Session.
@@ -44,11 +81,24 @@ pub struct Session {
     sentence: String,
     /// `end_session` was called; end once back in Listening.
     closing: bool,
+    /// What the question being asked expects, while Confirming.
+    asking: Option<Expects>,
+    yes_phrases: Vec<String>,
 }
 
 impl Session {
+    /// A Session that hears `yes_phrases` as a yes.
+    pub fn new(yes_phrases: Vec<String>) -> Self {
+        Session {
+            yes_phrases,
+            ..Session::default()
+        }
+    }
+
     pub fn state(&self) -> State {
-        if self.queued > 0 {
+        if self.asking.is_some() {
+            State::Confirming
+        } else if self.queued > 0 {
             State::Speaking
         } else if self.turn_in_progress {
             State::Thinking
@@ -63,13 +113,23 @@ impl Session {
         self.state() == State::Listening
     }
 
+    /// The wait for an answer counts once the question has been said, and
+    /// not while the user's reply is being transcribed.
+    pub fn answer_timer_runs(&self) -> bool {
+        self.asking.is_some() && self.queued == 0 && !self.transcribing
+    }
+
     pub fn handle(&mut self, input: Input) -> Vec<Output> {
         match input {
             Input::Opening(text) => {
                 self.turn_in_progress = true;
                 vec![Output::SendTurn(text)]
             }
-            Input::Speech if self.state() == State::Listening && !self.transcribing => {
+            // While Confirming, a reply spoken over the question counts.
+            Input::Speech
+                if matches!(self.state(), State::Listening | State::Confirming)
+                    && !self.transcribing =>
+            {
                 self.transcribing = true;
                 vec![Output::Transcribe]
             }
@@ -78,6 +138,18 @@ impl Session {
             Input::Transcript(text) => {
                 self.transcribing = false;
                 let text = text.trim();
+                if let Some(expects) = &self.asking {
+                    // No speech recognised: keep waiting for the answer.
+                    if text.is_empty() {
+                        return vec![];
+                    }
+                    let answer = match expects {
+                        Expects::Yes if is_yes(text, &self.yes_phrases) => Answer::Yes,
+                        Expects::Yes => Answer::No,
+                        Expects::Words => Answer::Said(text.to_owned()),
+                    };
+                    return self.answered(answer);
+                }
                 if text.is_empty() {
                     // No speech recognised: keep listening, timer not reset.
                     return vec![];
@@ -118,7 +190,34 @@ impl Session {
             // Ordinary speech: its utterance arrives as `Speech`. During
             // Speaking it will be an instant Barge-in (ticket 09).
             Input::WakeWord => vec![],
+            Input::Ask(question) => {
+                // Any reply text so far is said before the question.
+                let mut outputs: Vec<Output> = self.speak_sentence().into_iter().collect();
+                self.sentence = question.prompt;
+                outputs.extend(self.speak_sentence());
+                self.asking = Some(question.expects);
+                outputs
+            }
+            Input::AnswerTimedOut => match &self.asking {
+                Some(Expects::Yes) => self.answered(Answer::No),
+                Some(Expects::Words) => self.answered(Answer::Silence),
+                None => vec![],
+            },
         }
+    }
+
+    /// The question is answered: a Confirmation that isn't a yes is
+    /// declined out loud.
+    fn answered(&mut self, answer: Answer) -> Vec<Output> {
+        self.asking = None;
+        let mut outputs = vec![];
+        if answer == Answer::No {
+            self.sentence = DECLINED.to_owned();
+            outputs.extend(self.speak_sentence());
+        }
+        outputs.push(Output::Answered(answer));
+        outputs.extend(self.turn_finished());
+        outputs
     }
 
     fn speak_sentence(&mut self) -> Option<Output> {
@@ -139,5 +238,42 @@ impl Session {
             State::Listening => Some(Output::ResetSilenceTimer),
             _ => None,
         }
+    }
+}
+
+/// Whether `reply` is a clear yes: one of `phrases`, ignoring case,
+/// punctuation and spacing.
+fn is_yes(reply: &str, phrases: &[String]) -> bool {
+    let words = |text: &str| -> Vec<String> {
+        text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect()
+    };
+    let reply = words(reply);
+    !reply.is_empty() && phrases.iter().any(|phrase| words(phrase) == reply)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn yes_phrases() -> Vec<String> {
+        lucy_config::Confirmation::default().yes_phrases
+    }
+
+    #[test]
+    fn a_yes_phrase_counts_whatever_its_case_and_punctuation() {
+        assert!(is_yes("Yes.", &yes_phrases()));
+        assert!(is_yes("  Go ahead!", &yes_phrases()));
+        assert!(is_yes("yep", &yes_phrases()));
+    }
+
+    #[test]
+    fn anything_but_a_whole_yes_phrase_is_not_a_yes() {
+        assert!(!is_yes("yes but not to Bob", &yes_phrases()));
+        assert!(!is_yes("no", &yes_phrases()));
+        assert!(!is_yes("yesterday", &yes_phrases()));
+        assert!(!is_yes("...", &yes_phrases()));
     }
 }

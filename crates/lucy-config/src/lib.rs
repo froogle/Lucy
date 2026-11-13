@@ -22,6 +22,7 @@ pub struct Config {
     pub endpointing: Endpointing,
     pub whisper: Whisper,
     pub wake_word: WakeWord,
+    pub confirmation: Confirmation,
 }
 
 impl Default for Config {
@@ -43,6 +44,7 @@ impl Default for Config {
             endpointing: Endpointing::default(),
             whisper: Whisper::default(),
             wake_word: WakeWord::default(),
+            confirmation: Confirmation::default(),
         }
     }
 }
@@ -269,6 +271,29 @@ impl Default for Session {
     }
 }
 
+/// `[confirmation]`: how Lucy hears the yes to a Confirmation or an
+/// Approval.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Confirmation {
+    /// What counts as a yes. The whole reply must be one of these, ignoring
+    /// case and punctuation.
+    pub yes_phrases: Vec<String>,
+    /// Seconds of silence after the question before it counts as a no.
+    pub timeout_secs: f64,
+}
+
+impl Default for Confirmation {
+    fn default() -> Self {
+        Confirmation {
+            yes_phrases: ["yes", "yeah", "yep", "go ahead", "do it"]
+                .map(str::to_owned)
+                .to_vec(),
+            timeout_secs: 8.0,
+        }
+    }
+}
+
 /// `[desktop]`
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -443,6 +468,21 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[session]\nsilence_timeout_secs = 45\n").unwrap();
         assert_eq!(load(&path).unwrap().session.silence_timeout_secs, 45.0);
+    }
+
+    #[test]
+    fn yes_phrases_default_to_the_common_ones_and_can_be_replaced() {
+        let defaults = Config::default().confirmation;
+        assert_eq!(
+            defaults.yes_phrases,
+            ["yes", "yeah", "yep", "go ahead", "do it"]
+        );
+        assert_eq!(defaults.timeout_secs, 8.0);
+
+        let config = parse("[confirmation]\nyes_phrases = [\"go for it\"]\n");
+
+        assert_eq!(config.confirmation.yes_phrases, ["go for it"]);
+        assert_eq!(config.confirmation.timeout_secs, 8.0);
     }
 
     #[test]

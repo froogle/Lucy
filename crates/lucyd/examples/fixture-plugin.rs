@@ -8,12 +8,15 @@
 //! - `pid`: returns its process id.
 //! - `crash`: exits without answering.
 //! - `reject`: answers with an MCP error.
+//! - `ask {question}`: asks the user `question` mid-call (MCP
+//!   `input_required`), then returns `heard: <answer>`, or `no answer`.
 
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ElicitRequest,
+    ElicitRequestParams, InputRequest, InputRequests, InputRequiredResult, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -34,6 +37,7 @@ fn tool(name: &str) -> Tool {
     let string = json!({"type": "string"});
     let properties = match name {
         "echo" | "save_state" => json!({"text": string}),
+        "ask" => json!({"question": string}),
         "read_file" => json!({"path": string}),
         "write_file" => json!({"path": string, "text": string}),
         _ => json!({}),
@@ -60,7 +64,10 @@ fn result(outcome: std::io::Result<String>) -> CallToolResult {
 
 impl ServerHandler for Fixture {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
+        // `input_required` needs this protocol version.
+        info.protocol_version = ProtocolVersion::V_2026_07_28;
+        info
     }
 
     async fn list_tools(
@@ -93,12 +100,37 @@ impl ServerHandler for Fixture {
                 .map(|()| "ok".into())
             }
             "pid" => Ok(std::process::id().to_string()),
+            "ask" => match &request.input_responses {
+                None => return Ok(ask(&arg(&request, "question")).into()),
+                Some(responses) => Ok(responses
+                    .get("answer")
+                    .and_then(|response| response["content"]["answer"].as_str())
+                    .map(|answer| format!("heard: {answer}"))
+                    .unwrap_or_else(|| "no answer".into())),
+            },
             "crash" => std::process::exit(1),
             "reject" => return Err(ErrorData::invalid_params("rejected", None)),
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };
         Ok(result(outcome).into())
     }
+}
+
+/// Asks the user `question`, wanting a string `answer`.
+fn ask(question: &str) -> InputRequiredResult {
+    let request = ElicitRequest::new(ElicitRequestParams::FormElicitationParams {
+        meta: None,
+        message: question.to_owned(),
+        requested_schema: serde_json::from_value(json!({
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+        }))
+        .unwrap(),
+    });
+    let mut requests = InputRequests::new();
+    requests.insert("answer".to_owned(), InputRequest::Elicitation(request));
+    InputRequiredResult::new(Some(requests), Some("asked".to_owned()))
 }
 
 #[tokio::main(flavor = "current_thread")]
