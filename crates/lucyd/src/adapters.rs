@@ -136,6 +136,14 @@ pub struct Workspace {
     pub readable: Vec<PathBuf>,
 }
 
+/// What a Thinking Provider's process is for: a Session's model, or with a
+/// `workspace`, a Delegate.
+pub(crate) struct Role {
+    pub relay: Relay,
+    pub instructions: String,
+    pub workspace: Option<Workspace>,
+}
+
 /// The model process of one Session.
 pub trait SessionModel: Send {
     /// Starts a Turn with what the user said. If a Turn is still running,

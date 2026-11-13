@@ -13,7 +13,7 @@ use lucy_config::Provider;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 
@@ -218,16 +218,16 @@ impl Claude {
     ) -> Option<Running> {
         let resume = session.lock().unwrap().clone();
         let resume = resume.as_deref();
-        let command = match role {
-            Role::Session {
-                relay,
-                instructions,
-            } => Ok(self.command(provider, Some(relay), instructions, &[], resume)),
-            Role::Delegate {
-                relay,
-                instructions,
-                workspace,
-            } => self.delegate_command(provider, relay, instructions, workspace, resume),
+        let Role {
+            relay,
+            instructions,
+            workspace,
+        } = role;
+        let command = match workspace {
+            None => Ok(self.command(provider, Some(relay), instructions, &[], resume)),
+            Some(workspace) => {
+                self.delegate_command(provider, relay, instructions, workspace, resume)
+            }
         };
         let mut child = match command.and_then(|mut command| command.spawn()) {
             Ok(child) => child,
@@ -337,19 +337,6 @@ struct Turns {
     retired: bool,
 }
 
-/// What a `claude -p` process is for.
-enum Role {
-    Session {
-        relay: Relay,
-        instructions: String,
-    },
-    Delegate {
-        relay: Relay,
-        instructions: String,
-        workspace: Workspace,
-    },
-}
-
 impl Claude {
     /// Returns at once. The guard's checks and the spawn happen on a thread
     /// of their own; Turns sent meanwhile wait for the process.
@@ -384,9 +371,10 @@ impl Thinking for Claude {
         relay: Relay,
         instructions: String,
     ) -> Box<dyn SessionModel> {
-        let role = Role::Session {
+        let role = Role {
             relay,
             instructions,
+            workspace: None,
         };
         self.open_as(provider, events, role)
     }
@@ -399,10 +387,10 @@ impl Thinking for Claude {
         instructions: String,
         workspace: Workspace,
     ) -> Box<dyn SessionModel> {
-        let role = Role::Delegate {
+        let role = Role {
             relay,
             instructions,
-            workspace,
+            workspace: Some(workspace),
         };
         self.open_as(provider, events, role)
     }

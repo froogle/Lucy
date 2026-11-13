@@ -18,7 +18,7 @@ use lucy_config::Provider;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 
@@ -201,14 +201,6 @@ impl Codex {
             }
         }
     }
-}
-
-/// What an app-server is for: a Session's model, or with a `workspace`, a
-/// Delegate.
-struct Role {
-    relay: Relay,
-    instructions: String,
-    workspace: Option<Workspace>,
 }
 
 impl Codex {
