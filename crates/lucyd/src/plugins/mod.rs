@@ -324,9 +324,16 @@ impl SessionTools {
             if let Some(arguments) = arguments {
                 request = request.with_arguments(arguments);
             }
-            peer.call_tool(request)
-                .await
-                .map_err(|e| format!("its call failed: {e}"))
+            match peer.call_tool(request).await {
+                Ok(result) => Ok(result),
+                // The Plugin answered, refusing the call: it still works.
+                Err(rmcp::ServiceError::McpError(e)) => {
+                    Ok(CallToolResult::error(vec![ContentBlock::text(
+                        e.message.into_owned(),
+                    )]))
+                }
+                Err(e) => Err(format!("its call failed: {e}")),
+            }
         }
         .await;
         Some(match outcome {

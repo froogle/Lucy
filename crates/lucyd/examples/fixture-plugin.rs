@@ -7,6 +7,7 @@
 //! - `save_state {text}`: writes `text` to `saved` in its private state dir.
 //! - `pid`: returns its process id.
 //! - `crash`: exits without answering.
+//! - `reject`: answers with an MCP error.
 
 use std::sync::Arc;
 
@@ -93,6 +94,7 @@ impl ServerHandler for Fixture {
             }
             "pid" => Ok(std::process::id().to_string()),
             "crash" => std::process::exit(1),
+            "reject" => return Err(ErrorData::invalid_params("rejected", None)),
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };
         Ok(result(outcome).into())

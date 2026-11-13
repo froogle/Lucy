@@ -217,6 +217,26 @@ fn a_plugin_that_fails_a_call_is_broken_says_so_and_is_left_out() {
 }
 
 #[test]
+fn a_plugin_that_rejects_a_call_is_not_broken() {
+    let lucyd = Harness::start();
+    lucyd.install_plugin("fixture", &manifest("fixture", &["echo", "reject"], ""));
+    lucyd.approve("fixture");
+    lucyd.client().start_session().unwrap();
+
+    let result = lucyd
+        .thinking
+        .call_tool_with("fixture__reject", json!({}))
+        .unwrap();
+
+    assert_eq!(result.is_error, Some(true));
+    assert!(text(&result).contains("rejected"), "{}", text(&result));
+    assert!(lucyd
+        .thinking
+        .tool_names()
+        .contains(&"fixture__echo".to_owned()));
+}
+
+#[test]
 fn landlock_confines_a_plugin_to_its_declared_paths() {
     let lucyd = Harness::start();
     let scratch = lucyd.scratch();
