@@ -157,10 +157,10 @@ async fn connection(
     let Some(token) = read_token(&mut stream).await else {
         return;
     };
-    if tokens.grant(&token).is_none() {
+    let Some(grant) = tokens.grant(&token) else {
         let _ = stream.write_all(b"refused\n").await;
         return;
-    }
+    };
     if stream.write_all(b"ok\n").await.is_err() {
         return;
     }
@@ -171,6 +171,7 @@ async fn connection(
         commands,
     };
     if let Ok(service) = tools.serve(stream).await {
+        grant.plugins.watch(service.peer().clone());
         let _ = service.waiting().await;
     }
 }
@@ -289,7 +290,12 @@ pub fn error(text: impl Into<String>) -> CallToolResult {
 
 impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build(),
+        )
     }
 
     async fn list_tools(

@@ -260,6 +260,19 @@ impl Harness {
         std::fs::write(path, toml::to_string(&approvals).unwrap()).unwrap();
     }
 
+    /// Starts the spoken Approval of the Plugin `name` in the open Session,
+    /// as setup or a finished build would.
+    pub fn request_approval(&self, name: &str) -> ApprovalRequest {
+        let answer = self.daemon.request_approval(name);
+        let (tx, rx) = std_mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok(outcome) = answer.blocking_recv() {
+                let _ = tx.send(outcome);
+            }
+        });
+        ApprovalRequest(Mutex::new(rx))
+    }
+
     /// The user's `persona.md`.
     pub fn persona_path(&self) -> &Path {
         &self.persona_path
@@ -395,6 +408,40 @@ impl Harness {
         let bus = self.bus.lock().unwrap();
         let idle = |line: &String| line.contains(r#""state":"idle""#);
         bus.len() > 1 && bus.last().is_some_and(idle)
+    }
+}
+
+/// A spoken Approval in progress.
+pub struct ApprovalRequest(Mutex<std_mpsc::Receiver<Result<bool, String>>>);
+
+impl ApprovalRequest {
+    /// Waits for it to end: whether the user approved, or why they couldn't
+    /// be asked.
+    pub fn outcome(&self) -> Result<bool, String> {
+        recv(&self.0, "the Approval to end")
+    }
+}
+
+/// A connection to Lucy's tools that the model process keeps open, counting
+/// the `tools/list_changed` notifications it gets.
+pub struct ToolWatch {
+    changed: Mutex<std_mpsc::Receiver<()>>,
+    _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+impl ToolWatch {
+    /// Waits for a `tools/list_changed`.
+    pub fn wait_for_change(&self) {
+        recv(&self.changed, "tools/list_changed");
+    }
+}
+
+#[derive(Clone)]
+struct ChangeCounter(std_mpsc::Sender<()>);
+
+impl rmcp::ClientHandler for ChangeCounter {
+    async fn on_tool_list_changed(&self, _context: rmcp::service::NotificationContext<RoleClient>) {
+        let _ = self.0.send(());
     }
 }
 
@@ -669,6 +716,40 @@ impl FakeThinking {
         .unwrap()
     }
 
+    /// Connects to Lucy's tools through the relay and stays connected, as
+    /// the model process does, watching for `tools/list_changed`.
+    pub fn watch_tools(&self) -> ToolWatch {
+        let relay = self
+            .relay
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a SessionModel was opened");
+        let (changed_tx, changed) = std_mpsc::channel();
+        let (connected_tx, connected) = std_mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut command = tokio::process::Command::new(&relay.program);
+                command.args(&relay.args);
+                let transport = TokioChildProcess::new(command).unwrap();
+                let client = ChangeCounter(changed_tx).serve(transport).await.unwrap();
+                let _ = connected_tx.send(());
+                let _ = stopped.await;
+                let _ = client.cancel().await;
+            });
+        });
+        recv(&Mutex::new(connected), "the watching relay to connect");
+        ToolWatch {
+            changed: Mutex::new(changed),
+            _stop: stop,
+        }
+    }
+
     /// Spawns the relay the last SessionModel was given, as the model
     /// process would, and runs `f` against it as an MCP client.
     fn with_mcp<F, Fut, T>(&self, f: F) -> Result<T, String>
@@ -866,6 +947,16 @@ impl FakeNotifier {
     /// Waits for the next notification lucyd shows.
     pub fn next_notification(&self) -> Notification {
         recv(&self.shown, "a notification")
+    }
+
+    /// Waits for the next notification of `kind`, skipping any others.
+    pub fn next_notification_of(&self, kind: lucyd::adapters::NotificationKind) -> Notification {
+        loop {
+            let shown = self.next_notification();
+            if shown.kind == kind {
+                return shown;
+            }
+        }
     }
 
     /// Fails if lucyd showed a notification the test hasn't read.

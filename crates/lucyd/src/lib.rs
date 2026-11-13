@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
@@ -48,6 +48,7 @@ pub struct Daemon {
     socket_path: PathBuf,
     mcp_socket_path: PathBuf,
     runtime: Option<Runtime>,
+    plugins: std::sync::Arc<plugins::Host>,
 }
 
 /// Starts lucyd on its own runtime and returns once its sockets are
@@ -78,6 +79,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let (indicators, fallback) =
         notifications::fallback(&buses.status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
+    let plugin_host = plugins::Host::new(plugin_paths, sessions.clone());
     let providers = ipc::Providers {
         thinking: adapters.thinking.clone(),
         config_path: config_path.clone(),
@@ -88,7 +90,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             buses.clone(),
             adapters,
             relays.clone(),
-            plugins::Host::new(plugin_paths),
+            plugin_host.clone(),
             runner::SessionFiles {
                 persona: persona.clone(),
                 config_path,
@@ -103,6 +105,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         socket_path,
         mcp_socket_path,
         runtime: Some(runtime),
+        plugins: plugin_host,
     })
 }
 
@@ -113,6 +116,22 @@ impl Daemon {
 
     pub fn mcp_socket_path(&self) -> &Path {
         &self.mcp_socket_path
+    }
+
+    /// Asks the user's spoken Approval of the Plugin `plugin` as it is now,
+    /// in the open Session (setup approves shipped Plugins this way). The
+    /// answer is `Ok(true)` once they said yes and it is recorded, or why
+    /// they couldn't be asked. Approvals are granted only by voice, so no
+    /// IPC request or model tool leads here.
+    pub fn request_approval(&self, plugin: &str) -> oneshot::Receiver<Result<bool, String>> {
+        let (reply, answer) = oneshot::channel();
+        let host = self.plugins.clone();
+        let plugin = plugin.to_owned();
+        let runtime = self.runtime.as_ref().expect("runtime lives until drop");
+        runtime.spawn(async move {
+            let _ = reply.send(host.request_approval(&plugin).await);
+        });
+        answer
     }
 
     /// Blocks until SIGINT or SIGTERM.
