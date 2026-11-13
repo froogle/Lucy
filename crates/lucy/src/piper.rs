@@ -2,6 +2,7 @@
 //! distro's package if there is one and it installs cleanly, otherwise
 //! `uv tool install`, then `pipx`.
 
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -11,10 +12,11 @@ const PACKAGE: &str = "piper-tts[http]";
 
 /// Whether a Python that lucyd would find can import Piper's HTTP server.
 /// `PYTHONPATH` is cleared, as lucyd clears it.
-pub fn installed() -> bool {
-    python_candidates().iter().any(|python| {
+pub fn installed(path: &OsStr) -> bool {
+    python_candidates(path).iter().any(|python| {
         Command::new(python)
             .args(["-c", "import piper.http_server"])
+            .env("PATH", path)
             .env_remove("PYTHONPATH")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -26,9 +28,9 @@ pub fn installed() -> bool {
 
 /// The interpreter behind a `piper` script on `PATH`, then `python3`, as
 /// lucyd looks for them.
-fn python_candidates() -> Vec<PathBuf> {
+fn python_candidates(path: &OsStr) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(script) = on_path("piper") {
+    if let Some(script) = on_path("piper", path) {
         if let Some(interpreter) = shebang(&script) {
             candidates.push(interpreter);
         }
@@ -44,10 +46,9 @@ fn shebang(script: &Path) -> Option<PathBuf> {
     Some(line.strip_prefix("#!")?.split_whitespace().next()?.into())
 }
 
-/// `program` on `PATH`, if it is there.
-pub fn on_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
+/// `program` on `path`, if it is there.
+pub fn on_path(program: &str, path: &OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
 }
