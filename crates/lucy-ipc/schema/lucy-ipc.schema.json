@@ -52,7 +52,7 @@
       ],
       "type": "object"
     },
-    "LoudnessEvent": {
+    "LevelEvent": {
       "description": "Params of the `level` event: how loud Lucy's voice is right now.",
       "properties": {
         "rms": {
@@ -266,7 +266,7 @@
   "x-events": {
     "level": {
       "params": {
-        "$ref": "#/$defs/LoudnessEvent"
+        "$ref": "#/$defs/LevelEvent"
       }
     },
     "state": {

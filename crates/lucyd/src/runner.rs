@@ -18,7 +18,7 @@ use crate::notifications;
 use crate::persona::{self, Loaded, Persona};
 use crate::plugins;
 use crate::session::{Input, Output, Session};
-use crate::status::{LoudnessBus, StatusBus};
+use crate::status::{LevelBus, StatusBus};
 
 /// A request from the public socket or the MCP server.
 pub enum Command {
@@ -45,10 +45,10 @@ pub struct EndError;
 pub struct Runner {
     commands: mpsc::UnboundedReceiver<Command>,
     status: StatusBus,
-    levels: LoudnessBus,
+    levels: LevelBus,
     adapters: Adapters,
     relays: Relays,
-    plugins: Arc<plugins::Host>,
+    plugin_host: Arc<plugins::Host>,
     persona: Persona,
     config_path: PathBuf,
     /// False once the speech source has gone away.
@@ -61,10 +61,10 @@ impl Runner {
     pub fn new(
         commands: mpsc::UnboundedReceiver<Command>,
         status: StatusBus,
-        levels: LoudnessBus,
+        levels: LevelBus,
         adapters: Adapters,
         relays: Relays,
-        plugins: Arc<plugins::Host>,
+        plugin_host: Arc<plugins::Host>,
         persona: Persona,
         config_path: PathBuf,
     ) -> Self {
@@ -74,7 +74,7 @@ impl Runner {
             levels,
             adapters,
             relays,
-            plugins,
+            plugin_host,
             persona,
             config_path,
             speech_open: true,
@@ -110,7 +110,7 @@ impl Runner {
         id: SessionId,
         started: oneshot::Sender<Result<SessionId, StartError>>,
     ) {
-        let plugin_tools = self.plugins.open_session().await;
+        let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
         plugin_tools.stop().await;
     }

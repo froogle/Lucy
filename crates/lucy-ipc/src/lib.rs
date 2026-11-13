@@ -182,7 +182,7 @@ pub type StateEvent = Status;
 
 /// Params of the `level` event: how loud Lucy's voice is right now.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct LoudnessEvent {
+pub struct LevelEvent {
     /// RMS of the samples just played, from 0.0 (silent) to 1.0.
     pub rms: f32,
 }
@@ -192,5 +192,5 @@ pub struct LoudnessEvent {
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum Event {
     State(StateEvent),
-    Level(LoudnessEvent),
+    Level(LevelEvent),
 }

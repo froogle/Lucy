@@ -1,7 +1,7 @@
 mod harness;
 
 use harness::{next_state, Harness};
-use lucy_ipc::{Event, LoudnessEvent, State, Topic};
+use lucy_ipc::{Event, LevelEvent, State, Topic};
 
 #[test]
 fn playback_level_goes_only_to_level_subscribers() {
@@ -21,11 +21,11 @@ fn playback_level_goes_only_to_level_subscribers() {
     lucyd.tts.level(0.5);
     assert_eq!(
         meter.next_event().unwrap(),
-        Event::Level(LoudnessEvent { rms: 0.25 })
+        Event::Level(LevelEvent { rms: 0.25 })
     );
     assert_eq!(
         meter.next_event().unwrap(),
-        Event::Level(LoudnessEvent { rms: 0.5 })
+        Event::Level(LevelEvent { rms: 0.5 })
     );
 
     lucyd.tts.finish_playing();

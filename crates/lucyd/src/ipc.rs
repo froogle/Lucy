@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use lucy_config::{Config, Tier};
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, LoudnessEvent, ProviderCheck, ProviderCheckResult,
+    error_code, Event, Hello, HelloResult, LevelEvent, ProviderCheck, ProviderCheckResult,
     ProviderStatus, ProvidersStatus, Role, SessionStarted, Status, Subscribe, Topic, PROTOCOL,
 };
 use serde_json::{json, Value};
@@ -17,7 +17,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::adapters::Thinking;
 use crate::notifications::{IndicatorClaim, Indicators};
 use crate::runner::Command;
-use crate::status::{LoudnessBus, StatusBus};
+use crate::status::{LevelBus, StatusBus};
 
 /// What `providers.status` and `provider.check` need.
 #[derive(Clone)]
@@ -30,7 +30,7 @@ pub struct Providers {
 pub async fn serve(
     listener: UnixListener,
     status: StatusBus,
-    levels: LoudnessBus,
+    levels: LevelBus,
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
@@ -55,7 +55,7 @@ pub async fn serve(
 struct Connection {
     writer: OwnedWriteHalf,
     status: StatusBus,
-    levels: LoudnessBus,
+    levels: LevelBus,
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
@@ -72,7 +72,7 @@ struct Connection {
 async fn connection(
     stream: UnixStream,
     status: StatusBus,
-    levels: LoudnessBus,
+    levels: LevelBus,
     indicators: Indicators,
     sessions: mpsc::UnboundedSender<Command>,
     providers: Providers,
@@ -100,7 +100,7 @@ async fn connection(
             },
             Some(status) = next_state(&mut conn.state_events) => conn.send_state(status).await,
             Some(rms) = next_level(&mut conn.level_events) => {
-                conn.send_event(Event::Level(LoudnessEvent { rms })).await
+                conn.send_event(Event::Level(LevelEvent { rms })).await
             }
         };
         if sent.is_err() {

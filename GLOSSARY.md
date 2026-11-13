@@ -34,7 +34,7 @@ _Avoid_: Overlay, widget, badge
 
 **Provider**:
 A pluggable source of one capability (speech-to-text, thinking, or speech) that the user configures from whatever they already have.
-_Avoid_: Backend, plugin, integration
+_Avoid_: Backend, plugin (when meaning a Provider), integration
 
 **Plugin**:
 A self-contained ability Lucy can use, described by a Manifest. Whether Lucy wrote it herself or a person did, it is the same thing.
@@ -58,7 +58,7 @@ _Avoid_: Core plugin, native tool
 
 **Model tier**:
 One of two roles a thinking Provider can fill: the fast tier (understanding requests, choosing Plugins, everyday conversation) or the advanced tier (research, writing Plugins, open-ended exploration).
-_Avoid_: Model class, level
+_Avoid_: Model class, level (when meaning a Model tier)
 
 **Delegate**:
 An autonomous agent Lucy hands a goal to and lets work on its own, reporting progress and asking questions along the way, such as the advanced tier building a Plugin.

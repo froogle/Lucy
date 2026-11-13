@@ -40,7 +40,7 @@ pub struct Options {
     pub lucy_program: PathBuf,
     pub adapters: adapters::Adapters,
     /// Where Plugins and Lucy's state live; normally `plugins::Paths::from_env()`.
-    pub plugins: plugins::Paths,
+    pub plugin_paths: plugins::Paths,
 }
 
 /// A running lucyd. Dropping it stops lucyd and removes its sockets.
@@ -59,7 +59,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         persona_path,
         lucy_program,
         adapters,
-        plugins,
+        plugin_paths,
     } = options;
     let persona = persona::Persona::new(persona_path);
     let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
@@ -71,7 +71,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let status = status::StatusBus::new();
-    let levels = status::LoudnessBus::new();
+    let levels = status::LevelBus::new();
     let (sessions, commands) = mpsc::unbounded_channel();
     let (indicators, fallback) =
         notifications::fallback(&status, adapters.notifier.clone(), sessions.clone());
@@ -87,7 +87,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             levels.clone(),
             adapters,
             relays.clone(),
-            plugins::Host::new(plugins),
+            plugins::Host::new(plugin_paths),
             persona.clone(),
             config_path,
         )

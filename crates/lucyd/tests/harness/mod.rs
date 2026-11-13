@@ -43,7 +43,7 @@ pub struct Harness {
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
     config_path: PathBuf,
-    plugins: lucyd::plugins::Paths,
+    plugin_paths: lucyd::plugins::Paths,
     persona_path: PathBuf,
     _dir: tempfile::TempDir,
 }
@@ -129,7 +129,7 @@ impl Harness {
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
         let notifier = FakeNotifier::new();
-        let plugins = lucyd::plugins::Paths {
+        let plugin_paths = lucyd::plugins::Paths {
             user: dir.path().join("data/lucy/plugins"),
             shipped: dir.path().join("usr/share/lucy/plugins"),
             state: dir.path().join("state/lucy"),
@@ -144,7 +144,7 @@ impl Harness {
             config_path: config_path.clone(),
             persona_path: persona_path.clone(),
             lucy_program: lucy_binary(),
-            plugins: plugins.clone(),
+            plugin_paths: plugin_paths.clone(),
             adapters: Adapters {
                 speech: speech_rx,
                 hearing,
@@ -169,7 +169,7 @@ impl Harness {
             applications,
             bus: Arc::default(),
             config_path,
-            plugins,
+            plugin_paths,
             persona_path,
             _dir: dir,
         };
@@ -200,18 +200,18 @@ impl Harness {
 
     /// Lucy's state dir.
     pub fn state_dir(&self) -> &Path {
-        &self.plugins.state
+        &self.plugin_paths.state
     }
 
     /// Installs a user Plugin: `manifest` plus the fixture Plugin executable
     /// as `./fixture-plugin`. Returns its folder.
     pub fn install_plugin(&self, name: &str, manifest: &str) -> PathBuf {
-        install(&self.plugins.user.join(name), manifest)
+        install(&self.plugin_paths.user.join(name), manifest)
     }
 
     /// Installs a shipped Plugin, as `install_plugin` does.
     pub fn install_shipped_plugin(&self, name: &str, manifest: &str) -> PathBuf {
-        install(&self.plugins.shipped.join(name), manifest)
+        install(&self.plugin_paths.shipped.join(name), manifest)
     }
 
     /// Records an Approval for the Plugin `name` as it is now (the user copy
@@ -219,11 +219,11 @@ impl Harness {
     /// marks it as approved: `{"type": "object", "description": "approved
     /// <tool>", "properties": {..}}`.
     pub fn approve(&self, name: &str) {
-        let user = self.plugins.user.join(name);
+        let user = self.plugin_paths.user.join(name);
         let dir = if user.exists() {
             user
         } else {
-            self.plugins.shipped.join(name)
+            self.plugin_paths.shipped.join(name)
         };
         let manifest = std::fs::read_to_string(dir.join("manifest.toml")).unwrap();
         let parsed: toml::Table = toml::from_str(&manifest).unwrap();
@@ -246,7 +246,7 @@ impl Harness {
         );
         approval.insert("schemas".into(), schemas.into());
 
-        let path = self.plugins.state.join("approvals.toml");
+        let path = self.plugin_paths.state.join("approvals.toml");
         let mut approvals: toml::Table = std::fs::read_to_string(&path)
             .map(|text| toml::from_str(&text).unwrap())
             .unwrap_or_default();
@@ -256,7 +256,7 @@ impl Harness {
             .as_table_mut()
             .unwrap()
             .insert(name.into(), approval.into());
-        std::fs::create_dir_all(&self.plugins.state).unwrap();
+        std::fs::create_dir_all(&self.plugin_paths.state).unwrap();
         std::fs::write(path, toml::to_string(&approvals).unwrap()).unwrap();
     }
 

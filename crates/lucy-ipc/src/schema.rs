@@ -4,7 +4,7 @@ use schemars::generate::SchemaSettings;
 use serde_json::{json, Value};
 
 use crate::{
-    Hello, HelloResult, LoudnessEvent, ProviderCheck, ProviderCheckResult, ProvidersStatus,
+    Hello, HelloResult, LevelEvent, ProviderCheck, ProviderCheckResult, ProvidersStatus,
     SessionStarted, StateEvent, Status, Subscribe, PROTOCOL,
 };
 
@@ -18,7 +18,7 @@ pub fn schema() -> Value {
     let status = generator.subschema_for::<Status>();
     let subscribe = generator.subschema_for::<Subscribe>();
     let state_event = generator.subschema_for::<StateEvent>();
-    let level_event = generator.subschema_for::<LoudnessEvent>();
+    let level_event = generator.subschema_for::<LevelEvent>();
     let session_started = generator.subschema_for::<SessionStarted>();
     let providers_status = generator.subschema_for::<ProvidersStatus>();
     let provider_check = generator.subschema_for::<ProviderCheck>();

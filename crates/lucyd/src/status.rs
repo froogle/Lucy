@@ -59,12 +59,12 @@ impl StatusBus {
 /// Lucy's voice level while she speaks. A subscriber that falls behind skips
 /// the levels it missed: only the latest ones matter to a meter.
 #[derive(Clone)]
-pub struct LoudnessBus(broadcast::Sender<f32>);
+pub struct LevelBus(broadcast::Sender<f32>);
 
-impl LoudnessBus {
+impl LevelBus {
     pub fn new() -> Self {
         // About a second of levels.
-        LoudnessBus(broadcast::channel(32).0)
+        LevelBus(broadcast::channel(32).0)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<f32> {
