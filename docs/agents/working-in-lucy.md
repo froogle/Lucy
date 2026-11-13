@@ -27,6 +27,13 @@ New methods, events and enum variants go in `crates/lucy-ipc/src/schema.rs`. Reg
 
 Automated tests use the fake `claude` and the recorded fixtures in `crates/lucyd/tests/fixtures/claude/`. The live check is `cargo test -p lucyd --test claude -- --ignored`, and it spends the user's subscription, so run it only when a ticket needs a real round trip.
 
+## Hearing (mic, VAD, Whisper)
+
+- **Harness:** `Harness::hearing(config)` runs the real DSP thread and endpointing between `FakeMic` and `FakeVad`; the fake VAD reads each sample's value as the speech probability, so tests feed levels (`SPEECH`, `SILENCE`).
+- **Models:** lucyd loads `ggml-<model>.bin` from `$XDG_DATA_HOME/lucy/models`. Silero is bundled in `crates/lucyd/models/`.
+- **Live checks:** `cargo test -p lucyd --test whisper --test silero --test mic -- --ignored`. Outside the main checkout set `LUCY_WHISPER_MODELS` (a dir of ggml models) and `LUCY_SPEECH_WAV` (a speech recording); they default to the voice-loop prototype's.
+- **PipeWire in a smoke run:** a short `XDG_RUNTIME_DIR` hides PipeWire, so cpal falls back to ALSA. Also set `PIPEWIRE_RUNTIME_DIR=/run/user/$UID`.
+
 ## Unix sockets
 
 Socket paths are limited to about 108 bytes. The session scratchpad path is too long for a smoke run, so put the socket under `/tmp` or a short tempdir.
