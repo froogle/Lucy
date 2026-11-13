@@ -1,9 +1,10 @@
 use std::error::Error;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use lucyd::adapters::Adapters;
-use lucyd::audio::{self, Cpal, Silero};
+use lucyd::audio::{self, Cpal, LiveKit, Silero, WakeWord};
 use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
@@ -76,21 +77,41 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Loads Whisper once and cuts the microphone into utterances for it.
+/// Loads Whisper and the wake word once, listens for the Wake word and cuts
+/// the microphone into utterances for Whisper.
 fn hear(config: &lucy_config::Config, adapters: &mut Adapters) -> Result<(), Box<dyn Error>> {
     let models = lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
         .join("lucy")
         .join("models");
     let whisper = Whisper::load(&config.whisper, &models)?;
     let vad = Silero::load()?;
-    let (hearing, speech) = audio::listen(
+    let wake_word = match wake_word(&config.wake_word, &models) {
+        Ok(wake_word) => Some(Box::new(wake_word) as Box<dyn WakeWord>),
+        Err(e) => {
+            eprintln!("lucyd: {e}; the Wake word is off");
+            None
+        }
+    };
+    let ears = audio::listen(
         Box::new(Cpal),
         &config.audio,
         Box::new(vad),
+        wake_word,
         &config.endpointing,
     )?;
     adapters.stt = Arc::new(whisper);
-    adapters.speech = speech;
-    adapters.hearing = Some(hearing);
+    adapters.speech = ears.speech;
+    adapters.wake_word = ears.wake_word;
+    adapters.hearing = Some(ears.hearing);
     Ok(())
+}
+
+/// The configured wake-word model, or the bundled one, installed under
+/// `models/wake`.
+fn wake_word(config: &lucy_config::WakeWord, models: &Path) -> Result<LiveKit, Box<dyn Error>> {
+    let model = match &config.model {
+        Some(model) => model.clone(),
+        None => audio::install_bundled_wake_model(&models.join("wake"))?,
+    };
+    Ok(LiveKit::load(&model, config.threshold)?)
 }

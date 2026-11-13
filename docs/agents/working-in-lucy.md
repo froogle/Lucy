@@ -13,6 +13,7 @@ Facts about the codebase that aren't obvious from reading it.
 - **Config:** `Harness::with_config(toml)` writes the `config.toml` lucyd reads at each Session start; `Harness::start()` has none, so defaults apply.
 - **Real binaries:** the harness runs the `lucy` binary cargo builds next to the test binary. `cargo test -p lucyd` on its own needs `cargo build -p lucy` first; `cargo test --workspace` handles this.
 - **Fixture Plugin:** `crates/lucyd/examples/fixture-plugin.rs`, a tiny MCP stdio server. `Harness::install_plugin` copies it into a Plugin folder and `Harness::approve` pre-seeds `approvals.toml`. `cargo test -p lucyd` builds it, but `--test <name>` alone doesn't: run `cargo build -p lucyd --examples` first.
+- **Confirming:** Confirmations, Approvals and Plugin mid-call questions all go through `runner::ask`, which queues a `Command::Ask` for the open Session. Tests shorten the 8 s wait with `[confirmation] timeout_secs`. `Harness::request_approval` starts a spoken Approval (`Daemon::request_approval`; nothing on IPC or MCP reaches it), and `FakeThinking::watch_tools` holds a relay open to see `tools/list_changed`. The fixture Plugin's `ask` tool asks a question through `input_required`.
 - **Private data:** after a Session ends, `assert_nothing_private_on_bus()` checks that nothing private reached the public socket.
 
 ## Adapters (STT, Thinking, TTS)
@@ -33,6 +34,7 @@ Automated tests use the fake `claude` and the recorded fixtures in `crates/lucyd
 
 - **Harness:** `Harness::hearing(config)` runs the real DSP thread and endpointing between `FakeMic` and `FakeVad`; the fake VAD reads each sample's value as the speech probability, so tests feed levels (`SPEECH`, `SILENCE`).
 - **Models:** lucyd loads `ggml-<model>.bin` from `$XDG_DATA_HOME/lucy/models`. Silero is bundled in `crates/lucyd/models/`.
+- **Wake word:** `Harness::wake()` scripts a detection. Under `Harness::hearing`, the fake wake word hears it where a run of `WAKE` frames starts, and the fake VAD hears those as speech. The real engine's model is `[wake_word] model`; unset, lucyd installs the bundled interim `hey_livekit.onnx` into `$XDG_DATA_HOME/lucy/models/wake/`. The model's file name is the phrase stripped from transcripts.
 - **Live checks:** `cargo test -p lucyd --test whisper --test silero --test mic -- --ignored`. Outside the main checkout set `LUCY_WHISPER_MODELS` (a dir of ggml models) and `LUCY_SPEECH_WAV` (a speech recording); they default to the voice-loop prototype's.
 - **PipeWire in a smoke run:** a short `XDG_RUNTIME_DIR` hides PipeWire, so cpal falls back to ALSA. Also set `PIPEWIRE_RUNTIME_DIR=/run/user/$UID`.
 

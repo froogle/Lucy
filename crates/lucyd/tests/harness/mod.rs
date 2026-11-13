@@ -15,7 +15,7 @@ use lucy_config::{Config, Provider};
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
     Adapters, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay, SessionModel,
-    Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking, ThinkingEvent, Tts,
+    Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking, ThinkingEvent, Tts,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
@@ -31,6 +31,9 @@ pub struct Harness {
     daemon: lucyd::Daemon,
     /// Where `say` sends utterances, unless lucyd hears through `mic`.
     speech: Option<mpsc::UnboundedSender<SpeechSegment>>,
+    /// Where `wake` sends scripted detections, unless lucyd hears through
+    /// `mic`.
+    wake_word: Option<mpsc::UnboundedSender<()>>,
     pub mic: FakeMic,
     pub stt: FakeStt,
     pub thinking: FakeThinking,
@@ -73,27 +76,23 @@ impl Harness {
         Harness::launch(config, Some(PERSONA), Some(thinking), None)
     }
 
-    /// Starts lucyd hearing through the fake microphone and VAD, with the
-    /// real DSP thread and endpointing in between, and `config` as its
-    /// `config.toml`. lucyd starts listening with its microphone and
+    /// Starts lucyd hearing through the fake microphone, VAD and wake word,
+    /// with the real DSP thread and endpointing in between, and `config` as
+    /// its `config.toml`. lucyd starts listening with its microphone and
     /// endpointing, as `main` does, and reads them again at each Session
     /// start.
     pub fn hearing(config: &str) -> Harness {
         let parsed: Config = toml::from_str(config).expect("config parses");
         let mic = FakeMic::default();
-        let (hearing, speech) = lucyd::audio::listen(
+        let ears = lucyd::audio::listen(
             Box::new(mic.clone()),
             &parsed.audio,
             Box::new(FakeVad),
+            Some(Box::new(FakeWakeWord::default())),
             &parsed.endpointing,
         )
         .expect("the fake microphone opens");
-        Harness::launch(
-            Some(config),
-            Some(PERSONA),
-            None,
-            Some((speech, hearing, mic)),
-        )
+        Harness::launch(Some(config), Some(PERSONA), None, Some((ears, mic)))
     }
 
     /// `ears` is what lucyd hears through instead of `say`.
@@ -101,11 +100,7 @@ impl Harness {
         config: Option<&str>,
         persona: Option<&str>,
         real_thinking: Option<Arc<dyn Thinking>>,
-        ears: Option<(
-            mpsc::UnboundedReceiver<SpeechSegment>,
-            lucyd::audio::Hearing,
-            FakeMic,
-        )>,
+        ears: Option<(lucyd::audio::Ears, FakeMic)>,
     ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
@@ -118,11 +113,26 @@ impl Harness {
         if let Some(persona) = persona {
             std::fs::write(&persona_path, persona).unwrap();
         }
-        let (speech, speech_rx, hearing, mic) = match ears {
-            Some((speech_rx, hearing, mic)) => (None, speech_rx, Some(hearing), mic),
+        let (speech, speech_rx, wake_word, wake_word_rx, hearing, mic) = match ears {
+            Some((ears, mic)) => (
+                None,
+                ears.speech,
+                None,
+                ears.wake_word,
+                Some(ears.hearing),
+                mic,
+            ),
             None => {
                 let (speech, speech_rx) = mpsc::unbounded_channel();
-                (Some(speech), speech_rx, None, FakeMic::default())
+                let (wake_word, wake_word_rx) = mpsc::unbounded_channel();
+                (
+                    Some(speech),
+                    speech_rx,
+                    Some(wake_word),
+                    wake_word_rx,
+                    None,
+                    FakeMic::default(),
+                )
             }
         };
         let stt = FakeStt::default();
@@ -147,6 +157,7 @@ impl Harness {
             plugin_paths: plugin_paths.clone(),
             adapters: Adapters {
                 speech: speech_rx,
+                wake_word: wake_word_rx,
                 hearing,
                 stt: Arc::new(stt.clone()),
                 thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
@@ -160,6 +171,7 @@ impl Harness {
         let harness = Harness {
             daemon,
             speech,
+            wake_word,
             mic,
             stt,
             thinking,
@@ -260,6 +272,19 @@ impl Harness {
         std::fs::write(path, toml::to_string(&approvals).unwrap()).unwrap();
     }
 
+    /// Starts the spoken Approval of the Plugin `name` in the open Session,
+    /// as setup or a finished build would.
+    pub fn request_approval(&self, name: &str) -> ApprovalRequest {
+        let answer = self.daemon.request_approval(name);
+        let (tx, rx) = std_mpsc::channel();
+        std::thread::spawn(move || {
+            if let Ok(outcome) = answer.blocking_recv() {
+                let _ = tx.send(outcome);
+            }
+        });
+        ApprovalRequest(Mutex::new(rx))
+    }
+
     /// The user's `persona.md`.
     pub fn persona_path(&self) -> &Path {
         &self.persona_path
@@ -325,6 +350,12 @@ impl Harness {
         self.stt.script_failure();
         let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
         speech.send(SpeechSegment { samples: vec![] }).unwrap();
+    }
+
+    /// The wake-word engine hears the Wake word.
+    pub fn wake(&self) {
+        let wake_word = self.wake_word.as_ref().expect("lucyd hears through `mic`");
+        wake_word.send(()).unwrap();
     }
 
     /// The user makes a sound that the fake STT recognises as no speech.
@@ -402,6 +433,40 @@ impl Harness {
         let bus = self.bus.lock().unwrap();
         let idle = |line: &String| line.contains(r#""state":"idle""#);
         bus.len() > 1 && bus.last().is_some_and(idle)
+    }
+}
+
+/// A spoken Approval in progress.
+pub struct ApprovalRequest(Mutex<std_mpsc::Receiver<Result<bool, String>>>);
+
+impl ApprovalRequest {
+    /// Waits for it to end: whether the user approved, or why they couldn't
+    /// be asked.
+    pub fn outcome(&self) -> Result<bool, String> {
+        recv(&self.0, "the Approval to end")
+    }
+}
+
+/// A connection to Lucy's tools that the model process keeps open, counting
+/// the `tools/list_changed` notifications it gets.
+pub struct ToolWatch {
+    changed: Mutex<std_mpsc::Receiver<()>>,
+    _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+impl ToolWatch {
+    /// Waits for a `tools/list_changed`.
+    pub fn wait_for_change(&self) {
+        recv(&self.changed, "tools/list_changed");
+    }
+}
+
+#[derive(Clone)]
+struct ChangeCounter(std_mpsc::Sender<()>);
+
+impl rmcp::ClientHandler for ChangeCounter {
+    async fn on_tool_list_changed(&self, _context: rmcp::service::NotificationContext<RoleClient>) {
+        let _ = self.0.send(());
     }
 }
 
@@ -693,6 +758,40 @@ impl FakeThinking {
         .unwrap()
     }
 
+    /// Connects to Lucy's tools through the relay and stays connected, as
+    /// the model process does, watching for `tools/list_changed`.
+    pub fn watch_tools(&self) -> ToolWatch {
+        let relay = self
+            .relay
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("a SessionModel was opened");
+        let (changed_tx, changed) = std_mpsc::channel();
+        let (connected_tx, connected) = std_mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut command = tokio::process::Command::new(&relay.program);
+                command.args(&relay.args);
+                let transport = TokioChildProcess::new(command).unwrap();
+                let client = ChangeCounter(changed_tx).serve(transport).await.unwrap();
+                let _ = connected_tx.send(());
+                let _ = stopped.await;
+                let _ = client.cancel().await;
+            });
+        });
+        recv(&Mutex::new(connected), "the watching relay to connect");
+        ToolWatch {
+            changed: Mutex::new(changed),
+            _stop: stop,
+        }
+    }
+
     /// Spawns the relay the last SessionModel was given, as the model
     /// process would, and runs `f` against it as an MCP client.
     fn with_mcp<F, Fut, T>(&self, f: F) -> Result<T, String>
@@ -791,6 +890,7 @@ pub struct FakeTts {
     sentences_tx: std_mpsc::Sender<String>,
     sentences: Arc<Mutex<std_mpsc::Receiver<String>>>,
     spoken: Arc<Mutex<Vec<String>>>,
+    sounds: Arc<Mutex<Vec<Sound>>>,
     failing: Arc<AtomicBool>,
     /// The open Speaker's event channel.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
@@ -805,6 +905,7 @@ impl FakeTts {
             sentences_tx,
             sentences: Arc::new(Mutex::new(sentences)),
             spoken: Arc::default(),
+            sounds: Arc::default(),
             failing: Arc::default(),
             events: Arc::default(),
             device: Arc::default(),
@@ -829,6 +930,11 @@ impl FakeTts {
     /// Every sentence handed to TTS so far.
     pub fn sentences(&self) -> Vec<String> {
         self.spoken.lock().unwrap().clone()
+    }
+
+    /// Every cue played so far.
+    pub fn sounds(&self) -> Vec<Sound> {
+        self.sounds.lock().unwrap().clone()
     }
 
     /// The oldest queued sentence finishes playing.
@@ -874,6 +980,10 @@ impl Speaker for FakeSpeaker {
             let _ = self.tts.sentences_tx.send(sentence);
         }
     }
+
+    fn sound(&mut self, sound: Sound) {
+        self.tts.sounds.lock().unwrap().push(sound);
+    }
 }
 
 /// Notifications that lucyd showed, in order.
@@ -904,6 +1014,16 @@ impl FakeNotifier {
     /// Waits for the next notification lucyd shows.
     pub fn next_notification(&self) -> Notification {
         recv(&self.shown, "a notification")
+    }
+
+    /// Waits for the next notification of `kind`, skipping any others.
+    pub fn next_notification_of(&self, kind: lucyd::adapters::NotificationKind) -> Notification {
+        loop {
+            let shown = self.next_notification();
+            if shown.kind == kind {
+                return shown;
+            }
+        }
     }
 
     /// Fails if lucyd showed a notification the test hasn't read.
@@ -980,6 +1100,9 @@ impl Launcher for FakeLauncher {
 pub const SPEECH: f32 = 0.9;
 /// A level the fake VAD hears as silence.
 pub const SILENCE: f32 = 0.0;
+/// A level the fake VAD hears as speech and the fake wake word as the Wake
+/// word.
+pub const WAKE: f32 = 0.95;
 
 /// A sound card with a microphone the test feeds with samples at 16 kHz.
 /// Every device is there unless the test unplugs it.
@@ -1064,5 +1187,18 @@ impl lucyd::audio::Vad for FakeVad {
 
     fn speech_probability(&mut self, chunk: &[f32]) -> f32 {
         chunk[0]
+    }
+}
+
+/// A wake word that hears the Wake word where a run of `WAKE` frames starts.
+#[derive(Default)]
+pub struct FakeWakeWord {
+    in_wake: bool,
+}
+
+impl lucyd::audio::WakeWord for FakeWakeWord {
+    fn push(&mut self, frame: &[f32]) -> bool {
+        let was_in_wake = std::mem::replace(&mut self.in_wake, frame[0] == WAKE);
+        self.in_wake && !was_in_wake
     }
 }

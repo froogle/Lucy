@@ -127,10 +127,11 @@ fn a_recording_played_into_the_microphone_is_heard() {
     let whisper = Whisper::load(&Config::default(), &models_dir()).unwrap();
     let config = lucy_config::Config::default();
     let mic = harness::FakeMic::default();
-    let (_hearing, mut speech) = lucyd::audio::listen(
+    let mut ears = lucyd::audio::listen(
         Box::new(mic.clone()),
         &config.audio,
         Box::new(lucyd::audio::Silero::load().unwrap()),
+        None,
         &config.endpointing,
     )
     .unwrap();
@@ -139,7 +140,7 @@ fn a_recording_played_into_the_microphone_is_heard() {
     mic.play(&recording::speech());
     mic.feed(harness::SILENCE, Duration::from_secs(1));
 
-    let segment = speech.blocking_recv().expect("an utterance");
+    let segment = ears.speech.blocking_recv().expect("an utterance");
     let heard = whisper.transcribe(segment).unwrap();
     assert!(heard.to_lowercase().contains("lucy"), "{heard:?}");
 }

@@ -21,6 +21,8 @@ pub struct Config {
     pub audio: Audio,
     pub endpointing: Endpointing,
     pub whisper: Whisper,
+    pub wake_word: WakeWord,
+    pub confirmation: Confirmation,
 }
 
 impl Default for Config {
@@ -41,6 +43,8 @@ impl Default for Config {
             audio: Audio::default(),
             endpointing: Endpointing::default(),
             whisper: Whisper::default(),
+            wake_word: WakeWord::default(),
+            confirmation: Confirmation::default(),
         }
     }
 }
@@ -241,6 +245,28 @@ pub struct Whisper {
     pub model: Option<String>,
 }
 
+/// `[wake_word]`: the one wake-word engine, which is not a Provider. Read
+/// when lucyd starts.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct WakeWord {
+    /// A LiveKit WakeWord v2 `.onnx` model. Its file name names the wake
+    /// phrase: `hey_lucy.onnx` listens for "hey lucy". Unset means the model
+    /// bundled with lucyd.
+    pub model: Option<PathBuf>,
+    /// The score from 0 to 1 at which the Wake word counts as heard.
+    pub threshold: f32,
+}
+
+impl Default for WakeWord {
+    fn default() -> Self {
+        WakeWord {
+            model: None,
+            threshold: 0.5,
+        }
+    }
+}
+
 /// `[session]`
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -253,6 +279,29 @@ impl Default for Session {
     fn default() -> Self {
         Session {
             silence_timeout_secs: 20.0,
+        }
+    }
+}
+
+/// `[confirmation]`: how Lucy hears the yes to a Confirmation or an
+/// Approval.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Confirmation {
+    /// What counts as a yes. The whole reply must be one of these, ignoring
+    /// case and punctuation.
+    pub yes_phrases: Vec<String>,
+    /// Seconds of silence after the question before it counts as a no.
+    pub timeout_secs: f64,
+}
+
+impl Default for Confirmation {
+    fn default() -> Self {
+        Confirmation {
+            yes_phrases: ["yes", "yeah", "yep", "go ahead", "do it"]
+                .map(str::to_owned)
+                .to_vec(),
+            timeout_secs: 8.0,
         }
     }
 }
@@ -434,6 +483,21 @@ mod tests {
     }
 
     #[test]
+    fn yes_phrases_default_to_the_common_ones_and_can_be_replaced() {
+        let defaults = Config::default().confirmation;
+        assert_eq!(
+            defaults.yes_phrases,
+            ["yes", "yeah", "yep", "go ahead", "do it"]
+        );
+        assert_eq!(defaults.timeout_secs, 8.0);
+
+        let config = parse("[confirmation]\nyes_phrases = [\"go for it\"]\n");
+
+        assert_eq!(config.confirmation.yes_phrases, ["go for it"]);
+        assert_eq!(config.confirmation.timeout_secs, 8.0);
+    }
+
+    #[test]
     fn the_launcher_is_chosen_at_runtime_unless_config_names_one() {
         assert_eq!(Config::default().desktop.launcher, None);
 
@@ -464,6 +528,19 @@ mod tests {
         assert_eq!(config.audio.speaker, "alsa_output.hdmi");
         assert_eq!(config.endpointing.end_silence_ms, 900);
         assert_eq!(config.endpointing.pre_roll_ms, 500);
+    }
+
+    #[test]
+    fn the_wake_word_model_is_bundled_unless_config_names_one() {
+        assert_eq!(Config::default().wake_word.model, None);
+
+        let config = parse("[wake_word]\nmodel = \"/models/computer.onnx\"\n");
+
+        assert_eq!(
+            config.wake_word.model.as_deref(),
+            Some(Path::new("/models/computer.onnx"))
+        );
+        assert_eq!(config.wake_word.threshold, 0.5);
     }
 
     #[test]

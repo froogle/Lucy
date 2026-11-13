@@ -123,6 +123,19 @@ pub trait Tts: Send + Sync {
 pub trait Speaker: Send {
     /// Queues a sentence to be synthesised and played.
     fn speak(&mut self, sentence: String);
+
+    /// Queues a short cue. It sends no event, and if it is the last thing
+    /// queued it plays out even if the Speaker is dropped straight after.
+    fn sound(&mut self, sound: Sound);
+}
+
+/// The cues Lucy plays around a Session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sound {
+    /// A Session has opened.
+    Start,
+    /// A Session ended on its own, after silence.
+    Closing,
 }
 
 /// What a Speaker reports back.
@@ -161,6 +174,9 @@ pub enum NotificationKind {
     /// Something went wrong, such as a lost device or Provider. It replaces
     /// nothing, so the Session end that may follow doesn't hide it.
     Problem,
+    /// What a Confirmation or Approval is about, too long to say: a call's
+    /// full arguments, or the diff of a Plugin update. It replaces nothing.
+    Details,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +209,8 @@ pub trait Launcher: Send + Sync {
 pub struct Adapters {
     /// Utterances from the microphone. Ignored while no Session is open.
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
+    /// One message each time the Wake word is heard.
+    pub wake_word: mpsc::UnboundedReceiver<()>,
     /// What `speech` comes from, if it is the microphone: it takes
     /// `[audio]` and `[endpointing]` at each Session start.
     pub hearing: Option<Hearing>,
@@ -209,8 +227,10 @@ impl Adapters {
     /// Adapters that hear nothing and say nothing, until the real ones land.
     pub fn inert() -> Adapters {
         let (_, speech) = mpsc::unbounded_channel();
+        let (_, wake_word) = mpsc::unbounded_channel();
         Adapters {
             speech,
+            wake_word,
             hearing: None,
             stt: Arc::new(Inert),
             thinking: Arc::new(Inert),
@@ -286,6 +306,8 @@ impl Speaker for InertSpeaker {
     fn speak(&mut self, _sentence: String) {
         let _ = self.events.send(SpeakerEvent::Played);
     }
+
+    fn sound(&mut self, _sound: Sound) {}
 }
 
 impl Notifier for Inert {

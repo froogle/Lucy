@@ -3,6 +3,7 @@
 
 mod start;
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::adapters::{
-    Adapters, Notification, RateLimitStatus, SpeakerEvent, SttError, ThinkingEvent,
+    Adapters, Notification, RateLimitStatus, Sound, SpeakerEvent, SttError, ThinkingEvent,
 };
 use crate::audio::{Direction, Hearing};
 use crate::limits;
@@ -20,8 +21,9 @@ use crate::mcp::Relays;
 use crate::notifications;
 use crate::persona;
 use crate::plugins;
-use crate::session::{Input, Output, Session};
+use crate::session::{Answer, Input, Output, Question, Session};
 use crate::status::Buses;
+use crate::wake;
 pub use start::SessionFiles;
 
 /// A request from the public socket or the MCP server.
@@ -31,6 +33,34 @@ pub enum Command {
     End(oneshot::Sender<Result<(), EndError>>),
     /// `end_session`: end once the reply has been spoken.
     EndAfterSpeech(oneshot::Sender<Result<(), EndError>>),
+    /// Ask the user something and hear their answer (Confirming). Questions
+    /// are asked one at a time, in order. With no open Session, or if the
+    /// Session ends first, `reply` is dropped unanswered.
+    Ask(Ask),
+}
+
+pub struct Ask {
+    pub question: Question,
+    /// Shown when the question is asked: details too long to say.
+    pub shown: Option<Notification>,
+    pub reply: oneshot::Sender<Answer>,
+}
+
+/// Asks the user `question` in the open Session, showing `shown` as it is
+/// asked. `None` if it went unanswered because no Session was open or it
+/// ended first.
+pub async fn ask(
+    commands: &mpsc::UnboundedSender<Command>,
+    question: Question,
+    shown: Option<Notification>,
+) -> Option<Answer> {
+    let (reply, answer) = oneshot::channel();
+    let _ = commands.send(Command::Ask(Ask {
+        question,
+        shown,
+        reply,
+    }));
+    answer.await.ok()
 }
 
 /// Names one Session to clients.
@@ -42,6 +72,9 @@ impl fmt::Display for SessionId {
         self.0.fmt(f)
     }
 }
+
+/// How long a Session opened by the Wake word waits for the first Turn.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub struct StartError;
 pub struct EndError;
@@ -55,6 +88,8 @@ pub struct Runner {
     files: SessionFiles,
     /// False once the speech source has gone away.
     speech_open: bool,
+    /// False once the wake-word source has gone away.
+    wake_open: bool,
     sessions_started: u64,
 }
 
@@ -75,6 +110,7 @@ impl Runner {
             plugin_host,
             files,
             speech_open: true,
+            wake_open: true,
             sessions_started: 0,
         }
     }
@@ -82,16 +118,21 @@ impl Runner {
     pub async fn run(mut self) {
         loop {
             tokio::select! {
+                // The Wake word before speech: the utterance it starts
+                // belongs to the Session it opens.
+                biased;
                 command = self.commands.recv() => match command {
-                    Some(Command::Start(reply)) => {
-                        self.sessions_started += 1;
-                        let id = SessionId(self.sessions_started);
-                        self.run_session(id, reply).await;
-                    }
+                    Some(Command::Start(reply)) => self.run_session(Some(reply)).await,
                     Some(Command::End(reply) | Command::EndAfterSpeech(reply)) => {
                         let _ = reply.send(Err(EndError));
                     }
+                    // Dropped unanswered: there is no one to ask.
+                    Some(Command::Ask(_)) => {}
                     None => return,
+                },
+                wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
+                    Some(()) => self.run_session(None).await,
+                    None => self.wake_open = false,
                 },
                 // Speech outside a Session is ignored.
                 speech = self.adapters.speech.recv(), if self.speech_open => {
@@ -102,11 +143,14 @@ impl Runner {
     }
 
     /// Runs one Session until it ends, then stops the Plugins it started.
+    /// `started` hears that it opened; it is None when the Wake word opened
+    /// it.
     async fn run_session(
         &mut self,
-        id: SessionId,
-        started: oneshot::Sender<Result<SessionId, StartError>>,
+        started: Option<oneshot::Sender<Result<SessionId, StartError>>>,
     ) {
+        self.sessions_started += 1;
+        let id = SessionId(self.sessions_started);
         let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
         plugin_tools.stop().await;
@@ -117,9 +161,10 @@ impl Runner {
     async fn session_loop(
         &mut self,
         id: SessionId,
-        started: oneshot::Sender<Result<SessionId, StartError>>,
+        started: Option<oneshot::Sender<Result<SessionId, StartError>>>,
         plugin_tools: Arc<plugins::SessionTools>,
     ) {
+        let woken = started.is_none();
         let (events_tx, mut events) = mpsc::unbounded_channel();
         // The token is revoked when the Session ends.
         let start::Started {
@@ -136,12 +181,26 @@ impl Runner {
         // The model has died and been opened again since the last Turn ended.
         let mut respawned = false;
         let silence_timeout = settings.session.silence_timeout_secs;
+        let wake_phrase = wake::phrase(&settings.wake_word);
+        let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker = self.adapters.tts.open(&devices.speaker, speaker_tx);
-        let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
-        let mut session = Session::default();
+        speaker.sound(Sound::Start);
+        let (transcripts_tx, mut transcripts) =
+            mpsc::unbounded_channel::<Result<String, SttError>>();
+        let mut session = Session::new(confirmation.yes_phrases);
         let mut silence = SilenceTimer::new(Duration::from_secs_f64(silence_timeout));
+        if woken {
+            // A false wake clears quickly.
+            silence.first_timeout(WAKE_TIMEOUT);
+        }
         silence.set_running(session.silence_timer_runs());
+        // Questions waiting to be asked, and where the answer to the one
+        // being asked goes.
+        let mut questions: VecDeque<Ask> = VecDeque::new();
+        let mut answer_to = None;
+        let mut answer_timer =
+            SilenceTimer::new(Duration::from_secs_f64(confirmation.timeout_secs));
 
         // Sent before anything the user says. The first run lasts until the
         // introduction's Turn has ended, so a Provider that can't be used
@@ -152,11 +211,22 @@ impl Runner {
         let mut opening = introducing.then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
 
         self.publish(session.state(), Some(id));
-        let _ = started.send(Ok(id));
+        if let Some(started) = started {
+            let _ = started.send(Ok(id));
+        }
         loop {
             let mut segment = None;
             let input = if let Some(input) = opening.take() {
                 input
+            } else if let Some(ask) = answer_to.is_none().then(|| questions.pop_front()).flatten() {
+                if let Some(shown) = ask.shown {
+                    // It offers no action, so nothing listens for one.
+                    let (actions, _) = mpsc::unbounded_channel();
+                    self.adapters.notifier.notify(shown, actions);
+                }
+                answer_to = Some(ask.reply);
+                answer_timer.reset();
+                Input::Ask(ask.question)
             } else {
                 tokio::select! {
                 command = self.commands.recv() => match command {
@@ -173,6 +243,10 @@ impl Runner {
                         let _ = reply.send(Ok(()));
                         Input::EndRequested
                     }
+                    Some(Command::Ask(ask)) => {
+                        questions.push_back(ask);
+                        continue;
+                    }
                     None => return,
                 },
                 speech = self.adapters.speech.recv(), if self.speech_open => match speech {
@@ -185,8 +259,15 @@ impl Runner {
                         continue;
                     }
                 },
+                wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
+                    Some(()) => Input::WakeWord,
+                    None => {
+                        self.wake_open = false;
+                        continue;
+                    }
+                },
                 Some(transcript) = transcripts.recv() => match transcript {
-                    Ok(text) => Input::Transcript(text),
+                    Ok(text) => Input::Transcript(wake::strip(&text, &wake_phrase).to_owned()),
                     Err(SttError(e)) => {
                         eprintln!("lucyd: {e}");
                         Input::TranscribeFailed
@@ -214,8 +295,12 @@ impl Runner {
                     return;
                 }
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
+                    speaker.sound(Sound::Closing);
                     self.publish(State::Idle, None);
                     return;
+                }
+                () = tokio::time::sleep_until(answer_timer.deadline()), if answer_timer.is_running() => {
+                    Input::AnswerTimedOut
                 }
                 }
             };
@@ -282,9 +367,15 @@ impl Runner {
                         self.publish(State::Idle, None);
                         return;
                     }
+                    Output::Answered(answer) => {
+                        if let Some(reply) = answer_to.take() {
+                            let _ = reply.send(answer);
+                        }
+                    }
                 }
             }
             silence.set_running(session.silence_timer_runs());
+            answer_timer.set_running(session.answer_timer_runs());
             self.publish(session.state(), Some(id));
         }
     }
@@ -348,6 +439,12 @@ impl SilenceTimer {
             }
             _ => {}
         }
+    }
+
+    /// Counts down from `timeout` until the next reset, instead of the
+    /// usual timeout.
+    fn first_timeout(&mut self, timeout: Duration) {
+        self.remaining = timeout;
     }
 
     fn reset(&mut self) {

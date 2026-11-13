@@ -4,6 +4,7 @@
 
 pub(crate) mod cpal;
 mod endpoint;
+mod livekit;
 mod silero;
 
 use std::fmt;
@@ -16,6 +17,8 @@ use tokio::sync::{mpsc, watch};
 pub use self::cpal::Cpal;
 use crate::adapters::SpeechSegment;
 use endpoint::Endpointer;
+pub(crate) use livekit::BUNDLED_NAME as BUNDLED_WAKE_MODEL;
+pub use livekit::{install_bundled_wake_model, LiveKit};
 pub use silero::Silero;
 
 /// Lucy's internal sample rate: mono f32 at 16 kHz.
@@ -91,6 +94,12 @@ pub trait Vad: Send {
     fn speech_probability(&mut self, chunk: &[f32]) -> f32;
 }
 
+/// A wake-word detector. It hears every frame, in and out of Sessions.
+pub trait WakeWord: Send {
+    /// Takes the next 10 ms frame. True if it completes the Wake word.
+    fn push(&mut self, frame: &[f32]) -> bool;
+}
+
 /// Why the microphone can't be heard.
 #[derive(Debug)]
 pub struct Error(pub String);
@@ -103,15 +112,26 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// What the microphone gives lucyd.
+pub struct Ears {
+    pub hearing: Hearing,
+    /// Utterances, cut by the VAD.
+    pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
+    /// One message each time the Wake word is heard.
+    pub wake_word: mpsc::UnboundedReceiver<()>,
+}
+
 /// Opens the microphone and starts the DSP thread, which reframes capture to
-/// 10 ms and cuts it into utterances with `vad`. Capture stops once the
-/// returned receiver is dropped.
+/// 10 ms, listens for the Wake word with `wake_word` if there is one, and
+/// cuts capture into utterances with `vad`. Capture stops once the speech
+/// receiver is dropped.
 pub fn listen(
     io: Box<dyn AudioIo + Send>,
     audio: &Audio,
     vad: Box<dyn Vad>,
+    wake_word: Option<Box<dyn WakeWord>>,
     endpointing: &Endpointing,
-) -> Result<(Hearing, mpsc::UnboundedReceiver<SpeechSegment>), Error> {
+) -> Result<Ears, Error> {
     let mic = resolve(io.as_ref(), Direction::Input, &audio.mic).unwrap_or_else(|missing| {
         eprintln!("lucyd: microphone {missing} not found; using the default");
         DEFAULT.to_owned()
@@ -119,14 +139,21 @@ pub fn listen(
     let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
     let capture = io.capture(&mic, producer)?;
     let (speech, speech_rx) = mpsc::unbounded_channel();
+    let (wakes, wakes_rx) = mpsc::unbounded_channel();
     let (changes, changes_rx) = std::sync::mpsc::channel();
     let (lost, lost_rx) = watch::channel(false);
     let lost = Arc::new(lost);
     let endpointer = Endpointer::new(vad, endpointing);
-    let dsp_lost = lost.clone();
+    let listeners = Listeners {
+        wake_word,
+        endpointer,
+        wakes,
+        speech,
+        lost: lost.clone(),
+    };
     std::thread::Builder::new()
         .name("lucyd-dsp".to_owned())
-        .spawn(move || dsp(capture, consumer, endpointer, changes_rx, speech, &dsp_lost))
+        .spawn(move || dsp(capture, consumer, listeners, changes_rx))
         .map_err(|e| Error(format!("can't start the DSP thread: {e}")))?;
     let hearing = Hearing {
         io,
@@ -136,7 +163,21 @@ pub fn listen(
         lost,
         lost_rx,
     };
-    Ok((hearing, speech_rx))
+    Ok(Ears {
+        hearing,
+        speech: speech_rx,
+        wake_word: wakes_rx,
+    })
+}
+
+/// What the DSP thread hands each frame to, and where they report.
+struct Listeners {
+    wake_word: Option<Box<dyn WakeWord>>,
+    endpointer: Endpointer,
+    wakes: mpsc::UnboundedSender<()>,
+    speech: mpsc::UnboundedSender<SpeechSegment>,
+    /// Set once the open microphone has gone away.
+    lost: Arc<watch::Sender<bool>>,
 }
 
 /// Changes the running DSP thread's microphone and endpointing.
@@ -197,32 +238,30 @@ impl Hearing {
     }
 }
 
-/// The DSP thread. Echo cancellation (ticket 09) and the wake word will
-/// take each frame here before the endpointer.
+/// The DSP thread. Echo cancellation (ticket 09) will take each frame here
+/// before the listeners.
 fn dsp(
     mut _capture: Box<dyn Send>,
     mut mic: rtrb::Consumer<f32>,
-    mut endpointer: Endpointer,
+    mut listeners: Listeners,
     changes: std::sync::mpsc::Receiver<Change>,
-    speech: mpsc::UnboundedSender<SpeechSegment>,
-    lost: &watch::Sender<bool>,
 ) {
     let mut frame = [0.0; FRAME_LEN];
     // The open microphone has gone away and that has been reported.
     let mut reported = false;
-    while !speech.is_closed() {
+    while !listeners.speech.is_closed() {
         for change in changes.try_iter() {
             match change {
                 Change::Mic(capture, consumer) => {
                     (_capture, mic) = (capture, consumer);
                     reported = false;
                 }
-                Change::Endpointing(config) => endpointer.configure(&config),
+                Change::Endpointing(config) => listeners.endpointer.configure(&config),
             }
         }
         if mic.is_abandoned() && mic.slots() < FRAME_LEN && !reported {
             eprintln!("lucyd: the microphone has gone away");
-            lost.send_replace(true);
+            listeners.lost.send_replace(true);
             reported = true;
         }
         if mic.slots() < FRAME_LEN {
@@ -234,8 +273,15 @@ fn dsp(
         frame[..first.len()].copy_from_slice(first);
         frame[first.len()..].copy_from_slice(second);
         chunk.commit_all();
-        if let Some(segment) = endpointer.push(&frame) {
-            let _ = speech.send(segment);
+        // Heard before the utterance it starts ends, so the Session it
+        // opens gets that utterance.
+        if let Some(wake_word) = &mut listeners.wake_word {
+            if wake_word.push(&frame) {
+                let _ = listeners.wakes.send(());
+            }
+        }
+        if let Some(segment) = listeners.endpointer.push(&frame) {
+            let _ = listeners.speech.send(segment);
         }
     }
 }
