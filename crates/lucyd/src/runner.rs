@@ -1,6 +1,7 @@
 //! Runs Sessions: owns the published status and does the I/O that the
 //! `session` state machine asks for.
 
+mod preview;
 mod start;
 
 use std::collections::VecDeque;
@@ -25,6 +26,7 @@ use crate::plugins;
 use crate::session::{Answer, Input, Output, Question, Session};
 use crate::status::Buses;
 use crate::wake;
+pub use preview::{PreviewError, VoicePreview};
 pub use start::SessionFiles;
 
 /// A request from the public socket or the MCP server.
@@ -39,6 +41,8 @@ pub enum Command {
     /// Session ends or the model process dies first, `reply` is dropped
     /// unanswered.
     Ask(Ask),
+    /// `test.voice_preview`: say a sentence outside any Session.
+    VoicePreview(VoicePreview),
 }
 
 pub struct Ask {
@@ -137,6 +141,7 @@ impl Runner {
                     }
                     // Dropped unanswered: there is no one to ask.
                     Some(Command::Ask(_)) => {}
+                    Some(Command::VoicePreview(preview)) => self.preview(preview).await,
                     None => return,
                 },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
@@ -260,7 +265,7 @@ impl Runner {
                 Some(event) = speaker_events.recv() => match event {
                     SpeakerEvent::Played => Input::Played,
                     // Lucy can't say it, so she shows it.
-                    SpeakerEvent::Failed(sentence) => {
+                    SpeakerEvent::Failed { sentence, .. } => {
                         unspoken.push(sentence);
                         Input::Played
                     }
@@ -289,6 +294,10 @@ impl Runner {
                     }
                     Some(Command::Ask(ask)) => {
                         questions.push_back(ask);
+                        continue;
+                    }
+                    Some(Command::VoicePreview(preview)) => {
+                        let _ = preview.reply.send(Err(PreviewError::SessionOpen));
                         continue;
                     }
                     None => return,

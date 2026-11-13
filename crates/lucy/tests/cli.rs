@@ -132,3 +132,41 @@ fn listen_during_a_session_and_end_without_one_say_why_they_fail() {
         stderr(&listen)
     );
 }
+
+#[test]
+fn say_is_hidden_from_help() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lucy"))
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("listen"), "{help}");
+    assert!(!help.contains("say"), "{help}");
+}
+
+#[test]
+fn say_speaks_through_lucyd_and_exits_once_played() {
+    let dir = tempfile::tempdir().unwrap();
+    let _lucyd = start_lucyd(dir.path());
+
+    let say = lucy(dir.path()).args(["say", "hello"]).output().unwrap();
+
+    assert!(say.status.success(), "{}", stderr(&say));
+}
+
+#[test]
+fn say_prints_why_lucyd_refused_and_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let _lucyd = start_lucyd(dir.path());
+    lucy(dir.path()).arg("listen").output().unwrap();
+
+    let say = lucy(dir.path()).args(["say", "hello"]).output().unwrap();
+
+    assert!(!say.status.success());
+    assert!(
+        stderr(&say).contains("a Session is open"),
+        "{}",
+        stderr(&say)
+    );
+}

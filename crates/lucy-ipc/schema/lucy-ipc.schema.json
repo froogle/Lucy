@@ -442,6 +442,19 @@
           "type": "string"
         }
       ]
+    },
+    "VoicePreview": {
+      "description": "Params of `test.voice_preview`: Lucy speaks `text` in her running voice\non the configured speaker, outside any Session, between the Start and\nClosing sounds. It replies once playback has finished. Refused while a\nSession is open or another Voice preview plays; a Session that opens\ncuts it short.",
+      "properties": {
+        "text": {
+          "description": "The sentence to say. Not empty.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -530,6 +543,14 @@
     "subscribe": {
       "params": {
         "$ref": "#/$defs/Subscribe"
+      },
+      "result": {
+        "type": "object"
+      }
+    },
+    "test.voice_preview": {
+      "params": {
+        "$ref": "#/$defs/VoicePreview"
       },
       "result": {
         "type": "object"
