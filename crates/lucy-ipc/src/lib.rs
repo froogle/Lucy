@@ -7,6 +7,7 @@
 //! Never carried: transcripts, spoken text, tool arguments.
 
 mod client;
+mod schema;
 
 use std::path::PathBuf;
 
@@ -14,6 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, Error};
+pub use schema::schema;
 
 /// The major protocol version this crate speaks.
 pub const PROTOCOL: u32 = 1;

@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "Hello": {
+      "description": "Params of `hello`, the first request on every connection.",
+      "properties": {
+        "client": {
+          "description": "Free-form client name, for logs.",
+          "type": "string"
+        },
+        "protocol": {
+          "description": "Major protocol version the client speaks.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Role"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A role the client claims, if any."
+        }
+      },
+      "required": [
+        "protocol",
+        "client"
+      ],
+      "type": "object"
+    },
+    "HelloResult": {
+      "description": "Result of `hello`.",
+      "properties": {
+        "protocol": {
+          "description": "Major protocol version lucyd speaks.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "server": {
+          "description": "lucyd's name and version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "protocol",
+        "server"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "oneOf": [
+        {
+          "const": "indicator",
+          "description": "Draws the Indicator. While no client holds it, lucyd uses notifications.",
+          "type": "string"
+        }
+      ]
+    },
+    "State": {
+      "description": "Lucy's Session state.",
+      "enum": [
+        "idle"
+      ],
+      "type": "string"
+    },
+    "StateEvent": {
+      "description": "Params of the `state` event.",
+      "properties": {
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "Status": {
+      "description": "Result of `status`: a snapshot of lucyd.",
+      "properties": {
+        "session_id": {
+          "description": "The current Session, if one is open.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/State"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "Subscribe": {
+      "description": "Params of `subscribe`.",
+      "properties": {
+        "topics": {
+          "items": {
+            "$ref": "#/$defs/Topic"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "topics"
+      ],
+      "type": "object"
+    },
+    "Topic": {
+      "oneOf": [
+        {
+          "const": "state",
+          "description": "`state` events. The current state is sent straight after subscribing.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Newline-delimited JSON-RPC 2.0 on $XDG_RUNTIME_DIR/lucy/lucyd.sock. Send hello first. Within a major protocol version, fields are only ever added.",
+  "title": "lucyd public IPC, protocol 1",
+  "x-events": {
+    "state": {
+      "params": {
+        "$ref": "#/$defs/StateEvent"
+      }
+    }
+  },
+  "x-methods": {
+    "hello": {
+      "params": {
+        "$ref": "#/$defs/Hello"
+      },
+      "result": {
+        "$ref": "#/$defs/HelloResult"
+      }
+    },
+    "status": {
+      "result": {
+        "$ref": "#/$defs/Status"
+      }
+    },
+    "subscribe": {
+      "params": {
+        "$ref": "#/$defs/Subscribe"
+      },
+      "result": {
+        "type": "object"
+      }
+    }
+  }
+}
