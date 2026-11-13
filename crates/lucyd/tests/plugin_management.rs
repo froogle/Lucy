@@ -327,6 +327,32 @@ fn a_revoke_over_ipc_removes_the_tools_mid_session() {
 }
 
 #[test]
+fn a_revoke_keeps_the_previous_version_to_roll_back_to_once_approved_again() {
+    let lucyd = Harness::start();
+    let first = manifest("lucy", false);
+    let folder = lucyd.install_plugin("notes", &first);
+    let _events = in_a_session(&lucyd);
+    approve_by_voice(&lucyd, "notes");
+    let first_hash = approved_hash(&lucyd, "notes").unwrap();
+    std::fs::write(folder.join("manifest.toml"), manifest("lucy", true)).unwrap();
+    approve_by_voice(&lucyd, "notes");
+
+    lucyd.client().revoke_approval("notes").unwrap();
+
+    assert_eq!(approved_hash(&lucyd, "notes"), None);
+    approve_by_voice(&lucyd, "notes");
+    let approvals = lucyd.client().approvals().unwrap().approvals;
+    assert_eq!(approvals[0].previous_hash.as_ref(), Some(&first_hash));
+    let result = manage(&lucyd, "notes", "rollback");
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert_eq!(
+        std::fs::read_to_string(folder.join("manifest.toml")).unwrap(),
+        first
+    );
+    assert_eq!(approved_hash(&lucyd, "notes"), Some(first_hash));
+}
+
+#[test]
 fn revoking_a_plugin_with_no_approval_is_refused() {
     let lucyd = Harness::start();
     lucyd.install_plugin("notes", &manifest("human", false));

@@ -211,17 +211,25 @@ impl Host {
         .await
     }
 
-    /// Withdraws the Approval of the Plugin `name`, and its kept previous
-    /// version, so it awaits Approval again.
+    /// Withdraws the current Approval of the Plugin `name`, so it awaits
+    /// Approval again. Its previous approved version is kept, to roll back
+    /// to once it is approved again.
     pub async fn revoke(&self, name: &str) -> Result<(), Refusal> {
         self.edit(name, || {
             let mut approvals = self.approvals().map_err(Refusal::Records)?;
-            if approvals.plugins.remove(name).is_none() {
+            let Some(approval) = approvals.plugins.remove(name) else {
                 return Err(Refusal::NotApproved(name.to_owned()));
+            };
+            match approval.previous {
+                Some(previous) => {
+                    self.prune_versions(name, &[&previous.hash]);
+                    approvals.revoked.insert(name.to_owned(), *previous);
+                }
+                None => {
+                    let _ = std::fs::remove_dir_all(self.paths.versions(name));
+                }
             }
-            self.save_approvals(&approvals).map_err(Refusal::Records)?;
-            let _ = std::fs::remove_dir_all(self.paths.versions(name));
-            Ok(())
+            self.save_approvals(&approvals).map_err(Refusal::Records)
         })
         .await
     }
@@ -303,7 +311,8 @@ impl Host {
             std::fs::remove_dir_all(&folder)
                 .map_err(|e| Refusal::NotDeleted(name.to_owned(), e))?;
             let mut approvals = self.approvals().map_err(Refusal::Records)?;
-            if approvals.plugins.remove(name).is_some() {
+            let approved = approvals.plugins.remove(name).is_some();
+            if approvals.revoked.remove(name).is_some() || approved {
                 self.save_approvals(&approvals).map_err(Refusal::Records)?;
             }
             let _ = std::fs::remove_dir_all(self.paths.versions(name));

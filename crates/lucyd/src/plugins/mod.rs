@@ -93,6 +93,10 @@ impl Paths {
 struct Approvals {
     #[serde(default)]
     plugins: BTreeMap<String, Approval>,
+    /// By Plugin whose Approval was revoked: the previous version it had,
+    /// kept to roll back to once the Plugin is approved again.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    revoked: BTreeMap<String, Approval>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -358,10 +362,16 @@ impl Host {
             .iter()
             .map(|(tool, schema)| (tool.clone(), serde_json::to_string(&**schema).unwrap()))
             .collect();
-        let previous = approvals.plugins.remove(&plugin.name).map(|mut previous| {
-            previous.previous = None;
-            Box::new(previous)
-        });
+        let kept = approvals.revoked.remove(&plugin.name);
+        let previous = approvals
+            .plugins
+            .remove(&plugin.name)
+            .or(kept)
+            .filter(|previous| previous.hash != plugin.hash)
+            .map(|mut previous| {
+                previous.previous = None;
+                Box::new(previous)
+            });
         let kept: Vec<&str> = [Some(&*plugin.hash), previous.as_ref().map(|p| &*p.hash)]
             .into_iter()
             .flatten()
