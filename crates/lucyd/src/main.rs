@@ -30,6 +30,8 @@ fn main() -> ExitCode {
             .join("lucy")
             .join("work"),
     ));
+    adapters.notifier =
+        std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
     let daemon = match lucyd::spawn(lucyd::Options {
         socket_path,
         config,

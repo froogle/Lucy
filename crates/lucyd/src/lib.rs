@@ -6,6 +6,7 @@ pub mod claude;
 mod ipc;
 mod mcp;
 mod notifications;
+pub mod notify_send;
 mod runner;
 mod session;
 mod status;
