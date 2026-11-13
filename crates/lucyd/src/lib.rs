@@ -88,7 +88,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             buses.clone(),
             adapters,
             relays.clone(),
-            plugins::Host::new(plugin_paths),
+            plugins::Host::new(plugin_paths, sessions.clone()),
             runner::SessionFiles {
                 persona: persona.clone(),
                 config_path,

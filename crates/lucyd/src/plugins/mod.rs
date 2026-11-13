@@ -16,10 +16,15 @@ use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
 
+use crate::adapters::{Notification, NotificationKind};
 use crate::mcp;
-use manifest::Manifest;
+use crate::runner::{self, Command};
+use crate::session::{Answer, Expects, Question};
+use manifest::{Manifest, ToolEntry};
 
 /// How long a Plugin gets to start and answer `tools/list`.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -75,6 +80,8 @@ struct Approval {
 /// Lives as long as lucyd. Remembers which approved Plugin contents work.
 pub struct Host {
     paths: Paths,
+    /// Where to ask the user for a Confirmation.
+    commands: mpsc::UnboundedSender<Command>,
     /// By content hash: whether that content matched its Manifest and has
     /// not failed a call, or why not.
     verdicts: Mutex<HashMap<String, Result<(), String>>>,
@@ -90,9 +97,10 @@ struct Usable {
 }
 
 impl Host {
-    pub fn new(paths: Paths) -> Arc<Host> {
+    pub fn new(paths: Paths, commands: mpsc::UnboundedSender<Command>) -> Arc<Host> {
         Arc::new(Host {
             paths,
+            commands,
             verdicts: Mutex::default(),
         })
     }
@@ -333,9 +341,14 @@ impl SessionTools {
     /// use. `None` if no working Plugin offers that tool.
     pub async fn call(&self, name: &str, arguments: Option<JsonObject>) -> Option<CallToolResult> {
         let (plugin_name, tool) = name.split_once("__")?;
-        let plugin = self
-            .working()
-            .find(|p| p.name == plugin_name && p.manifest.tools.iter().any(|t| t.name == tool))?;
+        let plugin = self.working().find(|p| p.name == plugin_name)?;
+        let entry = plugin.manifest.tools.iter().find(|t| t.name == tool)?;
+        if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
+            return Some(mcp::text(
+                "declined: the user didn't say yes, so nothing was done, and you've already \
+                 told them so.",
+            ));
+        }
         let outcome = async {
             let peer = {
                 let mut running = self.running.lock().await;
@@ -369,6 +382,41 @@ impl SessionTools {
         })
     }
 
+    /// Asks the user's spoken yes to a call of `tool`, showing its full
+    /// arguments.
+    async fn confirmed(
+        &self,
+        plugin: &str,
+        tool: &ToolEntry,
+        arguments: Option<&JsonObject>,
+    ) -> bool {
+        let empty = JsonObject::new();
+        let arguments = arguments.unwrap_or(&empty);
+        let prompt = match &tool.confirm_prompt {
+            Some(prompt) => arguments
+                .iter()
+                .fold(prompt.clone(), |prompt, (name, value)| {
+                    prompt.replace(&format!("{{{name}}}"), &spoken(value))
+                }),
+            None => format!("Shall I use the {plugin} Plugin to {}?", tool.handles),
+        };
+        let mut body = format!("{plugin}__{}", tool.name);
+        for (name, value) in arguments {
+            body.push_str(&format!("\n{name}: {}", spoken(value)));
+        }
+        let shown = Notification {
+            summary: "Lucy needs your yes".into(),
+            body,
+            action: None,
+            kind: NotificationKind::Details,
+        };
+        let question = Question {
+            prompt,
+            expects: Expects::Yes,
+        };
+        runner::ask(&self.host.commands, question, Some(shown)).await == Some(Answer::Yes)
+    }
+
     /// Stops every Plugin started in this Session.
     pub async fn stop(&self) {
         let running: Vec<_> = self.running.lock().await.drain().collect();
@@ -381,5 +429,13 @@ impl SessionTools {
         self.plugins
             .iter()
             .filter(|p| !matches!(self.host.verdict(&p.hash), Some(Err(_))))
+    }
+}
+
+/// An argument as Lucy says it: a string as it is, anything else as JSON.
+fn spoken(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
     }
 }
