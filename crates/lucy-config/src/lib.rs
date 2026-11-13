@@ -15,6 +15,7 @@ pub struct Config {
     pub session: Session,
     pub audio: Audio,
     pub endpointing: Endpointing,
+    pub whisper: Whisper,
 }
 
 /// `[audio]`
@@ -60,6 +61,27 @@ impl Default for Endpointing {
             pre_roll_ms: 500,
             end_silence_ms: 700,
             max_utterance_secs: 30.0,
+        }
+    }
+}
+
+/// `[whisper]`: the `whisper` STT Provider.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Whisper {
+    /// Run on the GPU through Vulkan.
+    pub gpu: bool,
+    /// The model name, such as `small.en`, found as `ggml-<model>.bin` in
+    /// `$XDG_DATA_HOME/lucy/models`. Unset means `small.en` on the GPU and
+    /// `base.en` on the CPU.
+    pub model: Option<String>,
+}
+
+impl Default for Whisper {
+    fn default() -> Self {
+        Whisper {
+            gpu: true,
+            model: None,
         }
     }
 }

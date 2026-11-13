@@ -18,3 +18,12 @@ allow = [
 confidence-threshold = 0.9
 # The list is the policy, not an inventory of what's used today.
 unused-allowed-license = "allow"
+
+# A public-domain dedication. whisper.cpp itself, built by whisper-rs-sys, is MIT.
+[[licenses.exceptions]]
+crate = "whisper-rs"
+allow = ["Unlicense"]
+
+[[licenses.exceptions]]
+crate = "whisper-rs-sys"
+allow = ["Unlicense"]

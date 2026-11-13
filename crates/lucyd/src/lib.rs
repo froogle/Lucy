@@ -9,6 +9,7 @@ mod mcp;
 mod runner;
 mod session;
 mod status;
+pub mod whisper;
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
