@@ -73,3 +73,118 @@ fn a_call_to_a_plugin_tool_is_forwarded_to_the_plugin() {
     assert_eq!(result.is_error, Some(false));
     assert_eq!(text(&result), "hello there");
 }
+
+/// Whether the model of a fresh Session is offered `tool`.
+fn offered(lucyd: &Harness, tool: &str) -> bool {
+    let mut client = lucyd.client();
+    client.start_session().unwrap();
+    let offered = lucyd.thinking.tool_names().iter().any(|name| name == tool);
+    client.end_session().unwrap();
+    offered
+}
+
+#[test]
+fn a_plugin_without_an_approval_is_not_listed() {
+    let lucyd = Harness::start();
+    lucyd.install_plugin("fixture", &manifest("fixture", &["echo"], ""));
+
+    assert!(!offered(&lucyd, "fixture__echo"));
+}
+
+#[test]
+fn changing_the_manifest_after_approval_makes_the_plugin_unusable_until_reapproved() {
+    let lucyd = Harness::start();
+    let folder = lucyd.install_plugin("fixture", &manifest("fixture", &["echo"], ""));
+    lucyd.approve("fixture");
+    assert!(offered(&lucyd, "fixture__echo"));
+
+    let changed = manifest("fixture", &["echo"], "read = [\"/home\"]");
+    std::fs::write(folder.join("manifest.toml"), changed).unwrap();
+
+    assert!(!offered(&lucyd, "fixture__echo"));
+    lucyd.approve("fixture");
+    assert!(offered(&lucyd, "fixture__echo"));
+}
+
+#[test]
+fn changing_the_executable_after_approval_makes_the_plugin_unusable() {
+    use std::io::Write;
+    let lucyd = Harness::start();
+    let folder = lucyd.install_plugin("fixture", &manifest("fixture", &["echo"], ""));
+    lucyd.approve("fixture");
+    assert!(offered(&lucyd, "fixture__echo"));
+
+    let mut executable = std::fs::OpenOptions::new()
+        .append(true)
+        .open(folder.join("fixture-plugin"))
+        .unwrap();
+    executable.write_all(b"\0").unwrap();
+    drop(executable);
+
+    assert!(!offered(&lucyd, "fixture__echo"));
+}
+
+#[test]
+fn an_approval_inside_the_plugin_folder_counts_for_nothing() {
+    let lucyd = Harness::start();
+    let folder = lucyd.install_plugin("fixture", &manifest("fixture", &["echo"], ""));
+    lucyd.approve("fixture");
+    let approvals = lucyd.state_dir().join("approvals.toml");
+    std::fs::rename(&approvals, folder.join("approvals.toml")).unwrap();
+
+    assert!(!offered(&lucyd, "fixture__echo"));
+}
+
+#[test]
+fn a_user_plugin_overrides_a_shipped_one_of_the_same_name() {
+    let lucyd = Harness::start();
+    lucyd.install_shipped_plugin("fixture", &manifest("fixture", &["echo"], ""));
+    lucyd.approve("fixture");
+    assert!(offered(&lucyd, "fixture__echo"));
+
+    lucyd.install_plugin("fixture", &manifest("fixture", &["pid"], ""));
+    // The user copy needs its own Approval; the shipped one no longer counts.
+    assert!(!offered(&lucyd, "fixture__echo"));
+    lucyd.approve("fixture");
+
+    assert!(offered(&lucyd, "fixture__pid"));
+    assert!(!offered(&lucyd, "fixture__echo"));
+}
+
+#[test]
+fn a_manifest_with_more_than_three_examples_or_a_multiline_summary_is_rejected() {
+    let lucyd = Harness::start();
+    let examples = manifest("fixture", &["echo"], "").replace(
+        "examples = [\"please echo\", \"echo it\"]",
+        "examples = [\"a\", \"b\", \"c\", \"d\"]",
+    );
+    lucyd.install_plugin("fixture", &examples);
+    lucyd.approve("fixture");
+    assert!(!offered(&lucyd, "fixture__echo"));
+
+    let summary = manifest("fixture", &["echo"], "").replace(
+        "summary = \"A fixture Plugin\"",
+        "summary = \"\"\"A fixture\nPlugin\"\"\"",
+    );
+    lucyd.install_plugin("fixture", &summary);
+    lucyd.approve("fixture");
+    assert!(!offered(&lucyd, "fixture__echo"));
+
+    lucyd.install_plugin("fixture", &manifest("fixture", &["echo"], ""));
+    lucyd.approve("fixture");
+    assert!(offered(&lucyd, "fixture__echo"));
+}
+
+#[test]
+fn a_plugin_whose_manifest_does_not_match_its_live_tools_is_left_out() {
+    let lucyd = Harness::start();
+    let mismatched = manifest("fixture", &["echo", "pid"], "").replace(
+        "[\"./fixture-plugin\", \"echo\", \"pid\"]",
+        "[\"./fixture-plugin\", \"echo\"]",
+    );
+    lucyd.install_plugin("fixture", &mismatched);
+    lucyd.approve("fixture");
+
+    assert!(!offered(&lucyd, "fixture__echo"));
+    assert!(!offered(&lucyd, "fixture__pid"));
+}
