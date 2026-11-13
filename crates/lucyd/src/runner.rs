@@ -8,7 +8,7 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::adapters::Adapters;
+use crate::adapters::{Adapters, SpeakerEvent};
 use crate::mcp::{Caller, Relays};
 use crate::session::{Input, Output, Session};
 use crate::status::StatusBus;
@@ -98,8 +98,8 @@ impl Runner {
         // Revoked when the Session ends.
         let (relay, _token) = self.relays.issue(Caller::SessionModel);
         let mut model = self.adapters.thinking.open(events_tx, relay);
-        let (played_tx, mut played) = mpsc::unbounded_channel();
-        let mut speaker = self.adapters.tts.open(played_tx);
+        let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
+        let mut speaker = self.adapters.tts.open(speaker_tx);
         let (transcripts_tx, mut transcripts) = mpsc::unbounded_channel();
         let mut session = Session::default();
         let mut silence = SilenceTimer::new(self.silence_timeout);
@@ -138,7 +138,14 @@ impl Runner {
                 },
                 Some(text) = transcripts.recv() => Input::Transcript(text),
                 Some(event) = events.recv() => Input::Thinking(event),
-                Some(()) = played.recv() => Input::Played,
+                Some(event) = speaker_events.recv() => match event {
+                    SpeakerEvent::Played => Input::Played,
+                    // Lucy can't say it, so she shows it.
+                    SpeakerEvent::Failed(sentence) => {
+                        self.adapters.notifier.notify(&sentence);
+                        Input::Played
+                    }
+                },
                 () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
                     self.publish(State::Idle, None);
                     return;
