@@ -530,6 +530,19 @@ fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
     path
 }
 
+/// Polls until `found` returns something, or fails saying `what`.
+pub fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(value) = found() {
+            return value;
+        }
+        assert!(Instant::now() < deadline, "{what}");
+        // sleep-ok: poll loop with a deadline
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// The next event, which must be a `state` event.
 pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {

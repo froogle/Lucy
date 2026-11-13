@@ -10,6 +10,9 @@ use lucyd::adapters::{Relay, Thinking, ThinkingEvent};
 use lucyd::claude::Claude;
 use tokio::sync::mpsc;
 
+mod harness;
+use harness::wait_until;
+
 const WAIT: Duration = Duration::from_secs(5);
 const LIVE_WAIT: Duration = Duration::from_secs(60);
 
@@ -44,19 +47,9 @@ fn relay() -> Relay {
 
 /// Waits until `path` exists and returns its contents.
 fn wait_for_file(path: &Path) -> String {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        if let Ok(contents) = std::fs::read_to_string(path) {
-            return contents;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{} never appeared",
-            path.display()
-        );
-        // sleep-ok: poll loop with a deadline
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until(&format!("{} never appeared", path.display()), || {
+        std::fs::read_to_string(path).ok()
+    })
 }
 
 /// One Turn's events up to `TurnEnd`: text with `|` at each `SentenceEnd`,
@@ -139,12 +132,9 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     // Ending the Session ends the process.
     let pid = pids.trim().to_owned();
     drop(model);
-    let deadline = Instant::now() + WAIT;
-    while Path::new("/proc").join(&pid).exists() {
-        assert!(Instant::now() < deadline, "claude outlived its Session");
-        // sleep-ok: poll loop with a deadline
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("claude outlived its Session", || {
+        (!Path::new("/proc").join(&pid).exists()).then_some(())
+    });
 }
 
 #[test]
@@ -156,21 +146,16 @@ fn claude_dying_mid_turn_reports_that_it_died() {
 
     model.send_turn("Remember the word kiwi.".into());
 
-    let deadline = Instant::now() + WAIT;
     let mut text = String::new();
-    loop {
-        match events.try_recv() {
-            Ok(ThinkingEvent::Delta(delta)) => text.push_str(&delta),
-            Ok(ThinkingEvent::Died) => break,
-            Ok(ThinkingEvent::TurnEnd) => panic!("the Turn ended as if claude had finished"),
-            Ok(_) => {}
-            Err(_) => {
-                assert!(Instant::now() < deadline, "no Died: {text:?}");
-                // sleep-ok: poll loop with a deadline
-                std::thread::sleep(Duration::from_millis(10));
-            }
+    wait_until("no Died", || match events.try_recv() {
+        Ok(ThinkingEvent::Delta(delta)) => {
+            text.push_str(&delta);
+            None
         }
-    }
+        Ok(ThinkingEvent::Died) => Some(()),
+        Ok(ThinkingEvent::TurnEnd) => panic!("the Turn ended as if claude had finished"),
+        _ => None,
+    });
     assert_eq!(text, "Got it, I'll remember the word kiw");
 }
 
@@ -189,12 +174,9 @@ fn ending_the_session_is_not_a_death() {
     let rest = std::thread::spawn(move || {
         std::iter::from_fn(|| events.blocking_recv()).collect::<Vec<_>>()
     });
-    let deadline = Instant::now() + WAIT;
-    while !rest.is_finished() {
-        assert!(Instant::now() < deadline, "claude's events never closed");
-        // sleep-ok: poll loop with a deadline
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("claude's events never closed", || {
+        rest.is_finished().then_some(())
+    });
     let rest = rest.join().unwrap();
     assert!(!rest.contains(&ThinkingEvent::Died), "{rest:?}");
 }

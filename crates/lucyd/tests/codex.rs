@@ -11,6 +11,9 @@ use lucyd::codex::Codex;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+mod harness;
+use harness::wait_until;
+
 const WAIT: Duration = Duration::from_secs(5);
 const LIVE_WAIT: Duration = Duration::from_secs(60);
 
@@ -30,19 +33,6 @@ fn relay() -> Relay {
     Relay {
         program: PathBuf::from("/usr/bin/lucy"),
         args: vec!["mcp-relay".into(), "--token".into(), "abc".into()],
-    }
-}
-
-/// Polls until `found` returns something, or fails saying `what`.
-fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        if let Some(value) = found() {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "{what}");
-        // sleep-ok: poll loop with a deadline
-        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
