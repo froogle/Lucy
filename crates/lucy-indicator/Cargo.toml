@@ -7,3 +7,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+lucy-ipc.workspace = true
+serde.workspace = true
+toml.workspace = true
+smithay-client-toolkit = { version = "0.21", default-features = false, features = ["calloop"] }
+tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
