@@ -4,7 +4,9 @@
 
 Spec: Providers and configuration (Superwhisper).
 
-**Blocked by:** 05, 12
+**Blocked by:** 05, 12, 11
+
+**Seams:** owns the `[stt]` config section choosing `whisper` or `superwhisper`, and the Superwhisper warnings the TUI reads (also used by 20); uses the failure result from `Stt::transcribe` (owned by 11)
 
 **Status:** ready-for-agent
 

@@ -10,7 +10,9 @@
 
 Spec: Authoring; Session state machine (Authoring amendment).
 
-**Blocked by:** 22, 08
+**Blocked by:** 22, 08, 15
+
+**Seams:** uses the Delegate tools, the scripted Delegate and the build-running state (owned by 22); uses the once-only Session-start mention (owned by 15); uses the Approval flow (owned by 14); extends `NotificationKind` (owned by 08, resolved)
 
 **Status:** ready-for-agent
 

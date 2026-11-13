@@ -15,7 +15,9 @@ After setup: a Provider status page with "run real check", and an Approval list 
 
 Spec: Providers and configuration (TUI scope, Piper); Processes and crates (systemd, CLI).
 
-**Blocked by:** 06, 07, 12, 15
+**Blocked by:** 06, 07, 12, 15, 11, 19
+
+**Seams:** uses `WakeWord` and `[wake_word]` (owned by 07); uses `[audio] speaker` and device resolution (owned by 11); uses the Approval flow (owned by 14); uses IPC `plugins.list`, `approvals.list` and `approvals.revoke` (owned by 15); uses `[stt]` and the Superwhisper warnings (owned by 19); uses `RECOMMENDATIONS` (owned by 12, resolved)
 
 **Status:** ready-for-agent
 

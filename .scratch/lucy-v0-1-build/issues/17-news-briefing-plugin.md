@@ -6,6 +6,8 @@ Spec: News Plugin; Persona. Wayfinder 11 lists the success checks.
 
 **Blocked by:** 10, 14, 16
 
+**Seams:** owns the Plugin fixtures test harness the authoring template copies (also used by 22)
+
 **Status:** ready-for-agent
 
 - [ ] Plugin ships with a Manifest and is approved at setup

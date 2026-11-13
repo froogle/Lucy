@@ -11,6 +11,8 @@ Spec: Plugins (Lifecycle); MCP tool server (`manage_plugin`); Public IPC contrac
 
 **Blocked by:** 14
 
+**Seams:** owns IPC `plugins.list`, `plugins.set_enabled`, `approvals.list`, `approvals.revoke` and the `plugins.changed` event (also used by 20); owns the once-only mention at the start of the next Session (also used by 23); uses the Confirming step, the Approval flow and `tools/list_changed` (owned by 14)
+
 **Status:** ready-for-agent
 
 - [ ] Disable keeps files and Approval; enable restores straight away

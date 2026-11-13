@@ -11,6 +11,8 @@ Spec: Session state machine (Errors); Audio pipeline (Devices).
 
 **Blocked by:** 04, 05, 06
 
+**Seams:** owns a failure result from `Stt::transcribe` (also used by 19); owns a `ThinkingEvent` for a dead Thinking process and its `FakeThinking` helper (also used by 09, 18); owns `[audio] speaker` and by-name device resolution through `AudioIo` (also used by 20); extends `Speaker` and `SpeakerEvent` (owned by 06, resolved) and `NotificationKind` (owned by 08, resolved)
+
 **Status:** ready-for-agent
 
 - [ ] Each error path above is covered by a harness test using the fakes

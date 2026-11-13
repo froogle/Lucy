@@ -6,6 +6,8 @@ Spec: Session state machine (Start, Wake word inside a Session); Audio pipeline 
 
 **Blocked by:** 05
 
+**Seams:** owns the `WakeWord` adapter trait and its `Adapters` field, the harness's scripted-detection fake, `session::Input::WakeWord` and the `[wake_word]` config section (also used by 09, 20); extends `Speaker` (owned by 06, resolved)
+
 **Status:** ready-for-agent
 
 - [ ] Wake-word engine is fixed (not a Provider); the `.onnx` path can be swapped in config

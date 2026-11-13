@@ -10,7 +10,9 @@
 
 Spec: Authoring. ADR 0002 (amendment).
 
-**Blocked by:** 12, 14
+**Blocked by:** 12, 14, 17
+
+**Seams:** owns the Delegate tools on `Caller::Delegate` grants, the Delegate spawn through `Thinking` (for `codex` too if 18 has landed), the harness's scripted Delegate, and the build-running state in `session::Session` (also used by 23); uses the Approval flow and `tools/list_changed` (owned by 14); uses the Plugin fixtures test harness (owned by 17)
 
 **Status:** ready-for-agent
 

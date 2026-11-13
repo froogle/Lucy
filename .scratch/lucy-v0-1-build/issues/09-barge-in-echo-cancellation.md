@@ -4,7 +4,9 @@
 
 Spec: Session state machine (Barge-in); Audio pipeline (AEC, VAD gate).
 
-**Blocked by:** 04, 05, 06, 07
+**Blocked by:** 04, 05, 06, 07, 11, 14, 18
+
+**Seams:** uses `WakeWord`, its harness fake and `session::Input::WakeWord` (owned by 07); uses the dead-process `ThinkingEvent` and its `FakeThinking` helper (owned by 11); uses the Confirming step in `session::Session` (owned by 14); uses `SessionModel::interrupt` (owned by 18), adding Claude's implementation; extends `Speaker` and `SpeakerEvent` (owned by 06, resolved)
 
 **Status:** ready-for-agent
 

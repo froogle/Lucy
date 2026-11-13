@@ -4,7 +4,9 @@
 
 Spec: Providers and configuration (`codex`).
 
-**Blocked by:** 12
+**Blocked by:** 12, 11
+
+**Seams:** owns `SessionModel::interrupt` (also used by 09); uses the dead-process `ThinkingEvent` (owned by 11); extends `Kind`, `ProviderKind` and `RECOMMENDATIONS` (owned by 12, resolved)
 
 **Status:** ready-for-agent
 
