@@ -49,6 +49,10 @@ pub mod error_code {
     pub const INTERRUPTED: i64 = -32010;
     /// The Voice preview couldn't be spoken. The message says why.
     pub const TTS_FAILED: i64 = -32011;
+    /// `test.mic_level` or `test.wake_word`, but lucyd has no microphone.
+    pub const NO_MICROPHONE: i64 = -32012;
+    /// `test.wake_word`, but the wake-word engine is off.
+    pub const WAKE_WORD_OFF: i64 = -32013;
 }
 
 /// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
@@ -293,6 +297,38 @@ pub struct RevokeApproval {
 pub struct VoicePreview {
     /// The sentence to say. Not empty.
     pub text: String,
+    /// A Piper voice to say it in, such as `en_GB-cori-medium`, in place of
+    /// the running one. lucyd downloads it first if it must.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+}
+
+/// Result of `test.mic_level`. lucyd first switches to the microphone
+/// `config.toml` names now. Refused while a Session is open or another
+/// setup test runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MicLevel {
+    /// The loudest RMS the microphone heard since the last `test.mic_level`,
+    /// from 0.0 (silent) to 1.0.
+    pub rms: f32,
+}
+
+/// Params of `test.wake_word`: lucyd listens for the Wake word, outside any
+/// Session, and replies once it is heard or `timeout_secs` have passed.
+/// Hearing it opens no Session. Refused while a Session is open.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WakeWordTest {
+    pub timeout_secs: f64,
+}
+
+/// Result of `test.wake_word`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WakeWordTestResult {
+    /// Whether the Wake word was heard.
+    pub heard: bool,
+    /// The best score the wake-word engine gave, from 0 to 1. `[wake_word]
+    /// threshold` is where it counts as heard.
+    pub score: f32,
 }
 
 /// Params of the `plugins.changed` event: something in `plugins.list` or

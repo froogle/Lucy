@@ -8,6 +8,7 @@ mod livekit;
 mod silero;
 
 use std::fmt;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -99,6 +100,35 @@ pub trait Vad: Send {
 pub trait WakeWord: Send {
     /// Takes the next 10 ms frame. True if it completes the Wake word.
     fn push(&mut self, frame: &[f32]) -> bool;
+
+    /// The score the last frame got, from 0 to 1, for setup's wake-word
+    /// test.
+    fn score(&self) -> f32 {
+        0.0
+    }
+}
+
+/// The loudest the microphone has been, and the best wake-word score, since
+/// setup last asked. Both are 0 to 1.
+#[derive(Default)]
+struct Meter {
+    /// `f32` bits: for non-negative floats they order as the floats do.
+    level: AtomicU32,
+    wake_score: AtomicU32,
+}
+
+impl Meter {
+    fn raise(cell: &AtomicU32, value: f32) {
+        cell.fetch_max(value.max(0.0).to_bits(), Ordering::Relaxed);
+    }
+
+    fn take(cell: &AtomicU32) -> f32 {
+        f32::from_bits(cell.swap(0, Ordering::Relaxed))
+    }
+}
+
+fn rms(frame: &[f32]) -> f32 {
+    (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt()
 }
 
 /// Why the microphone can't be heard.
@@ -147,8 +177,11 @@ pub fn listen(
     let (lost, lost_rx) = watch::channel(false);
     let (speaking, speaking_rx) = watch::channel(false);
     let lost = Arc::new(lost);
+    let meter = Arc::new(Meter::default());
+    let has_wake_word = wake_word.is_some();
     let endpointer = Endpointer::new(vad, endpointing);
     let listeners = Listeners {
+        meter: meter.clone(),
         wake_word,
         endpointer,
         wakes,
@@ -167,6 +200,8 @@ pub fn listen(
         changes,
         lost,
         lost_rx,
+        meter,
+        has_wake_word,
     };
     Ok(Ears {
         hearing,
@@ -178,6 +213,7 @@ pub fn listen(
 
 /// What the DSP thread hands each frame to, and where they report.
 struct Listeners {
+    meter: Arc<Meter>,
     wake_word: Option<Box<dyn WakeWord>>,
     endpointer: Endpointer,
     wakes: mpsc::UnboundedSender<()>,
@@ -199,6 +235,8 @@ pub struct Hearing {
     /// True once the open microphone has gone away.
     lost: Arc<watch::Sender<bool>>,
     lost_rx: watch::Receiver<bool>,
+    meter: Arc<Meter>,
+    has_wake_word: bool,
 }
 
 /// A change the DSP thread picks up before its next frame.
@@ -254,6 +292,21 @@ impl Hearing {
         }
     }
 
+    /// The loudest RMS the microphone heard since this was last asked.
+    pub fn take_level(&self) -> f32 {
+        Meter::take(&self.meter.level)
+    }
+
+    /// Whether the Wake word can be heard at all.
+    pub fn has_wake_word(&self) -> bool {
+        self.has_wake_word
+    }
+
+    /// The best wake-word score since this was last asked.
+    pub fn take_wake_score(&self) -> f32 {
+        Meter::take(&self.meter.wake_score)
+    }
+
     /// Resolves once the open microphone has gone away.
     pub async fn lost(&mut self) {
         // The sender lives as long as `self`.
@@ -297,10 +350,14 @@ fn dsp(
         frame[..first.len()].copy_from_slice(first);
         frame[first.len()..].copy_from_slice(second);
         chunk.commit_all();
+        Meter::raise(&listeners.meter.level, rms(&frame));
         // Heard before the utterance it starts ends, so the Session it
         // opens gets that utterance.
         if let Some(wake_word) = &mut listeners.wake_word {
-            if wake_word.push(&frame) {
+            let heard = wake_word.push(&frame);
+            // Before the detection, so a test that hears it sees its score.
+            Meter::raise(&listeners.meter.wake_score, wake_word.score());
+            if heard {
                 let _ = listeners.wakes.send(());
             }
         }

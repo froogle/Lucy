@@ -4,12 +4,14 @@
 
 use tokio::sync::{mpsc, oneshot};
 
-use super::{Command, EndError, Runner, SessionId, StartError};
+use super::{Command, EndError, Runner, SessionId, SetupTestError, StartError};
 use crate::adapters::{Sound, SpeakerEvent};
 
 /// A `test.voice_preview` request.
 pub struct VoicePreview {
     pub text: String,
+    /// The voice to say it in, if not the running one.
+    pub voice: Option<String>,
     /// Answered once playback has finished.
     pub reply: oneshot::Sender<Result<(), PreviewError>>,
 }
@@ -40,7 +42,14 @@ impl Runner {
     pub(super) async fn preview(&mut self, preview: VoicePreview) {
         let settings = lucy_config::load(&self.files.config_path).unwrap_or_default();
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let mut speaker = self.adapters.tts.open(&settings.audio.speaker, events_tx);
+        let speaker_name = &settings.audio.speaker;
+        let mut speaker = match &preview.voice {
+            Some(voice) => self
+                .adapters
+                .tts
+                .open_in_voice(speaker_name, voice, events_tx),
+            None => self.adapters.tts.open(speaker_name, events_tx),
+        };
         speaker.sound(Sound::Start);
         speaker.speak(preview.text);
         let ending = loop {
@@ -67,6 +76,7 @@ impl Runner {
                     Some(Command::VoicePreview(other)) => {
                         let _ = other.reply.send(Err(PreviewError::Busy));
                     }
+                    Some(Command::SetupTest(test)) => test.refuse(SetupTestError::Busy),
                     None => break Ending::Stopped,
                 },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {

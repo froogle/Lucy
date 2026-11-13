@@ -47,7 +47,7 @@ fn main() -> ExitCode {
         lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
             .join("lucy")
             .join("voices"),
-        lucyd::piper::DEFAULT_VOICE,
+        &config.piper.voice,
     ));
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));

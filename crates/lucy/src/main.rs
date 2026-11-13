@@ -1,4 +1,11 @@
-//! `lucy`: a thin client of lucyd's public socket.
+//! `lucy`: a thin client of lucyd's public socket. With no arguments it
+//! shows Lucy's Providers and Approvals; `lucy setup` sets her up.
+
+mod home;
+mod piper;
+mod setup;
+mod systemd;
+mod ui;
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -10,14 +17,20 @@ use lucy_ipc::{Client, State, Topic};
 
 #[derive(Parser)]
 #[command(version, about = "Talk to Lucy's daemon, lucyd")]
-#[command(arg_required_else_help = true)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    /// First-run setup: Providers, speech, voice, devices, the Wake word
+    /// and the service.
+    Setup {
+        /// Where to read the distro from, for installing Piper.
+        #[arg(long, hide = true, default_value = "/etc/os-release")]
+        os_release: PathBuf,
+    },
     /// Print a snapshot of lucyd's state.
     Status,
     /// Print lucyd's raw event stream as NDJSON, for client authors.
@@ -45,12 +58,22 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Status => status(),
-        Command::Events => events(),
-        Command::Listen => connect().and_then(|mut client| client.start_session().map(drop)),
-        Command::End => connect().and_then(|mut client| client.end_session()),
-        Command::Say { text } => connect().and_then(|mut client| client.voice_preview(&text)),
-        Command::McpRelay { token, socket } => return mcp_relay(&token, socket),
+        None => connect().and_then(|mut client| home::run(&mut client, &mut ui::Ui::terminal())),
+        Some(Command::Setup { os_release }) => {
+            return match setup::run(&mut ui::Ui::terminal(), &os_release) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("lucy: setup: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Some(Command::Status) => status(),
+        Some(Command::Events) => events(),
+        Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
+        Some(Command::End) => connect().and_then(|mut client| client.end_session()),
+        Some(Command::Say { text }) => connect().and_then(|mut client| client.voice_preview(&text)),
+        Some(Command::McpRelay { token, socket }) => return mcp_relay(&token, socket),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -65,7 +88,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn connect() -> Result<Client, lucy_ipc::Error> {
+pub(crate) fn connect() -> Result<Client, lucy_ipc::Error> {
     // With no runtime dir there can be no socket, so lucyd isn't running.
     let path = lucy_ipc::default_socket_path().ok_or(lucy_ipc::Error::NotRunning)?;
     Client::connect(&path, "lucy", None)

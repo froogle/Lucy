@@ -23,6 +23,7 @@ pub struct Config {
     pub endpointing: Endpointing,
     pub stt: Stt,
     pub whisper: Whisper,
+    pub piper: Piper,
     pub wake_word: WakeWord,
     pub confirmation: Confirmation,
 }
@@ -46,6 +47,7 @@ impl Default for Config {
             endpointing: Endpointing::default(),
             stt: Stt::default(),
             whisper: Whisper::default(),
+            piper: Piper::default(),
             wake_word: WakeWord::default(),
             confirmation: Confirmation::default(),
         }
@@ -314,6 +316,23 @@ pub struct Whisper {
     /// `$XDG_DATA_HOME/lucy/models`. Unset means `small.en` on the GPU and
     /// `base.en` on the CPU.
     pub model: Option<String>,
+}
+
+/// `[piper]`: the Piper TTS Provider. Read when lucyd starts.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Piper {
+    /// The Piper voice Lucy speaks in, such as `en_GB-cori-medium`.
+    /// lucyd downloads it with its model card on first use.
+    pub voice: String,
+}
+
+impl Default for Piper {
+    fn default() -> Self {
+        Piper {
+            voice: "en_GB-cori-medium".to_owned(),
+        }
+    }
 }
 
 /// `[wake_word]`: the one wake-word engine, which is not a Provider. Read
@@ -642,6 +661,15 @@ mod tests {
             Some(Path::new("/models/computer.onnx"))
         );
         assert_eq!(config.wake_word.threshold, 0.5);
+    }
+
+    #[test]
+    fn piper_speaks_in_cori_unless_config_names_another_voice() {
+        assert_eq!(Config::default().piper.voice, "en_GB-cori-medium");
+
+        let config = parse("[piper]\nvoice = \"en_GB-alba-medium\"\n");
+
+        assert_eq!(config.piper.voice, "en_GB-alba-medium");
     }
 
     #[test]

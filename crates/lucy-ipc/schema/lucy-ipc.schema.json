@@ -105,6 +105,20 @@
       ],
       "type": "object"
     },
+    "MicLevel": {
+      "description": "Result of `test.mic_level`. lucyd first switches to the microphone\n`config.toml` names now. Refused while a Session is open or another\nsetup test runs.",
+      "properties": {
+        "rms": {
+          "description": "The loudest RMS the microphone heard since the last `test.mic_level`,\nfrom 0.0 (silent) to 1.0.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "rms"
+      ],
+      "type": "object"
+    },
     "PluginAuthor": {
       "description": "Who wrote a Plugin. Lucy changes only her own.",
       "enum": [
@@ -449,10 +463,49 @@
         "text": {
           "description": "The sentence to say. Not empty.",
           "type": "string"
+        },
+        "voice": {
+          "description": "A Piper voice to say it in, such as `en_GB-cori-medium`, in place of\nthe running one. lucyd downloads it first if it must.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "text"
+      ],
+      "type": "object"
+    },
+    "WakeWordTest": {
+      "description": "Params of `test.wake_word`: lucyd listens for the Wake word, outside any\nSession, and replies once it is heard or `timeout_secs` have passed.\nHearing it opens no Session. Refused while a Session is open.",
+      "properties": {
+        "timeout_secs": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "timeout_secs"
+      ],
+      "type": "object"
+    },
+    "WakeWordTestResult": {
+      "description": "Result of `test.wake_word`.",
+      "properties": {
+        "heard": {
+          "description": "Whether the Wake word was heard.",
+          "type": "boolean"
+        },
+        "score": {
+          "description": "The best score the wake-word engine gave, from 0 to 1. `[wake_word]\nthreshold` is where it counts as heard.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "required": [
+        "heard",
+        "score"
       ],
       "type": "object"
     }
@@ -548,12 +601,25 @@
         "type": "object"
       }
     },
+    "test.mic_level": {
+      "result": {
+        "$ref": "#/$defs/MicLevel"
+      }
+    },
     "test.voice_preview": {
       "params": {
         "$ref": "#/$defs/VoicePreview"
       },
       "result": {
         "type": "object"
+      }
+    },
+    "test.wake_word": {
+      "params": {
+        "$ref": "#/$defs/WakeWordTest"
+      },
+      "result": {
+        "$ref": "#/$defs/WakeWordTestResult"
       }
     }
   }

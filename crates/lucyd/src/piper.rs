@@ -42,6 +42,10 @@ struct Shared {
     server: Mutex<Server>,
     changed: Condvar,
     stopping: AtomicBool,
+    /// Where voices are kept; the server finds other voices here.
+    voices_dir: PathBuf,
+    /// The interpreter that runs Piper, once found.
+    python: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Clone)]
@@ -63,10 +67,12 @@ impl Piper {
             server: Mutex::new(Server::Starting),
             changed: Condvar::new(),
             stopping: AtomicBool::new(false),
+            voices_dir,
+            python: Mutex::new(None),
         });
         let supervisor = shared.clone();
         let voice = voice.to_owned();
-        std::thread::spawn(move || supervise(&supervisor, python, &voices_dir, &voice));
+        std::thread::spawn(move || supervise(&supervisor, python, &voice));
         let (reference, reference_out) =
             rtrb::RingBuffer::new(playback::REFERENCE_RATE as usize * REFERENCE_SECS);
         Piper {
@@ -92,7 +98,7 @@ impl Piper {
 
     /// Synthesises one sentence.
     pub fn synthesise(&self, text: &str) -> Result<Pcm, String> {
-        self.shared.synthesise(text)
+        self.shared.synthesise(text, None)
     }
 }
 
@@ -106,7 +112,23 @@ impl Tts for Piper {
     fn open(&self, speaker: &str, events: mpsc::UnboundedSender<SpeakerEvent>) -> Box<dyn Speaker> {
         let shared = self.shared.clone();
         playback::speaker(
-            Box::new(move |text| shared.synthesise(text)),
+            Box::new(move |text| shared.synthesise(text, None)),
+            speaker,
+            events,
+            self.reference.clone(),
+        )
+    }
+
+    fn open_in_voice(
+        &self,
+        speaker: &str,
+        voice: &str,
+        events: mpsc::UnboundedSender<SpeakerEvent>,
+    ) -> Box<dyn Speaker> {
+        let shared = self.shared.clone();
+        let voice = voice.to_owned();
+        playback::speaker(
+            Box::new(move |text| shared.synthesise(text, Some(&voice))),
             speaker,
             events,
             self.reference.clone(),
@@ -120,7 +142,9 @@ impl Shared {
         self.changed.notify_all();
     }
 
-    fn synthesise(&self, text: &str) -> Result<Pcm, String> {
+    /// Synthesises `text` in `voice`, fetched first if need be, or in the
+    /// running voice.
+    fn synthesise(&self, text: &str, voice: Option<&str>) -> Result<Pcm, String> {
         let server = self.server.lock().unwrap();
         let (server, _) = self
             .changed
@@ -132,9 +156,16 @@ impl Shared {
             Server::Unavailable(reason) => return Err(reason),
         };
         drop(server);
+        let mut request = serde_json::json!({ "text": text });
+        if let Some(voice) = voice {
+            let python = self.python.lock().unwrap().clone();
+            let python = python.ok_or("Piper isn't installed")?;
+            ensure_voice(&python, &self.voices_dir, voice)?;
+            request["voice"] = voice.into();
+        }
         let wav = ureq::post(format!("http://127.0.0.1:{port}/synthesize"))
             .header("Content-Type", "application/json")
-            .send(serde_json::json!({ "text": text }).to_string())
+            .send(request.to_string())
             .map_err(|e| format!("Piper: {e}"))?
             .into_body()
             .read_to_vec()
@@ -144,7 +175,8 @@ impl Shared {
 }
 
 /// Runs until lucyd stops: prepares Piper, then keeps its server running.
-fn supervise(shared: &Shared, python: Option<PathBuf>, voices_dir: &Path, voice: &str) {
+fn supervise(shared: &Shared, python: Option<PathBuf>, voice: &str) {
+    let voices_dir = &shared.voices_dir;
     let prepared = python
         .or_else(|| find_python(&python_candidates()))
         .ok_or_else(|| "Piper isn't installed, so replies are shown as text".to_owned())
@@ -154,7 +186,10 @@ fn supervise(shared: &Shared, python: Option<PathBuf>, voices_dir: &Path, voice:
             Ok((python, model, sample_rate))
         });
     let (python, model, sample_rate) = match prepared {
-        Ok(prepared) => prepared,
+        Ok(prepared) => {
+            *shared.python.lock().unwrap() = Some(prepared.0.clone());
+            prepared
+        }
         Err(reason) => {
             eprintln!("lucyd: {reason}");
             shared.set(Server::Unavailable(reason));
@@ -296,6 +331,12 @@ fn imports_piper(python: &Path) -> bool {
 /// there, and returns the model's path. Piper's own downloader fetches the
 /// model; the model card, which its licence asks to be kept, comes separately.
 fn ensure_voice(python: &Path, dir: &Path, voice: &str) -> Result<PathBuf, String> {
+    let plain = voice
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !plain || model_card_url(voice).is_none() {
+        return Err(format!("{voice:?} isn't a Piper voice name"));
+    }
     let model = dir.join(format!("{voice}.onnx"));
     let card = dir.join(format!("{voice}.MODEL_CARD"));
     std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;

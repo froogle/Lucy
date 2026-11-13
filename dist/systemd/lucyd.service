@@ -1,0 +1,16 @@
+[Unit]
+Description=Lucy's daemon: hears the Wake word and runs Sessions
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/lucyd
+Restart=on-failure
+RestartSec=2
+# Everything lucyd starts (the thinking CLI, Piper, Plugins, Delegates) is in
+# its control group, so it all stops when lucyd stops or dies.
+KillMode=control-group
+
+[Install]
+WantedBy=graphical-session.target

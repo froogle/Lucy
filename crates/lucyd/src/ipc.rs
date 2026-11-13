@@ -2,12 +2,14 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use lucy_config::{Config, Tier};
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, LevelEvent, PluginsChanged, ProviderCheck,
+    error_code, Event, Hello, HelloResult, LevelEvent, MicLevel, PluginsChanged, ProviderCheck,
     ProviderCheckResult, ProviderStatus, ProvidersStatus, RevokeApproval, Role, SessionStarted,
-    SetPluginEnabled, Status, Subscribe, Topic, VoicePreview, PROTOCOL,
+    SetPluginEnabled, Status, Subscribe, Topic, VoicePreview, WakeWordTest, WakeWordTestResult,
+    PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,7 +20,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::adapters::Thinking;
 use crate::notifications::{IndicatorClaim, Indicators};
 use crate::plugins::{self, Host};
-use crate::runner::{self, Command, PreviewError};
+use crate::runner::{self, Command, PreviewError, SetupTest, SetupTestError, WakeWordHeard};
 use crate::status::Buses;
 
 /// What `providers.status` and `provider.check` need.
@@ -255,9 +257,23 @@ impl Connection {
                 Ok(json!({}))
             }
             "test.voice_preview" => {
-                let VoicePreview { text } = parse_params(params)?;
-                self.voice_preview(text).await?;
+                let VoicePreview { text, voice } = parse_params(params)?;
+                self.voice_preview(text, voice).await?;
                 Ok(json!({}))
+            }
+            "test.mic_level" => {
+                let rms = self.setup_test(SetupTest::MicLevel).await?;
+                Ok(json!(MicLevel { rms }))
+            }
+            "test.wake_word" => {
+                let WakeWordTest { timeout_secs } = parse_params(params)?;
+                let timeout = Duration::try_from_secs_f64(timeout_secs).map_err(|_| {
+                    RpcError::new(error_code::INVALID_PARAMS, "timeout_secs must be 0 or more")
+                })?;
+                let WakeWordHeard { heard, score } = self
+                    .setup_test(|reply| SetupTest::WakeWord { timeout, reply })
+                    .await?;
+                Ok(json!(WakeWordTestResult { heard, score }))
             }
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
@@ -278,7 +294,7 @@ impl Connection {
     }
 
     /// Says `text` outside any Session, once it has been played.
-    async fn voice_preview(&self, text: String) -> Result<(), RpcError> {
+    async fn voice_preview(&self, text: String, voice: Option<String>) -> Result<(), RpcError> {
         if text.trim().is_empty() {
             return Err(RpcError::new(
                 error_code::INVALID_PARAMS,
@@ -286,7 +302,7 @@ impl Connection {
             ));
         }
         let outcome = self
-            .ask(|reply| Command::VoicePreview(runner::VoicePreview { text, reply }))
+            .ask(|reply| Command::VoicePreview(runner::VoicePreview { text, voice, reply }))
             .await?;
         outcome.map_err(|e| match e {
             PreviewError::SessionOpen => RpcError::new(
@@ -303,6 +319,36 @@ impl Connection {
             PreviewError::Failed(reason) => RpcError::new(
                 error_code::TTS_FAILED,
                 format!("Lucy couldn't say it: {reason}"),
+            ),
+        })
+    }
+
+    /// Runs a setup test in the Session runner.
+    async fn setup_test<T>(
+        &self,
+        test: impl FnOnce(oneshot::Sender<Result<T, SetupTestError>>) -> SetupTest,
+    ) -> Result<T, RpcError> {
+        let outcome = self.ask(|reply| Command::SetupTest(test(reply))).await?;
+        outcome.map_err(|e| match e {
+            SetupTestError::SessionOpen => RpcError::new(
+                error_code::SESSION_OPEN,
+                "a Session is open; end it before testing",
+            ),
+            SetupTestError::Busy => RpcError::new(
+                error_code::BUSY,
+                "another setup test or Voice preview is running",
+            ),
+            SetupTestError::NoMicrophone => RpcError::new(
+                error_code::NO_MICROPHONE,
+                "lucyd has no microphone open, so Lucy can't hear; its log says why",
+            ),
+            SetupTestError::WakeWordOff => RpcError::new(
+                error_code::WAKE_WORD_OFF,
+                "the Wake word is off: lucyd couldn't load its model; its log says why",
+            ),
+            SetupTestError::Interrupted => RpcError::new(
+                error_code::INTERRUPTED,
+                "interrupted: a Session opened and cut the test short",
             ),
         })
     }

@@ -2,6 +2,7 @@
 //! `session` state machine asks for.
 
 mod preview;
+mod setup;
 mod start;
 
 use std::collections::VecDeque;
@@ -27,6 +28,7 @@ use crate::session::{Answer, Input, Output, Question, Session};
 use crate::status::Buses;
 use crate::wake;
 pub use preview::{PreviewError, VoicePreview};
+pub use setup::{SetupTest, SetupTestError, WakeWordHeard};
 pub use start::SessionFiles;
 
 /// A request from the public socket or the MCP server.
@@ -43,6 +45,8 @@ pub enum Command {
     Ask(Ask),
     /// `test.voice_preview`: say a sentence outside any Session.
     VoicePreview(VoicePreview),
+    /// `test.mic_level` or `test.wake_word`, outside any Session.
+    SetupTest(SetupTest),
 }
 
 pub struct Ask {
@@ -142,6 +146,7 @@ impl Runner {
                     // Dropped unanswered: there is no one to ask.
                     Some(Command::Ask(_)) => {}
                     Some(Command::VoicePreview(preview)) => self.preview(preview).await,
+                    Some(Command::SetupTest(test)) => self.setup_test(test).await,
                     None => return,
                 },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
@@ -298,6 +303,10 @@ impl Runner {
                     }
                     Some(Command::VoicePreview(preview)) => {
                         let _ = preview.reply.send(Err(PreviewError::SessionOpen));
+                        continue;
+                    }
+                    Some(Command::SetupTest(test)) => {
+                        test.refuse(SetupTestError::SessionOpen);
                         continue;
                     }
                     None => return,

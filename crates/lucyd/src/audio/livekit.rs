@@ -34,6 +34,8 @@ pub fn install_bundled_wake_model(dir: &Path) -> io::Result<PathBuf> {
 pub struct LiveKit {
     model: WakeWordModel,
     threshold: f32,
+    /// The best score the last frame got.
+    score: f32,
     /// The frame as the engine takes it.
     pcm: Vec<i16>,
 }
@@ -47,6 +49,7 @@ impl LiveKit {
         Ok(LiveKit {
             model,
             threshold,
+            score: 0.0,
             pcm: Vec::new(),
         })
     }
@@ -57,13 +60,14 @@ impl WakeWord for LiveKit {
         self.pcm.clear();
         self.pcm
             .extend(frame.iter().map(|s| (s.clamp(-1.0, 1.0) * 32_767.0) as i16));
-        let heard = match self.model.predict(&self.pcm) {
-            Ok(scores) => scores.values().any(|&score| score >= self.threshold),
+        self.score = match self.model.predict(&self.pcm) {
+            Ok(scores) => scores.values().copied().fold(0.0, f32::max),
             Err(e) => {
                 eprintln!("lucyd: the wake word failed: {e}");
-                false
+                0.0
             }
         };
+        let heard = self.score >= self.threshold;
         // Start fresh, so one utterance of the phrase is heard once.
         if heard {
             if let Err(e) = self.model.reset() {
@@ -71,5 +75,9 @@ impl WakeWord for LiveKit {
             }
         }
         heard
+    }
+
+    fn score(&self) -> f32 {
+        self.score
     }
 }
