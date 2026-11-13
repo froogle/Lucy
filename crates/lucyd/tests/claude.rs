@@ -81,7 +81,7 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
     let (tx, mut events) = mpsc::unbounded_channel();
 
-    let mut model = claude.open(tx, relay());
+    let mut model = claude.open(tx, relay(), String::new());
     // Spawned before any Turn is sent.
     wait_for_file(&work.path().join("argv"));
 
@@ -128,7 +128,7 @@ fn claude_dying_mid_turn_ends_the_turn() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(fixtures().join("dying-claude"), work.path().to_owned());
     let (tx, mut events) = mpsc::unbounded_channel();
-    let mut model = claude.open(tx, relay());
+    let mut model = claude.open(tx, relay(), String::new());
 
     model.send_turn("Remember the word kiwi.".into());
 
@@ -141,7 +141,7 @@ fn runs_with_an_isolated_config_naming_only_the_relay() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(fixtures().join("fake-claude"), work.path().to_owned());
     let (tx, _events) = mpsc::unbounded_channel();
-    let _model = claude.open(tx, relay());
+    let _model = claude.open(tx, relay(), "Speak like a pirate.".to_owned());
     let args = args(work.path());
 
     for flag in [
@@ -172,10 +172,10 @@ fn runs_with_an_isolated_config_naming_only_the_relay() {
             "args": ["mcp-relay", "--token", "abc"],
         }}})
     );
-    let prompt = value_of(&args, "--append-system-prompt");
-    assert!(prompt.contains("one to three short"), "{prompt}");
-    assert!(prompt.contains("markdown"), "{prompt}");
-    assert!(prompt.contains("Let me check"), "{prompt}");
+    assert_eq!(
+        value_of(&args, "--append-system-prompt"),
+        "Speak like a pirate."
+    );
 }
 
 /// Opt-in: `cargo test -p lucyd --test claude -- --ignored`. Uses the real
@@ -191,7 +191,7 @@ fn live_claude_keeps_context_across_turns() {
         program: PathBuf::from("true"),
         args: vec![],
     };
-    let mut model = claude.open(tx, relay);
+    let mut model = claude.open(tx, relay, String::new());
 
     model.send_turn("Remember the word kiwi. Reply with just OK.".into());
     read_turn(&mut events, LIVE_WAIT);
