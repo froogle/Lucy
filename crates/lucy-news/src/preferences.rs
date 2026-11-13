@@ -34,6 +34,19 @@ pub struct Preferences {
     /// How many top stories a brief briefing speaks.
     pub stories: u8,
     pub length: Length,
+    /// Sources outside the catalogue that the user named and whose official
+    /// feed Lucy found. Their terms aren't vetted.
+    pub found: Vec<Found>,
+}
+
+/// A Source outside the catalogue, with the official feed Lucy found.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Found {
+    /// Its host, which stands for it in `rotation`.
+    pub id: String,
+    pub name: String,
+    pub feed: String,
+    pub front_page: String,
 }
 
 impl Default for Preferences {
@@ -46,6 +59,7 @@ impl Default for Preferences {
             less_of: Vec::new(),
             stories: 2,
             length: Length::Brief,
+            found: Vec::new(),
         }
     }
 }
@@ -56,6 +70,18 @@ pub fn path(state_dir: &Path) -> PathBuf {
 }
 
 impl Preferences {
+    /// The name of the Source `id`, from the catalogue or found.
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        match crate::catalogue::by_id(id) {
+            Some(source) => Some(source.name.to_owned()),
+            None => self.found_by_id(id).map(|found| found.name.clone()),
+        }
+    }
+
+    pub fn found_by_id(&self, id: &str) -> Option<&Found> {
+        self.found.iter().find(|found| found.id == id)
+    }
+
     /// The saved preferences, or the defaults if there are none yet.
     pub fn load(state_dir: &Path) -> Result<Preferences, String> {
         match std::fs::read_to_string(path(state_dir)) {

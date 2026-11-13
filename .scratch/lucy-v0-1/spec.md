@@ -353,6 +353,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 
 - Plain code, no model calls. `briefing` fetches the official RSS/Atom feeds of the Sources in rotation concurrently. It returns each item's headline, description, link, Source and position. It never fetches article pages; there is no `article` tool. `set_preference` (no Confirmation) changes preferences, and Lucy always says what changed.
 - A vetted Source catalogue ships with the Plugin: each Source's official feed plus an "AI summary allowed" flag from its terms. Default rotation: CNN, NPR, Sky News. Guardian and NYT are flagged forbidden; Reuters and AP have no public feed.
+- A Source the user names that isn't in the catalogue is checked for an official feed: the `<link rel="alternate">` RSS/Atom feeds its home page declares, then the usual feed paths. If one reads, it is added to the rotation and kept in preferences; otherwise Lucy gives the honest limit and offers to open its page. Its terms aren't vetted, so Lucy tells the user so when it is added.
 - Preferences live in the Plugin's state dir: rotation, liked-but-forbidden Sources (opened beside the summary), avoided Sources, topic weighting, default count and length.
 - The fast tier picks the big stories (leading, and appearing across Sources), speaks the top 1–2 in one or two sentences in the Persona with a time-of-day greeting by name, then uses `open_url` for the front pages it drew from and for liked-but-forbidden ones. Feed text is untrusted input.
 

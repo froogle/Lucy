@@ -1,12 +1,15 @@
 //! The news Plugin: Lucy's shipped, hand-written reference Plugin. Plain
 //! code, no model calls. `briefing` reads the official feeds of the Sources
 //! in rotation, all at once; `set_preference` changes which Sources, topics
-//! and length the user wants. It never fetches article pages.
+//! and length the user wants. A site the user names that isn't in the
+//! vetted catalogue is checked for an official feed (`discover`). It never
+//! fetches article pages.
 //!
 //! Its tests drive it through MCP against recorded feeds (`tests/`); the
 //! Plugin template copies that fixtures harness.
 
 mod catalogue;
+mod discover;
 mod feed;
 mod preferences;
 
@@ -24,7 +27,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{json, Value};
 
 use catalogue::Source;
-use preferences::{Length, Preferences};
+use preferences::{Found, Length, Preferences};
 
 /// How Lucy reaches the web. The Plugin's only way out, so tests can serve
 /// recorded responses instead.
@@ -127,17 +130,14 @@ impl News {
             Length::Detailed => DETAILED_ITEMS,
         };
 
-        let fetches: Vec<_> = preferences
-            .rotation
-            .iter()
-            .filter_map(|id| catalogue::by_id(id))
-            .filter(|source| source.readable())
+        let fetches: Vec<_> = readings(&preferences)
+            .into_iter()
             .map(|source| {
                 let web = self.web.clone();
-                let feed = source.feed.expect("readable Sources have a feed");
+                let feed = source.feed.clone();
                 (
                     source,
-                    tokio::task::spawn_blocking(move || feed::parse(&web.get(feed)?)),
+                    tokio::task::spawn_blocking(move || feed::parse(&web.get(&feed)?)),
                 )
             })
             .collect();
@@ -193,12 +193,19 @@ impl News {
         }))
     }
 
-    fn set_preference(&self, args: &JsonObject) -> Result<Value, ErrorData> {
+    async fn set_preference(&self, args: &JsonObject) -> Result<Value, ErrorData> {
         let mut preferences =
             Preferences::load(&self.state_dir).map_err(|e| ErrorData::internal_error(e, None))?;
         let mut changes = Changes::default();
         if let Some(name) = string(args, "add")? {
-            changes.add(&mut preferences, &name);
+            match catalogue::find(&name) {
+                Some(source) => changes.add(&mut preferences, source),
+                None => {
+                    let site = string(args, "site")?.unwrap_or_else(|| name.clone());
+                    self.add_site(&mut changes, &mut preferences, &name, &site)
+                        .await?;
+                }
+            }
         }
         if let Some(name) = string(args, "drop")? {
             changes.drop(&mut preferences, &name);
@@ -237,6 +244,80 @@ impl News {
             .map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(changes.into_reply(&preferences))
     }
+
+    /// Adds the Source `name` outside the catalogue if its site, at the
+    /// address `site`, has an official feed.
+    async fn add_site(
+        &self,
+        changes: &mut Changes,
+        preferences: &mut Preferences,
+        name: &str,
+        site: &str,
+    ) -> Result<(), ErrorData> {
+        let Some((front_page, host)) = discover::home_page(site) else {
+            changes.unknown.push(name.to_owned());
+            return Ok(());
+        };
+        if preferences.found_by_id(&host).is_some() {
+            return Ok(());
+        }
+        let web = self.web.clone();
+        let address = site.to_owned();
+        let found = tokio::task::spawn_blocking(move || discover::find(&*web, &address))
+            .await
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        // A Source named by its address alone goes by its host.
+        let name = if name == site { &host } else { name };
+        match found {
+            Some(site) => {
+                changes
+                    .unvetted
+                    .push(json!({"source": name, "feed": site.feed}));
+                preferences.avoid.retain(|id| *id != site.host);
+                preferences.rotation.push(site.host.clone());
+                preferences.found.push(Found {
+                    id: site.host,
+                    name: name.to_owned(),
+                    feed: site.feed,
+                    front_page: site.front_page,
+                });
+                changes.said(format!("{name} is now in your news Sources."));
+            }
+            None => changes
+                .no_feed
+                .push(json!({"source": name, "front_page": front_page})),
+        }
+        Ok(())
+    }
+}
+
+/// A Source a briefing reads.
+struct Reading {
+    name: String,
+    feed: String,
+    front_page: String,
+}
+
+/// The Sources in rotation that Lucy can read: readable ones from the
+/// catalogue, and those the user added whose feed was found.
+fn readings(preferences: &Preferences) -> Vec<Reading> {
+    preferences
+        .rotation
+        .iter()
+        .filter_map(|id| match catalogue::by_id(id) {
+            Some(source) if source.readable() => Some(Reading {
+                name: source.name.to_owned(),
+                feed: source.feed?.to_owned(),
+                front_page: source.front_page.to_owned(),
+            }),
+            Some(_) => None,
+            None => preferences.found_by_id(id).map(|found| Reading {
+                name: found.name.clone(),
+                feed: found.feed.clone(),
+                front_page: found.front_page.clone(),
+            }),
+        })
+        .collect()
 }
 
 /// What a `set_preference` call changed, and what Lucy should tell the user.
@@ -244,7 +325,12 @@ impl News {
 struct Changes {
     changed: Vec<String>,
     cannot_read: Vec<Value>,
+    /// Named Sources with no address to look for a feed at.
     unknown: Vec<String>,
+    /// Named sites where no official feed was found.
+    no_feed: Vec<Value>,
+    /// Added Sources outside the vetted catalogue.
+    unvetted: Vec<Value>,
     replacements: Option<Vec<Value>>,
 }
 
@@ -253,11 +339,7 @@ impl Changes {
         self.changed.push(change);
     }
 
-    fn add(&mut self, preferences: &mut Preferences, name: &str) {
-        let Some(source) = catalogue::find(name) else {
-            self.unknown.push(name.to_owned());
-            return;
-        };
+    fn add(&mut self, preferences: &mut Preferences, source: &Source) {
         preferences.avoid.retain(|id| id != source.id);
         if let Some(why) = source.why_not() {
             self.cannot_read.push(json!({
@@ -279,20 +361,25 @@ impl Changes {
     }
 
     fn drop(&mut self, preferences: &mut Preferences, name: &str) {
-        let Some(source) = catalogue::find(name) else {
+        let (id, name) = if let Some(source) = catalogue::find(name) {
+            if !preferences.avoid.iter().any(|id| id == source.id) {
+                preferences.avoid.push(source.id.to_owned());
+            }
+            (source.id.to_owned(), source.name.to_owned())
+        } else if let Some(found) = preferences.found.iter().find(|found| {
+            found.name.eq_ignore_ascii_case(name.trim())
+                || discover::home_page(name).is_some_and(|(_, host)| host == found.id)
+        }) {
+            (found.id.clone(), found.name.clone())
+        } else {
             self.unknown.push(name.to_owned());
             return;
         };
-        let in_rotation = preferences.rotation.iter().any(|id| id == source.id);
-        preferences.rotation.retain(|id| id != source.id);
-        preferences.open_beside.retain(|id| id != source.id);
-        if !preferences.avoid.iter().any(|id| id == source.id) {
-            preferences.avoid.push(source.id.to_owned());
-        }
-        self.said(format!(
-            "{} is out; you won't hear from it again.",
-            source.name
-        ));
+        let in_rotation = preferences.rotation.contains(&id);
+        preferences.rotation.retain(|kept| *kept != id);
+        preferences.open_beside.retain(|kept| *kept != id);
+        preferences.found.retain(|found| found.id != id);
+        self.said(format!("{name} is out; you won't hear from it again."));
         if in_rotation {
             self.replacements = Some(
                 catalogue::SOURCES
@@ -310,7 +397,11 @@ impl Changes {
     }
 
     fn into_reply(self, preferences: &Preferences) -> Value {
-        let names = |ids: &[String]| sources(ids).map(|s| s.name).collect::<Vec<_>>();
+        let names = |ids: &[String]| {
+            ids.iter()
+                .filter_map(|id| preferences.name_of(id))
+                .collect::<Vec<_>>()
+        };
         let mut reply = json!({
             "changed": self.changed,
             "rotation": names(&preferences.rotation),
@@ -329,8 +420,30 @@ impl Changes {
         if !self.unknown.is_empty() {
             reply["not_in_catalogue"] = self.unknown.into();
             reply["tell_the_user"] = format!(
-                "{} The Sources in `not_in_catalogue` aren't in the vetted catalogue, so you \
-                 can't read them: say so honestly and offer to open their page.",
+                "{} The Sources in `not_in_catalogue` aren't in the vetted catalogue. If you know \
+                 or the user tells you a Source's web address, call set_preference again with it \
+                 as `site` and Lucy will look for its official feed; otherwise say honestly that \
+                 you can't read it and offer to open its page.",
+                reply["tell_the_user"].as_str().unwrap_or_default()
+            )
+            .into();
+        }
+        if !self.no_feed.is_empty() {
+            reply["no_feed"] = self.no_feed.into();
+            reply["tell_the_user"] = format!(
+                "{} For each Source in `no_feed`, say honestly that you looked and found no \
+                 official feed, so you can't read it for them, and offer to open its front page \
+                 with open_url.",
+                reply["tell_the_user"].as_str().unwrap_or_default()
+            )
+            .into();
+        }
+        if !self.unvetted.is_empty() {
+            reply["unvetted"] = self.unvetted.into();
+            reply["tell_the_user"] = format!(
+                "{} Each Source in `unvetted` isn't in Lucy's vetted catalogue: you found its \
+                 official feed and will read it, but nobody has checked whether its terms allow \
+                 AI summaries. Tell the user that plainly, and that they can drop it.",
                 reply["tell_the_user"].as_str().unwrap_or_default()
             )
             .into();
@@ -428,6 +541,9 @@ fn tools() -> Vec<Tool> {
             "Changes the user's news preferences and says what changed.",
             schema(json!({
                 "add": source("A Source to add, by name."),
+                "site": source("The web address of the Source to add, such as \
+                                dailyplanet.com, if it may not be a well-known news Source. \
+                                Lucy looks there for its official feed."),
                 "drop": source("A Source the user doesn't want, by name."),
                 "more_of": source("A topic to give more of."),
                 "less_of": source("A topic to give less of."),
@@ -469,7 +585,7 @@ impl ServerHandler for News {
                 Ok(briefing) => text(briefing),
                 Err(e) => CallToolResult::error(vec![ContentBlock::text(e)]),
             },
-            "set_preference" => text(self.set_preference(&args)?),
+            "set_preference" => text(self.set_preference(&args).await?),
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };
         Ok(result.into())

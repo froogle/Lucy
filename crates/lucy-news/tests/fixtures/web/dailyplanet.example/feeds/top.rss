@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>The Daily Planet: Top stories</title>
+    <link>https://dailyplanet.example/</link>
+    <description>Top stories from the Daily Planet.</description>
+    <item>
+      <title>Metropolis bridge reopens after storm repairs</title>
+      <description>Traffic is flowing again on the Hob's Bay bridge after a week of repairs.</description>
+      <pubDate>Fri, 13 Nov 2026 07:15:00 GMT</pubDate>
+      <link>https://dailyplanet.example/2026/11/13/metropolis-bridge-reopens</link>
+    </item>
+    <item>
+      <title>City council backs new tram line</title>
+      <description>The line will link the harbour to the university by 2029.</description>
+      <pubDate>Fri, 13 Nov 2026 06:30:00 GMT</pubDate>
+      <link>https://dailyplanet.example/2026/11/13/tram-line</link>
+    </item>
+  </channel>
+</rss>
