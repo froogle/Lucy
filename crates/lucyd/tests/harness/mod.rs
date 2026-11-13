@@ -220,9 +220,16 @@ fn recv<T>(receiver: &Mutex<std_mpsc::Receiver<T>>, what: &str) -> T {
 pub struct FakeStt {
     scripted: Arc<Mutex<VecDeque<String>>>,
     heard: Arc<Mutex<Vec<String>>>,
+    /// How long each transcription takes.
+    delay: Arc<Mutex<Duration>>,
 }
 
 impl FakeStt {
+    /// Makes each transcription take `delay`.
+    pub fn take(&self, delay: Duration) {
+        *self.delay.lock().unwrap() = delay;
+    }
+
     fn script(&self, transcript: &str) {
         self.scripted
             .lock()
@@ -237,6 +244,7 @@ impl FakeStt {
 
 impl Stt for FakeStt {
     fn transcribe(&self, _segment: SpeechSegment) -> String {
+        std::thread::sleep(*self.delay.lock().unwrap());
         let transcript = self
             .scripted
             .lock()

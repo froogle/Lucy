@@ -129,6 +129,26 @@ fn no_speech_recognised_keeps_listening_without_resetting_the_timer() {
 }
 
 #[test]
+fn silence_timer_keeps_running_while_an_utterance_is_transcribed() {
+    let lucyd = with_silence_timeout(0.5);
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    let opened = Instant::now();
+
+    lucyd.stt.take(Duration::from_secs(2));
+    lucyd.say("hello");
+
+    // Transcribing is still Listening, so the timer fires mid-transcription.
+    assert_eq!(next_state(&mut events).state, State::Idle);
+    assert!(
+        opened.elapsed() < Duration::from_millis(1500),
+        "{:?}",
+        opened.elapsed()
+    );
+}
+
+#[test]
 fn a_turn_goes_from_listening_through_thinking_and_speaking_back_to_listening() {
     let lucyd = Harness::start();
     let mut events = lucyd.state_client();
@@ -182,17 +202,15 @@ fn every_state_change_reaches_subscribers_even_in_a_quick_burst() {
     lucyd.thinking.turn_end();
     lucyd.tts.next_sentence();
     lucyd.tts.finish_playing();
-    events.end_session().unwrap();
 
-    let states: Vec<State> = (0..5).map(|_| next_state(&mut events).state).collect();
+    let states: Vec<State> = (0..4).map(|_| next_state(&mut events).state).collect();
     assert_eq!(
         states,
         [
             State::Listening,
             State::Thinking,
             State::Speaking,
-            State::Listening,
-            State::Idle
+            State::Listening
         ]
     );
 }

@@ -53,10 +53,10 @@ impl Session {
         }
     }
 
-    /// The silence timer counts only while Lucy is listening and no
-    /// utterance is being transcribed.
+    /// The silence timer counts only while Lucy is listening, including while
+    /// an utterance is being transcribed.
     pub fn silence_timer_runs(&self) -> bool {
-        self.state() == State::Listening && !self.transcribing
+        self.state() == State::Listening
     }
 
     pub fn handle(&mut self, input: Input) -> Vec<Output> {
