@@ -14,6 +14,7 @@ use landlock::{
 };
 
 use super::manifest::Access as Declared;
+use crate::adapters::Workspace;
 
 const ABI_VERSION: ABI = ABI::V5;
 
@@ -55,6 +56,34 @@ pub fn confine_delegate(
         .map(PathBuf::from)
         .chain(readable.iter().cloned());
     restrict(command, readable, writable.iter().cloned())
+}
+
+/// Makes `command`, a Delegate's CLI `program`, work in `workspace` and
+/// apply a Delegate's Landlock rules: it may write the workspace and
+/// `cli_home`, where the CLI keeps its login and settings, and read and run
+/// `program`.
+pub fn confine_cli(
+    command: &mut std::process::Command,
+    workspace: &Workspace,
+    program: &Path,
+    cli_home: &[PathBuf],
+) -> io::Result<()> {
+    command
+        .current_dir(&workspace.dir)
+        .env("TMPDIR", &workspace.tmp);
+    let writable: Vec<PathBuf> = [workspace.dir.clone(), workspace.tmp.clone()]
+        .into_iter()
+        .chain(cli_home.iter().cloned())
+        .chain(workspace.writable.iter().cloned())
+        .collect();
+    let mut readable = workspace.readable.clone();
+    readable.extend(program_dir(program));
+    confine_delegate(command, &readable, &writable)
+}
+
+/// The user's home directory.
+pub fn home() -> PathBuf {
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
 /// Makes `command` apply Landlock rules allowing the system and `readable`
@@ -129,7 +158,7 @@ fn add(
 /// Expands a leading `~/` to the home directory.
 fn expand(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest),
+        Some(rest) => home().join(rest),
         None => PathBuf::from(path),
     }
 }

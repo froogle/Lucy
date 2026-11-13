@@ -127,20 +127,9 @@ impl Claude {
         resume: Option<&str>,
     ) -> std::io::Result<Command> {
         let mut command = self.command(provider, Some(relay), instructions, DELEGATE_TOOLS, resume);
-        command
-            .current_dir(&workspace.dir)
-            .env("TMPDIR", &workspace.tmp);
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-        let mut writable = vec![
-            workspace.dir.clone(),
-            workspace.tmp.clone(),
-            home.join(".claude"),
-            home.join(".claude.json"),
-        ];
-        writable.extend(workspace.writable.iter().cloned());
-        let mut readable = workspace.readable.clone();
-        readable.extend(sandbox::program_dir(&self.program));
-        sandbox::confine_delegate(&mut command, &readable, &writable)?;
+        let home = sandbox::home();
+        let cli_home = [home.join(".claude"), home.join(".claude.json")];
+        sandbox::confine_cli(&mut command, workspace, &self.program, &cli_home)?;
         Ok(command)
     }
 
