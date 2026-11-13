@@ -1,0 +1,25 @@
+{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1","rootTurnId":"turn-1","items":[],"itemsView":"full","status":"inProgress","error":null,"startedAt":1794579110,"completedAt":null,"durationMs":null}},"emittedAtMs":1794579110000}
+{"method":"item/started","params":{"item":{"type":"reasoning","id":"rs_1","summary":[],"content":[]},"threadId":"thread-1","turnId":"turn-1","startedAtMs":1794579110000},"emittedAtMs":1794579110000}
+{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"rs_1","delta":"**Acknowledging","summaryIndex":0},"emittedAtMs":1794579110000}
+{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"rs_1","delta":" the word**","summaryIndex":0},"emittedAtMs":1794579110000}
+{"method":"item/completed","params":{"item":{"type":"reasoning","id":"rs_1","summary":["**Acknowledging the word**"],"content":[]},"threadId":"thread-1","turnId":"turn-1"},"emittedAtMs":1794579110000}
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg_1","text":"","phase":null,"moderation":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"thread-1","turnId":"turn-1","startedAtMs":1794579110000},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":"Got"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" it"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":","},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" I'll"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" remember"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" the"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" word"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" kiwi"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":"."},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" I'm"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" ready"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" for"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" whatever"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" comes"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":" next"},"emittedAtMs":1794579110000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"msg_1","delta":"."},"emittedAtMs":1794579110000}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_1","text":"Got it, I'll remember the word kiwi. I'm ready for whatever comes next.","phase":"final_answer","moderation":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"thread-1","turnId":"turn-1"},"emittedAtMs":1794579110000}
+{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","limitName":null,"normalModelSlug":null,"primary":{"usedPercent":3,"windowDurationMins":300,"resetsAt":1794590000},"secondary":{"usedPercent":1,"windowDurationMins":10080,"resetsAt":1795100000},"credits":null,"individualLimit":null,"spendControlReached":null,"planType":"plus","rateLimitReachedType":null}},"emittedAtMs":1794579110000}
+{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","rootTurnId":"turn-1","items":[],"itemsView":"notLoaded","status":"completed","error":null,"startedAt":1794579110,"completedAt":1794579112,"durationMs":2140}},"emittedAtMs":1794579110000}

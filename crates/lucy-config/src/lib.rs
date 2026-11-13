@@ -82,6 +82,7 @@ pub struct Provider {
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Claude,
+    Codex,
 }
 
 impl Kind {
@@ -89,6 +90,7 @@ impl Kind {
     pub fn name(self) -> &'static str {
         match self {
             Kind::Claude => "Claude",
+            Kind::Codex => "Codex",
         }
     }
 }
@@ -104,6 +106,7 @@ impl From<Kind> for lucy_ipc::ProviderKind {
     fn from(kind: Kind) -> Self {
         match kind {
             Kind::Claude => lucy_ipc::ProviderKind::Claude,
+            Kind::Codex => lucy_ipc::ProviderKind::Codex,
         }
     }
 }
@@ -172,6 +175,18 @@ pub const RECOMMENDATIONS: &[Recommendation] = &[
         kind: Kind::Claude,
         tier: Tier::Advanced,
         model: "opus",
+        why: "research and writing Plugins",
+    },
+    Recommendation {
+        kind: Kind::Codex,
+        tier: Tier::Fast,
+        model: "gpt-6-luna",
+        why: "quick spoken replies for everyday talk",
+    },
+    Recommendation {
+        kind: Kind::Codex,
+        tier: Tier::Advanced,
+        model: "gpt-6.1-sol",
         why: "research and writing Plugins",
     },
 ];
@@ -511,6 +526,36 @@ mod tests {
         let fast = config.provider(Tier::Fast).unwrap();
         assert_eq!(fast.model.as_deref(), Some("claude-some-future-model"));
         assert!(fast.allow_api_key);
+    }
+
+    #[test]
+    fn either_tier_can_name_a_codex_provider() {
+        let config = parse(
+            r#"
+            [providers.chatgpt]
+            kind = "codex"
+
+            [tiers]
+            fast = "chatgpt"
+            advanced = "chatgpt"
+            "#,
+        );
+
+        for tier in [Tier::Fast, Tier::Advanced] {
+            let provider = config.provider(tier).unwrap();
+            assert_eq!(provider.kind, Kind::Codex);
+            assert_eq!(provider.model, None);
+        }
+        assert_eq!(Kind::Codex.name(), "Codex");
+    }
+
+    #[test]
+    fn codex_has_a_recommended_model_for_each_tier() {
+        assert_eq!(recommended_model(Kind::Codex, Tier::Fast), "gpt-6-luna");
+        assert_eq!(
+            recommended_model(Kind::Codex, Tier::Advanced),
+            "gpt-6.1-sol"
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use harness::{next_state, Harness};
 use lucy_ipc::State;
 use lucyd::adapters::{SpeechSegment, Stt};
+use lucyd::codex::Codex;
 use lucyd::superwhisper::Superwhisper;
 
 const CHOSEN: &str = "[stt]\nkind = \"superwhisper\"\n";
@@ -187,4 +188,37 @@ fn a_superwhisper_failure_takes_the_stt_error_path() {
     assert_eq!(lucyd.tts.next_sentence(), "Sorry, I didn't catch that.");
     assert_eq!(next_state(&mut events).state, State::Error);
     lucyd.thinking.assert_no_turn();
+}
+
+#[test]
+fn superwhisper_hears_a_session_on_codex_and_its_reply_is_spoken() {
+    let dir = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let config = format!(
+        "{CHOSEN}\n[providers.chatgpt]\nkind = \"codex\"\nmodel = \"gpt-6-luna\"\n\n\
+         [tiers]\nfast = \"chatgpt\"\nadvanced = \"chatgpt\"\n"
+    );
+    let fake_codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex/fake-codex");
+    let lucyd = Harness::with_superwhisper_and_thinking(
+        &config,
+        Arc::new(superwhisper(dir.path(), STARTED, RESULT)),
+        Arc::new(Codex::new(fake_codex, work.path().to_owned())),
+    );
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+
+    lucyd.say("not this");
+
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Got it, I'll remember the word kiwi."
+    );
+    let sent = std::fs::read_to_string(work.path().join("stdin")).unwrap();
+    let turn: serde_json::Value = sent
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|message| message["method"] == "turn/start")
+        .unwrap();
+    assert_eq!(turn["params"]["input"][0]["text"], "what time is it");
 }

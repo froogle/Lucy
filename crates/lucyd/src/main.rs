@@ -34,12 +34,13 @@ fn main() -> ExitCode {
         }
     };
     let mut adapters = lucyd::adapters::Adapters::inert();
-    adapters.thinking = std::sync::Arc::new(lucyd::claude::Claude::new(
-        "claude".into(),
-        lucy_config::xdg_dir("XDG_STATE_HOME", ".local/state")
-            .join("lucy")
-            .join("work"),
-    ));
+    let work = lucy_config::xdg_dir("XDG_STATE_HOME", ".local/state")
+        .join("lucy")
+        .join("work");
+    adapters.thinking = Arc::new(lucyd::by_kind::ByKind {
+        claude: Arc::new(lucyd::claude::Claude::new("claude".into(), work.clone())),
+        codex: Arc::new(lucyd::codex::Codex::new("codex".into(), work)),
+    });
     // Ticket 09 feeds `take_reference()` to the echo canceller.
     adapters.tts = Box::new(lucyd::piper::Piper::start(
         None,

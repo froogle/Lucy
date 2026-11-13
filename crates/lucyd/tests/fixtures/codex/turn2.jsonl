@@ -1,0 +1,20 @@
+{"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-2","rootTurnId":"turn-2","items":[],"itemsView":"full","status":"inProgress","error":null,"startedAt":1794579120,"completedAt":null,"durationMs":null}},"emittedAtMs":1794579120000}
+{"method":"item/started","params":{"item":{"type":"reasoning","id":"rs_2","summary":[],"content":[]},"threadId":"thread-1","turnId":"turn-2","startedAtMs":1794579120000},"emittedAtMs":1794579120000}
+{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"rs_2","delta":"**Recalling","summaryIndex":0},"emittedAtMs":1794579120000}
+{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"rs_2","delta":" the word**","summaryIndex":0},"emittedAtMs":1794579120000}
+{"method":"item/completed","params":{"item":{"type":"reasoning","id":"rs_2","summary":["**Recalling the word**"],"content":[]},"threadId":"thread-1","turnId":"turn-2"},"emittedAtMs":1794579120000}
+{"method":"item/started","params":{"item":{"type":"agentMessage","id":"msg_2","text":"","phase":null,"moderation":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"thread-1","turnId":"turn-2","startedAtMs":1794579120000},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":"K"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":"iwi"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":"."},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":" You"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":" asked"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":" me"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":" to"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":" remember"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":" that"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":" word"},"emittedAtMs":1794579120000}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-2","itemId":"msg_2","delta":"."},"emittedAtMs":1794579120000}
+{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_2","text":"Kiwi. You asked me to remember that word.","phase":"final_answer","moderation":null,"memoryCitation":null,"delivery":null,"questions":null},"threadId":"thread-1","turnId":"turn-2"},"emittedAtMs":1794579120000}
+{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","limitName":null,"normalModelSlug":null,"primary":{"usedPercent":3,"windowDurationMins":300,"resetsAt":1794590000},"secondary":{"usedPercent":1,"windowDurationMins":10080,"resetsAt":1795100000},"credits":null,"individualLimit":null,"spendControlReached":null,"planType":"plus","rateLimitReachedType":null}},"emittedAtMs":1794579120000}
+{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-2","rootTurnId":"turn-2","items":[],"itemsView":"notLoaded","status":"completed","error":null,"startedAt":1794579120,"completedAt":1794579122,"durationMs":2140}},"emittedAtMs":1794579120000}

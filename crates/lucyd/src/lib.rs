@@ -3,7 +3,9 @@
 
 pub mod adapters;
 pub mod audio;
+pub mod by_kind;
 pub mod claude;
+pub mod codex;
 mod desktop;
 pub mod desktop_entries;
 mod ipc;

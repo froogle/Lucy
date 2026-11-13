@@ -85,6 +85,22 @@ impl Harness {
         Harness::launch(Some(config), Some(PERSONA), None, None, Some(superwhisper))
     }
 
+    /// Starts lucyd with `superwhisper` as its `superwhisper` STT Provider
+    /// and a real Thinking adapter in place of the fake.
+    pub fn with_superwhisper_and_thinking(
+        config: &str,
+        superwhisper: Arc<dyn Stt>,
+        thinking: Arc<dyn Thinking>,
+    ) -> Harness {
+        Harness::launch(
+            Some(config),
+            Some(PERSONA),
+            Some(thinking),
+            None,
+            Some(superwhisper),
+        )
+    }
+
     /// Starts lucyd hearing through the fake microphone, VAD and wake word,
     /// with the real DSP thread and endpointing in between, and `config` as
     /// its `config.toml`. lucyd starts listening with its microphone and
@@ -921,6 +937,8 @@ impl SessionModel for FakeSessionModel {
     fn send_turn(&mut self, text: String) {
         let _ = self.turns.send(text);
     }
+
+    fn interrupt(&mut self) {}
 }
 
 /// TTS that records each sentence and "plays" it until the test finishes it,
