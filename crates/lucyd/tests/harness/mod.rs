@@ -417,6 +417,7 @@ impl Harness {
         let deadline = Instant::now() + WAIT;
         while !self.bus_is_idle() {
             assert!(Instant::now() < deadline, "the bus never returned to idle");
+            // sleep-ok: poll loop with a deadline
             std::thread::sleep(Duration::from_millis(10));
         }
         let lines = self.bus.lock().unwrap().clone();
@@ -625,6 +626,7 @@ impl Stt for FakeStt {
     fn transcribe(&self, segment: SpeechSegment) -> Result<String, SttError> {
         let length = Duration::from_secs_f64(segment.samples.len() as f64 / 16_000.0);
         self.segments.lock().unwrap().push(length);
+        // sleep-ok: the fake's scripted transcription time
         std::thread::sleep(*self.delay.lock().unwrap());
         let transcript = self
             .scripted
@@ -1158,6 +1160,7 @@ impl FakeMic {
         let deadline = Instant::now() + WAIT;
         while self.ring.lock().unwrap().is_none() {
             assert!(Instant::now() < deadline, "timed out waiting for capture");
+            // sleep-ok: poll loop with a deadline
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -1182,6 +1185,7 @@ impl FakeMic {
             };
             samples = &samples[written..];
             if written == 0 {
+                // sleep-ok: backs off while the ring is full
                 std::thread::sleep(Duration::from_millis(1));
             }
         }

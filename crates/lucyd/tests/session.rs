@@ -84,15 +84,18 @@ fn silence_timer_pauses_while_thinking_and_speaking() {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(Duration::from_millis(300));
     lucyd.say("tell me a long story");
     lucyd.thinking.next_turn();
     assert_eq!(next_state(&mut events).state, State::Thinking);
 
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(Duration::from_secs(1));
     lucyd.thinking.delta("Once upon a time.");
     lucyd.thinking.turn_end();
     assert_eq!(next_state(&mut events).state, State::Speaking);
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(Duration::from_secs(1));
     lucyd.tts.finish_playing();
 
@@ -112,6 +115,7 @@ fn no_speech_recognised_keeps_listening_without_resetting_the_timer() {
     next_state(&mut events);
     let opened = Instant::now();
 
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(Duration::from_secs(1));
     lucyd.mumble();
 

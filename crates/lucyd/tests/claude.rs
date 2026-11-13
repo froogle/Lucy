@@ -54,6 +54,7 @@ fn wait_for_file(path: &Path) -> String {
             "{} never appeared",
             path.display()
         );
+        // sleep-ok: poll loop with a deadline
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -77,6 +78,7 @@ fn read_turn(
             Ok(ThinkingEvent::Died) => panic!("claude died: {text:?}"),
             Err(_) => {
                 assert!(Instant::now() < deadline, "the Turn never ended: {text:?}");
+                // sleep-ok: poll loop with a deadline
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
@@ -140,6 +142,7 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     let deadline = Instant::now() + WAIT;
     while Path::new("/proc").join(&pid).exists() {
         assert!(Instant::now() < deadline, "claude outlived its Session");
+        // sleep-ok: poll loop with a deadline
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -163,6 +166,7 @@ fn claude_dying_mid_turn_reports_that_it_died() {
             Ok(_) => {}
             Err(_) => {
                 assert!(Instant::now() < deadline, "no Died: {text:?}");
+                // sleep-ok: poll loop with a deadline
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
@@ -188,6 +192,7 @@ fn ending_the_session_is_not_a_death() {
     let deadline = Instant::now() + WAIT;
     while !rest.is_finished() {
         assert!(Instant::now() < deadline, "claude's events never closed");
+        // sleep-ok: poll loop with a deadline
         std::thread::sleep(Duration::from_millis(10));
     }
     let rest = rest.join().unwrap();

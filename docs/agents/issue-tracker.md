@@ -10,6 +10,10 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
+## Slices
+
+A **slice** is the build tickets that are ready to start when the slice begins; tickets they unblock wait for the next slice. Slice N is built on `lucy-v0-1-slice-N`, branched from `main`. Once its review fixes are merged and its tickets resolved, the slice is merged into `main` locally (no push).
+
 ## When a skill says "publish to the issue tracker"
 
 Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).

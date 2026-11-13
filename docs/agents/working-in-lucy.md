@@ -14,6 +14,7 @@ Facts about the codebase that aren't obvious from reading it.
 - **Real binaries:** the harness runs the `lucy` binary cargo builds next to the test binary. `cargo test -p lucyd` on its own needs `cargo build -p lucy` first; `cargo test --workspace` handles this.
 - **Fixture Plugin:** `crates/lucyd/examples/fixture-plugin.rs`, a tiny MCP stdio server. `Harness::install_plugin` copies it into a Plugin folder and `Harness::approve` pre-seeds `approvals.toml`. `cargo test -p lucyd` builds it, but `--test <name>` alone doesn't: run `cargo build -p lucyd --examples` first.
 - **Confirming:** Confirmations, Approvals and Plugin mid-call questions all go through `runner::ask`, which queues a `Command::Ask` for the open Session. Tests shorten the 8 s wait with `[confirmation] timeout_secs`. `Harness::request_approval` starts a spoken Approval (`Daemon::request_approval`; nothing on IPC or MCP reaches it), and `FakeThinking::watch_tools` holds a relay open to see `tools/list_changed`. The fixture Plugin's `ask` tool asks a question through `input_required`.
+- **Fake executables:** write them from a child process (see `fake_notify_send` in `notify_send.rs`). A fd this process holds open for writing can leak into a child another test forks, and running the file then fails with "Text file busy".
 - **Private data:** after a Session ends, `assert_nothing_private_on_bus()` checks that nothing private reached the public socket.
 
 ## Adapters (STT, Thinking, TTS)
@@ -30,6 +31,10 @@ New methods, events and enum variants go in `crates/lucy-ipc/src/schema.rs`. Reg
 
 Automated tests use the fake `claude` and the recorded fixtures in `crates/lucyd/tests/fixtures/claude/`. The fake reads its `--version`, `auth status` and turn overrides from its working directory; its header says how. `Harness::with_thinking` runs lucyd with the real adapter against it (`tests/subscription_guard.rs`). The live check is `cargo test -p lucyd --test claude -- --ignored`, and it spends the user's subscription, so run it only when a ticket needs a real round trip.
 
+## Real Piper
+
+lucyd runs `python -m piper.http_server`, which needs the `http` extra: install with `uv tool install 'piper-tts[http]'`. Clear `PYTHONPATH` when running Piper by hand (`env -u PYTHONPATH ...`): a `PYTHONPATH` pointing at the system site-packages loads the wrong numpy and Piper fails to import. Voices live in `$XDG_DATA_HOME/lucy/voices/` (`en_GB-cori-medium.onnx`, its `.onnx.json` and `MODEL_CARD`); `piper -m <voice>.onnx -f out.wav` synthesises a line to check.
+
 ## Hearing (mic, VAD, Whisper)
 
 - **Harness:** `Harness::hearing(config)` runs the real DSP thread and endpointing between `FakeMic` and `FakeVad`; the fake VAD reads each sample's value as the speech probability, so tests feed levels (`SPEECH`, `SILENCE`).
@@ -45,7 +50,7 @@ Socket paths are limited to about 108 bytes. The session scratchpad path is too 
 
 ## Implementer subagents
 
-The `tdd` skill asks the user to approve seams first, and a subagent can't ask. The ticket's acceptance checks driven through the harness, plus the adapter traits above, are the approved seams. A ticket that needs a new adapter trait names it in the implementer's report. The ticket's `Seams:` line says which shared seams it owns and which it only uses.
+The `tdd` skill asks the user to approve seams first, and a subagent can't ask. The ticket's acceptance checks driven through the harness, plus the adapter traits above, are the approved seams. A ticket that needs a new adapter trait names it in the implementer's report. The ticket's `Seams:` line says which shared seams it owns and which it only uses. Report only once every background job you started has finished or been stopped; a running one keeps your worktree locked.
 
 ## Merging
 

@@ -146,6 +146,7 @@ fn silence_after_the_prompt_declines() {
     assert_eq!(next_state(&mut events).state, State::Confirming);
     lucyd.tts.next_sentence();
     // The wait starts only once the prompt has been said.
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(Duration::from_millis(600));
     assert!(!call.is_finished(), "declined while the prompt played");
     let prompted = Instant::now();
@@ -170,6 +171,7 @@ fn a_reply_still_being_spoken_when_the_wait_runs_out_is_heard() {
 
     lucyd.start_speaking();
     lucyd.tts.finish_playing();
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(Duration::from_millis(800));
     lucyd.say("yes");
 
@@ -189,6 +191,7 @@ fn the_silence_timer_is_paused_while_confirming() {
     lucyd.tts.next_sentence();
     lucyd.tts.finish_playing();
 
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(Duration::from_secs(1));
 
     assert_eq!(events.status().unwrap().state, State::Confirming);

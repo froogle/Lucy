@@ -14,6 +14,7 @@ fn the_default_microphone_delivers_16_khz_audio() {
     let start = Instant::now();
     while samples.slots() < 8_000 {
         assert!(start.elapsed() < Duration::from_secs(2), "too few samples");
+        // sleep-ok: poll loop with a deadline; real capture runs in real time
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(

@@ -85,6 +85,7 @@ fn speech_under_way_holds_off_the_end_of_a_false_wake() {
     lucyd.start_speaking();
     lucyd.wake();
     assert_eq!(next_state(&mut events).state, State::Listening);
+    // sleep-ok: timer test; lucyd has no clock seam yet
     std::thread::sleep(ms(800));
     lucyd.say("what's the time");
 

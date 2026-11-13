@@ -358,6 +358,7 @@ fn plugins_are_stopped_when_the_session_ends() {
             std::time::Instant::now() < deadline,
             "the Plugin still runs"
         );
+        // sleep-ok: poll loop with a deadline
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
