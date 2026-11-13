@@ -21,7 +21,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// How long the harness waits for something lucyd should do.
 const WAIT: Duration = Duration::from_secs(5);
@@ -34,6 +34,9 @@ pub struct Harness {
     /// Where `wake` sends scripted detections, unless lucyd hears through
     /// `mic`.
     wake_word: Option<mpsc::UnboundedSender<()>>,
+    /// Where `start_speaking` and `say` say whether the user is mid
+    /// utterance, unless lucyd hears through `mic`.
+    speaking: Option<watch::Sender<bool>>,
     pub mic: FakeMic,
     pub stt: FakeStt,
     pub thinking: FakeThinking,
@@ -113,28 +116,34 @@ impl Harness {
         if let Some(persona) = persona {
             std::fs::write(&persona_path, persona).unwrap();
         }
-        let (speech, speech_rx, wake_word, wake_word_rx, hearing, mic) = match ears {
-            Some((ears, mic)) => (
-                None,
-                ears.speech,
-                None,
-                ears.wake_word,
-                Some(ears.hearing),
-                mic,
-            ),
-            None => {
-                let (speech, speech_rx) = mpsc::unbounded_channel();
-                let (wake_word, wake_word_rx) = mpsc::unbounded_channel();
-                (
-                    Some(speech),
-                    speech_rx,
-                    Some(wake_word),
-                    wake_word_rx,
+        let (speech, speech_rx, wake_word, wake_word_rx, speaking, speaking_rx, hearing, mic) =
+            match ears {
+                Some((ears, mic)) => (
                     None,
-                    FakeMic::default(),
-                )
-            }
-        };
+                    ears.speech,
+                    None,
+                    ears.wake_word,
+                    None,
+                    ears.speaking,
+                    Some(ears.hearing),
+                    mic,
+                ),
+                None => {
+                    let (speech, speech_rx) = mpsc::unbounded_channel();
+                    let (wake_word, wake_word_rx) = mpsc::unbounded_channel();
+                    let (speaking, speaking_rx) = watch::channel(false);
+                    (
+                        Some(speech),
+                        speech_rx,
+                        Some(wake_word),
+                        wake_word_rx,
+                        Some(speaking),
+                        speaking_rx,
+                        None,
+                        FakeMic::default(),
+                    )
+                }
+            };
         let stt = FakeStt::default();
         let thinking = FakeThinking::new();
         let tts = FakeTts::new();
@@ -158,6 +167,7 @@ impl Harness {
             adapters: Adapters {
                 speech: speech_rx,
                 wake_word: wake_word_rx,
+                speaking: speaking_rx,
                 hearing,
                 stt: Arc::new(stt.clone()),
                 thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
@@ -172,6 +182,7 @@ impl Harness {
             daemon,
             speech,
             wake_word,
+            speaking,
             mic,
             stt,
             thinking,
@@ -338,18 +349,30 @@ impl Harness {
         client
     }
 
+    /// The user starts an utterance, which `say` ends.
+    pub fn start_speaking(&self) {
+        let speaking = self.speaking.as_ref().expect("lucyd hears through `mic`");
+        speaking.send_replace(true);
+    }
+
     /// The user says something that the fake STT will hear as `transcript`.
     pub fn say(&self, transcript: &str) {
         self.stt.script(transcript);
-        let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
-        speech.send(SpeechSegment { samples: vec![] }).unwrap();
+        self.end_utterance();
     }
 
     /// The user says something and the fake STT fails on it.
     pub fn say_but_stt_fails(&self) {
         self.stt.script_failure();
+        self.end_utterance();
+    }
+
+    /// The VAD cuts the utterance, as the DSP thread does: the utterance,
+    /// then the user no longer speaking.
+    fn end_utterance(&self) {
         let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
         speech.send(SpeechSegment { samples: vec![] }).unwrap();
+        self.speaking.as_ref().unwrap().send_replace(false);
     }
 
     /// The wake-word engine hears the Wake word.

@@ -120,6 +120,8 @@ pub struct Ears {
     pub speech: mpsc::UnboundedReceiver<SpeechSegment>,
     /// One message each time the Wake word is heard.
     pub wake_word: mpsc::UnboundedReceiver<()>,
+    /// Whether the user is in the middle of an utterance.
+    pub speaking: watch::Receiver<bool>,
 }
 
 /// Opens the microphone and starts the DSP thread, which reframes capture to
@@ -143,6 +145,7 @@ pub fn listen(
     let (wakes, wakes_rx) = mpsc::unbounded_channel();
     let (changes, changes_rx) = std::sync::mpsc::channel();
     let (lost, lost_rx) = watch::channel(false);
+    let (speaking, speaking_rx) = watch::channel(false);
     let lost = Arc::new(lost);
     let endpointer = Endpointer::new(vad, endpointing);
     let listeners = Listeners {
@@ -150,6 +153,7 @@ pub fn listen(
         endpointer,
         wakes,
         speech,
+        speaking,
         lost: lost.clone(),
     };
     std::thread::Builder::new()
@@ -168,6 +172,7 @@ pub fn listen(
         hearing,
         speech: speech_rx,
         wake_word: wakes_rx,
+        speaking: speaking_rx,
     })
 }
 
@@ -177,6 +182,9 @@ struct Listeners {
     endpointer: Endpointer,
     wakes: mpsc::UnboundedSender<()>,
     speech: mpsc::UnboundedSender<SpeechSegment>,
+    /// Whether an utterance is under way: set once it starts, cleared once
+    /// it is sent on `speech` or dropped.
+    speaking: watch::Sender<bool>,
     /// Set once the open microphone has gone away.
     lost: Arc<watch::Sender<bool>>,
 }
@@ -274,6 +282,7 @@ fn dsp(
                 Change::Endpointing(config) => listeners.endpointer.configure(&config),
             }
         }
+        listeners.report_speaking();
         if mic.is_abandoned() && mic.slots() < FRAME_LEN && !reported {
             eprintln!("lucyd: the microphone has gone away");
             listeners.lost.send_replace(true);
@@ -298,5 +307,15 @@ fn dsp(
         if let Some(segment) = listeners.endpointer.push(&frame) {
             let _ = listeners.speech.send(segment);
         }
+        listeners.report_speaking();
+    }
+}
+
+impl Listeners {
+    /// Says whether an utterance is under way, if that changed.
+    fn report_speaking(&self) {
+        let speaking = self.endpointer.speaking();
+        self.speaking
+            .send_if_modified(|was| std::mem::replace(was, speaking) != speaking);
     }
 }

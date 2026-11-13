@@ -77,6 +77,21 @@ fn a_silence_timeout_shorter_than_8_seconds_ends_a_false_wake_sooner() {
 }
 
 #[test]
+fn speech_under_way_holds_off_the_end_of_a_false_wake() {
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let mut events = lucyd.state_client();
+
+    // The utterance starts before the Wake word in it is recognised.
+    lucyd.start_speaking();
+    lucyd.wake();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    std::thread::sleep(ms(800));
+    lucyd.say("what's the time");
+
+    assert_eq!(lucyd.thinking.next_turn(), "what's the time");
+}
+
+#[test]
 fn a_silence_timeout_ends_with_a_closing_sound() {
     let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
     let mut events = lucyd.state_client();

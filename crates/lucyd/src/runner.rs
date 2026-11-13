@@ -95,6 +95,8 @@ pub struct Runner {
     speech_open: bool,
     /// False once the wake-word source has gone away.
     wake_open: bool,
+    /// False once the source of whether the user is speaking has gone away.
+    speaking_open: bool,
     sessions_started: u64,
 }
 
@@ -116,6 +118,7 @@ impl Runner {
             files,
             speech_open: true,
             wake_open: true,
+            speaking_open: true,
             sessions_started: 0,
         }
     }
@@ -200,6 +203,11 @@ impl Runner {
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();
         let mut session = Session::new(confirmation.yes_phrases);
+        // An utterance may have started before the Session opened, as one
+        // with the Wake word in it does.
+        if *self.adapters.speaking.borrow_and_update() {
+            session.handle(Input::Speaking(true));
+        }
         let silence_timeout = Duration::from_secs_f64(silence_timeout);
         let mut silence = SilenceTimer::new(silence_timeout);
         if woken {
@@ -239,10 +247,27 @@ impl Runner {
                 Input::Ask(ask.question)
             } else {
                 tokio::select! {
-                // The model's events first: a Turn that ended before a
-                // request came in (an End, say) is seen to have ended.
+                // What the model and the speaker report first: a Turn that
+                // ended, or a sentence that finished playing, before a
+                // request or a reply came in is seen to have ended first.
                 biased;
                 Some(event) = events.recv() => Input::Thinking(event),
+                Some(event) = speaker_events.recv() => match event {
+                    SpeakerEvent::Played => Input::Played,
+                    // Lucy can't say it, so she shows it.
+                    SpeakerEvent::Failed(sentence) => {
+                        unspoken.push(sentence);
+                        Input::Played
+                    }
+                    SpeakerEvent::Level(rms) => {
+                        self.buses.levels.publish(rms);
+                        continue;
+                    }
+                    SpeakerEvent::DeviceLost => {
+                        self.end_on_lost_device(Direction::Output, id);
+                        return;
+                    }
+                },
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         let _ = reply.send(Err(StartError));
@@ -273,6 +298,15 @@ impl Runner {
                         continue;
                     }
                 },
+                // After `speech`: an utterance is cut before the user stops
+                // speaking.
+                changed = self.adapters.speaking.changed(), if self.speaking_open => match changed {
+                    Ok(()) => Input::Speaking(*self.adapters.speaking.borrow_and_update()),
+                    Err(_) => {
+                        self.speaking_open = false;
+                        continue;
+                    }
+                },
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
                     Some(()) => Input::WakeWord,
                     None => {
@@ -285,22 +319,6 @@ impl Runner {
                     Err(SttError(e)) => {
                         eprintln!("lucyd: {e}");
                         Input::TranscribeFailed
-                    }
-                },
-                Some(event) = speaker_events.recv() => match event {
-                    SpeakerEvent::Played => Input::Played,
-                    // Lucy can't say it, so she shows it.
-                    SpeakerEvent::Failed(sentence) => {
-                        unspoken.push(sentence);
-                        Input::Played
-                    }
-                    SpeakerEvent::Level(rms) => {
-                        self.buses.levels.publish(rms);
-                        continue;
-                    }
-                    SpeakerEvent::DeviceLost => {
-                        self.end_on_lost_device(Direction::Output, id);
-                        return;
                     }
                 },
                 () = mic_lost(&mut self.adapters.hearing) => {

@@ -159,6 +159,26 @@ fn silence_after_the_prompt_declines() {
 }
 
 #[test]
+fn a_reply_still_being_spoken_when_the_wait_runs_out_is_heard() {
+    let lucyd = with_files_plugin("[confirmation]\ntimeout_secs = 0.3\n");
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    let (file, call) = model_writes(&lucyd, &mut events);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    lucyd.tts.next_sentence();
+
+    lucyd.start_speaking();
+    lucyd.tts.finish_playing();
+    std::thread::sleep(Duration::from_millis(800));
+    lucyd.say("yes");
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+}
+
+#[test]
 fn the_silence_timer_is_paused_while_confirming() {
     let lucyd = with_files_plugin("[session]\nsilence_timeout_secs = 0.3\n");
     let mut events = lucyd.state_client();

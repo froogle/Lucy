@@ -8,6 +8,9 @@ use crate::adapters::ThinkingEvent;
 pub enum Input {
     /// Lucy speaks first: start a Turn with these instructions.
     Opening(String),
+    /// The user started an utterance (true), or it was cut or dropped
+    /// (false).
+    Speaking(bool),
     /// The VAD cut an utterance.
     Speech,
     /// STT finished the utterance it was given.
@@ -82,6 +85,8 @@ const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
 #[derive(Default)]
 pub struct Session {
     transcribing: bool,
+    /// The user is in the middle of an utterance.
+    speaking: bool,
     turn_in_progress: bool,
     /// Sentences handed to TTS that haven't finished playing.
     queued: usize,
@@ -124,16 +129,16 @@ impl Session {
         self.turn_in_progress.then_some(self.turn.as_str())
     }
 
-    /// The silence timer counts only while Lucy is listening, including while
-    /// an utterance is being transcribed.
+    /// The silence timer counts only while Lucy is listening and the user
+    /// isn't speaking, including while an utterance is being transcribed.
     pub fn silence_timer_runs(&self) -> bool {
-        self.state() == State::Listening
+        self.state() == State::Listening && !self.speaking
     }
 
     /// The wait for an answer counts once the question has been said, and
-    /// not while the user's reply is being transcribed.
+    /// not while the user is speaking or their reply is being transcribed.
     pub fn answer_timer_runs(&self) -> bool {
-        self.asking.is_some() && self.queued == 0 && !self.transcribing
+        self.asking.is_some() && self.queued == 0 && !self.transcribing && !self.speaking
     }
 
     pub fn handle(&mut self, input: Input) -> Vec<Output> {
@@ -142,6 +147,10 @@ impl Session {
                 self.turn_in_progress = true;
                 self.turn.clone_from(&text);
                 vec![Output::SendTurn(text)]
+            }
+            Input::Speaking(speaking) => {
+                self.speaking = speaking;
+                vec![]
             }
             // While Confirming, a reply spoken over the question counts.
             Input::Speech
