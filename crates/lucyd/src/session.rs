@@ -93,9 +93,20 @@ pub enum Output {
     /// Stop the model's Turn, and the tool calls it made that the user
     /// hasn't confirmed.
     Interrupt,
+    /// The user said "cancel it": stop the Authoring build.
+    CancelBuild,
 }
 
 const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
+
+/// What stops an Authoring build, as the whole utterance.
+const CANCEL_IT: &str = "cancel it";
+
+/// Said when the user stops a build.
+pub const BUILD_STOPPED: &str = "Okay, I've stopped the build.";
+
+/// Said when the Session ends by `end_session` while a build runs.
+pub const KEEP_WORKING: &str = "I'll keep working on the Plugin, and let you know when it's ready.";
 
 /// An open Session.
 #[derive(Default)]
@@ -236,6 +247,13 @@ impl Session {
                     // No speech recognised: keep listening, timer not reset.
                     return vec![];
                 }
+                // Matched as a yes-phrase is: the whole utterance.
+                if self.building && is_yes(text, &[CANCEL_IT.to_owned()]) {
+                    self.sentence = BUILD_STOPPED.to_owned();
+                    let mut outputs = vec![Output::CancelBuild];
+                    outputs.extend(self.speak_sentence());
+                    return outputs;
+                }
                 self.turn_in_progress = true;
                 self.heard.clear();
                 self.turn = match self.interrupted.take() {
@@ -297,7 +315,14 @@ impl Session {
             }
             Input::EndRequested => {
                 self.closing = true;
-                self.turn_finished().into_iter().collect()
+                let mut outputs: Vec<Output> = vec![];
+                if self.building {
+                    outputs.extend(self.speak_sentence());
+                    self.sentence = KEEP_WORKING.to_owned();
+                    outputs.extend(self.speak_sentence());
+                }
+                outputs.extend(self.turn_finished());
+                outputs
             }
             // Cuts Lucy off at once, whatever `barge_in` says.
             Input::WakeWord if matches!(self.state(), State::Speaking | State::Thinking) => {

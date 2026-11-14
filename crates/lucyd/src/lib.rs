@@ -104,6 +104,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         plugins_dir,
         plugin_host.clone(),
         sessions.clone(),
+        adapters.notifier.clone(),
     );
     let providers = ipc::Providers {
         thinking: adapters.thinking.clone(),
@@ -120,7 +121,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
                 persona: persona.clone(),
                 config_path,
             },
-            authoring.building(),
+            authoring.clone(),
         )
         .run(),
     );

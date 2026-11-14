@@ -72,7 +72,8 @@ fn silence_in_listening_ends_the_session_quietly() {
         next_state(&mut events),
         StateEvent {
             state: State::Idle,
-            session_id: None
+            session_id: None,
+            building: false
         }
     );
     assert_eq!(lucyd.tts.sentences(), Vec::<String>::new());
@@ -158,7 +159,8 @@ fn a_turn_goes_from_listening_through_thinking_and_speaking_back_to_listening() 
         next_state(&mut events),
         StateEvent {
             state: State::Listening,
-            session_id: Some(session_id.clone())
+            session_id: Some(session_id.clone()),
+            building: false
         }
     );
 
@@ -168,7 +170,8 @@ fn a_turn_goes_from_listening_through_thinking_and_speaking_back_to_listening() 
         next_state(&mut events),
         StateEvent {
             state: State::Thinking,
-            session_id: Some(session_id.clone())
+            session_id: Some(session_id.clone()),
+            building: false
         }
     );
 

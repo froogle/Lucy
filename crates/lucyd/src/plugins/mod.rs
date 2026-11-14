@@ -264,18 +264,25 @@ impl Host {
     /// says whether the user approved; `Err` says why they couldn't be
     /// asked.
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
-        self.ask_approval(name, false).await
+        self.ask_approval(name, None).await
     }
 
     /// Asks the user's Approval as `request_approval` does, once neither
-    /// Lucy nor the user is speaking.
-    pub async fn request_approval_when_quiet(&self, name: &str) -> Result<bool, String> {
-        self.ask_approval(name, true).await
+    /// Lucy nor the user is speaking. With no Session open, it waits for
+    /// the next one, showing `kept` meanwhile.
+    pub async fn request_approval_when_quiet(
+        &self,
+        name: &str,
+        kept: Notification,
+    ) -> Result<bool, String> {
+        self.ask_approval(name, Some(kept)).await
     }
 
-    async fn ask_approval(&self, name: &str, quiet: bool) -> Result<bool, String> {
+    /// `kept`: ask once neither side is speaking, at the next Session if
+    /// none is open, showing this meanwhile.
+    async fn ask_approval(&self, name: &str, kept: Option<Notification>) -> Result<bool, String> {
         const NO_SESSION: &str = "no Session is open to ask in";
-        if self.session.lock().unwrap().upgrade().is_none() {
+        if kept.is_none() && self.session.lock().unwrap().upgrade().is_none() {
             return Err(NO_SESSION.into());
         }
         let candidate = self.candidate(name).await?;
@@ -300,10 +307,11 @@ impl Host {
             prompt,
             expects: Expects::Yes,
         };
-        let answer = if quiet {
-            runner::ask_when_quiet(&self.commands, question, shown).await
-        } else {
-            runner::ask(&self.commands, question, shown).await
+        let answer = match kept {
+            Some(kept) => {
+                runner::ask_when_quiet_or_next_session(&self.commands, question, shown, kept).await
+            }
+            None => runner::ask(&self.commands, question, shown).await,
         };
         match answer {
             Some(Answer::Yes) => {}

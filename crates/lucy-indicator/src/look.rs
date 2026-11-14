@@ -16,6 +16,8 @@ pub struct Indicator {
     level: f32,
     /// When the red flash of an error ends.
     flash_until: Option<f32>,
+    /// An Authoring build is running: a dot in the corner.
+    building: bool,
 }
 
 impl Indicator {
@@ -25,6 +27,7 @@ impl Indicator {
             state: State::Idle,
             level: 0.0,
             flash_until: None,
+            building: false,
         }
     }
 
@@ -36,6 +39,11 @@ impl Indicator {
     /// lucyd published the voice level `rms`.
     pub fn on_level(&mut self, rms: f32) {
         self.level = rms;
+    }
+
+    /// lucyd published whether an Authoring build is running.
+    pub fn on_building(&mut self, building: bool) {
+        self.building = building;
     }
 
     /// lucyd published `state` at time `t`, in seconds.
@@ -62,6 +70,9 @@ impl Indicator {
             State::Speaking => speaking(&mut canvas, self.palette.accent, self.level),
             State::Confirming => confirming(&mut canvas, self.palette.warning, t),
         }
+        if self.building {
+            building(&mut canvas, self.palette.accent);
+        }
         Some(canvas)
     }
 }
@@ -74,6 +85,18 @@ const FLASH: f32 = 0.6;
 /// A red disc that fades as `left` runs from 1 to 0.
 fn flash(canvas: &mut Pixmap, colour: Color, left: f32) {
     disc(canvas, 16.0, with_alpha(colour, 0.4 + 0.6 * left));
+}
+
+/// The "building" mark: a dot in the top-right corner.
+fn building(canvas: &mut Pixmap, colour: Color) {
+    let dot = PathBuilder::from_circle(SIZE as f32 - 5.0, 5.0, 4.0).expect("positive radius");
+    canvas.fill_path(
+        &dot,
+        &paint(colour),
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
 }
 
 /// A disc and ring that pulse once a second, quicker than Listening.
@@ -238,6 +261,25 @@ mod tests {
         let mut indicator = Indicator::new(palette());
         indicator.on_state(state, 0.0);
         indicator.draw(t)
+    }
+
+    #[test]
+    fn a_build_adds_a_mark_in_the_corner_but_idle_stays_hidden() {
+        let corner = |frame: &Pixmap| {
+            (SIZE - 8..SIZE)
+                .flat_map(|x| (0..8).map(move |y| (x, y)))
+                .filter(|&(x, y)| frame.pixel(x, y).is_some_and(|p| p.alpha() >= 64))
+                .count()
+        };
+        let mut indicator = Indicator::new(palette());
+        indicator.on_state(State::Listening, 0.0);
+        assert_eq!(corner(&indicator.draw(0.0).expect("shown")), 0);
+
+        indicator.on_building(true);
+        assert!(corner(&indicator.draw(0.0).expect("shown")) > 10);
+
+        indicator.on_state(State::Idle, 0.0);
+        assert!(indicator.draw(0.0).is_none());
     }
 
     #[test]

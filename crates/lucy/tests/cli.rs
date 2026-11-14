@@ -86,7 +86,7 @@ fn events_prints_the_raw_ndjson_stream() {
         serde_json::json!({
             "jsonrpc": "2.0",
             "method": "state",
-            "params": {"state": "idle", "session_id": null},
+            "params": {"state": "idle", "session_id": null, "building": false},
         })
     );
 }

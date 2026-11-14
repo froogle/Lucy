@@ -29,6 +29,7 @@ pub struct Config {
     pub wake_word: WakeWord,
     pub confirmation: Confirmation,
     pub barge_in: BargeIn,
+    pub authoring: Authoring,
 }
 
 impl Default for Config {
@@ -54,6 +55,7 @@ impl Default for Config {
             wake_word: WakeWord::default(),
             confirmation: Confirmation::default(),
             barge_in: BargeIn::default(),
+            authoring: Authoring::default(),
         }
     }
 }
@@ -488,6 +490,25 @@ impl Default for Confirmation {
     }
 }
 
+/// `[authoring]`: how Lucy builds Plugins.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Authoring {
+    /// Seconds a build may work before it stops, its staging kept.
+    pub budget_secs: f64,
+    /// Show the builder's progress lines as notifications.
+    pub progress_notifications: bool,
+}
+
+impl Default for Authoring {
+    fn default() -> Self {
+        Authoring {
+            budget_secs: 20.0 * 60.0,
+            progress_notifications: true,
+        }
+    }
+}
+
 /// `[desktop]`
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -692,6 +713,18 @@ mod tests {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "[session]\nsilence_timeout_secs = 45\n").unwrap();
         assert_eq!(load(&path).unwrap().session.silence_timeout_secs, 45.0);
+    }
+
+    #[test]
+    fn a_build_has_twenty_minutes_and_shows_progress_unless_config_says_otherwise() {
+        let defaults = Config::default().authoring;
+        assert_eq!(defaults.budget_secs, 1200.0);
+        assert!(defaults.progress_notifications);
+
+        let config = parse("[authoring]\nbudget_secs = 60\nprogress_notifications = false\n");
+
+        assert_eq!(config.authoring.budget_secs, 60.0);
+        assert!(!config.authoring.progress_notifications);
     }
 
     #[test]

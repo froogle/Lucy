@@ -105,6 +105,10 @@ pub struct Status {
     pub state: State,
     /// The current Session, if one is open.
     pub session_id: Option<String>,
+    /// An Authoring build is running, with or without a Session: the
+    /// Indicator adds a "building" mark.
+    #[serde(default)]
+    pub building: bool,
 }
 
 /// Lucy's Session state.
