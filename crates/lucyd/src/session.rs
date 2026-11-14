@@ -247,8 +247,7 @@ impl Session {
                     // No speech recognised: keep listening, timer not reset.
                     return vec![];
                 }
-                // Matched as a yes-phrase is: the whole utterance.
-                if self.building && is_yes(text, &[CANCEL_IT.to_owned()]) {
+                if self.building && is_phrase(text, CANCEL_IT) {
                     self.sentence = BUILD_STOPPED.to_owned();
                     let mut outputs = vec![Output::CancelBuild];
                     outputs.extend(self.speak_sentence());
@@ -437,17 +436,22 @@ fn push_sentence(heard: &mut String, sentence: &str) {
     heard.push_str(sentence);
 }
 
-/// Whether `reply` is a clear yes: one of `phrases`, ignoring case,
-/// punctuation and spacing.
+/// Whether `reply` is a clear yes: one of `phrases`.
 fn is_yes(reply: &str, phrases: &[String]) -> bool {
+    phrases.iter().any(|phrase| is_phrase(reply, phrase))
+}
+
+/// Whether the whole of `utterance` is `phrase`, ignoring case,
+/// punctuation and spacing.
+fn is_phrase(utterance: &str, phrase: &str) -> bool {
     let words = |text: &str| -> Vec<String> {
         text.split(|c: char| !c.is_alphanumeric() && c != '\'')
             .filter(|word| !word.is_empty())
             .map(str::to_lowercase)
             .collect()
     };
-    let reply = words(reply);
-    !reply.is_empty() && phrases.iter().any(|phrase| words(phrase) == reply)
+    let utterance = words(utterance);
+    !utterance.is_empty() && words(phrase) == utterance
 }
 
 #[cfg(test)]

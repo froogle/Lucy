@@ -41,8 +41,11 @@ const LEFT_BUTTON: u32 = 0x110;
 
 /// What the lucyd connection reports.
 pub enum Update {
-    /// Lucy's state, and whether an Authoring build is running.
-    State(State, bool),
+    State {
+        state: State,
+        /// Whether an Authoring build is running.
+        building: bool,
+    },
     /// Lucy's voice level, as RMS from 0.0 to 1.0.
     Level(f32),
     /// The connection to lucyd ended.
@@ -141,7 +144,7 @@ impl Display {
             .map_err(|e| format!("can't watch the Wayland connection: {e}"))?;
         handle
             .insert_source(updates, |event, _, app: &mut App| match event {
-                channel::Event::Msg(Update::State(state, building)) => {
+                channel::Event::Msg(Update::State { state, building }) => {
                     app.indicator.on_building(building);
                     app.on_state(state);
                 }
