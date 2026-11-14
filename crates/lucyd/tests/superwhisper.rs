@@ -94,6 +94,17 @@ fn an_utterance_is_written_as_16_khz_mono_and_its_own_result_is_read() {
 }
 
 #[test]
+fn a_null_read_while_superwhisper_is_still_transcribing_is_waited_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let stt = superwhisper(dir.path(), STARTED, RESULT);
+    std::fs::write(dir.path().join("previous"), "null").unwrap();
+
+    let text = stt.transcribe(second_of_speech()).unwrap();
+
+    assert_eq!(text, "what time is it");
+}
+
+#[test]
 fn the_utterance_file_is_removed_once_transcribed() {
     let dir = tempfile::tempdir().unwrap();
     let stt = superwhisper(dir.path(), STARTED, RESULT);

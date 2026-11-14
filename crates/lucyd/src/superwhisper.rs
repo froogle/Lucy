@@ -71,8 +71,9 @@ impl Superwhisper {
         };
         let deadline = Instant::now() + TIMEOUT;
         loop {
-            let dictation: Dictation = parse(&self.run(&["read".as_ref()])?)?;
-            if dictation.session_id == Some(session_id) {
+            // `null` until Superwhisper has a dictation to show.
+            let dictation: Option<Dictation> = parse(&self.run(&["read".as_ref()])?)?;
+            if let Some(dictation) = dictation.filter(|d| d.session_id == Some(session_id)) {
                 return dictation.transcript();
             }
             if Instant::now() >= deadline {
