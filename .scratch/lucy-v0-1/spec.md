@@ -148,7 +148,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 97. As a user, I want Lucy to build a Plugin herself when none fits my request, so that she gains new abilities by being asked.
 98. As a user, I want her to ask only what only I can answer (where my photos are, which platform, a sign-in), never how to connect, so that I'm not doing her job.
 99. As a user, I want her to say once "This is going to take a few minutes" and keep the Session open, so that I can ask other things meanwhile.
-100. As a user, I want build progress shown as notifications and in the TUI but never spoken, with a setting to switch the notifications off, so that progress doesn't interrupt me.
+100. As a user, I want build progress shown as notifications but never spoken, with a setting to switch the notifications off, so that progress doesn't interrupt me.
 101. As a user, I want the Indicator to show a "building" mark while a build runs, so that I know work is going on.
 102. As a user, I want her questions and the Approval to wait until neither of us is speaking, so that she doesn't cut me off.
 103. As a user, I want the authoring Delegate sandboxed, with no access to my data before Approval, so that unapproved code never sees my files.
@@ -345,7 +345,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 - The fast tier clarifies what only the user knows, then calls `request_plugin`. lucyd spawns the advanced-tier Delegate through the same native client as Thinking (ADR 0002 amendment), with the goal and the original request stored alongside it. The Delegate's system prompt is the shipped authoring brief: permitted access only, `cannot` when access isn't permitted, fixtures only, Rust by default. It starts from the shipped template folder.
 - **Delegate sandbox (Landlock):** read/write only to the build staging dir (under the Plugins folder's `.build/<name>/`), toolchain caches, and the CLI's own config dir; read-only system and toolchain paths; open network; no user data.
 - `submit_plugin`: lucyd builds, checks the Manifest against `tools/list`, and runs the Delegate's tests. On a pass the Plugin is awaiting Approval, and Lucy speaks the Approval summary straight away (Confirming). On a yes, she answers the stored original request and asks "Is that the one?". A no is fed back as a fix through the update flow.
-- Lucy speaks only for `ask_user`, `cannot` and the Approval, and waits until nobody is speaking. `report_progress` goes to notifications (config toggle, default on) and the TUI.
+- Lucy speaks only for `ask_user`, `cannot` and the Approval, and waits until nobody is speaking. `report_progress` goes to notifications only (config toggle, default on), never the TUI (user decision, slice 6).
 - **Limits:** 20 min wall-clock per build (configurable), staging kept for retry, one build at a time with a queue of one. Builds survive Session end; Approval and parked questions are offered at the next Session start. Only "cancel it" stops a build.
 - No Plugin SDK crate in v0.1.
 

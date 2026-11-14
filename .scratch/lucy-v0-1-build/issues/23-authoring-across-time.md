@@ -2,7 +2,7 @@
 
 **What to build:** Builds behave well over minutes and across Sessions.
 - While a build runs, the silence timer is paused and the Indicator shows a "building" mark.
-- `report_progress` goes to notifications (config toggle, default on) and the TUI, never spoken.
+- `report_progress` goes to notifications only (config toggle, default on), never the TUI, never spoken.
 - Each build has a 20 min budget (configurable), and the staging dir is kept so "try again" resumes.
 - One build at a time, with a queue of one ("I'm already building the photos Plugin, I'll do this after").
 - Ending the Session doesn't stop a build: Lucy says she'll keep working. When it finishes she sends a notification and offers the Approval once at the start of the next Session. A parked `ask_user` is raised the same way.
