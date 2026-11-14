@@ -865,14 +865,14 @@ impl SessionTools {
         let (plugin_name, tool) = name.split_once("__")?;
         let plugin = self.working().into_iter().find(|p| p.name == plugin_name)?;
         let entry = plugin.manifest.tools.iter().find(|t| t.name == tool)?;
-        let running = self.running.lock().await.contains_key(plugin_name);
-        let credentials = match running {
-            true => Vec::new(),
-            false => match self.host.credentials(&plugin).await {
-                Ok(credentials) => credentials,
+        // Read before the Confirmation, which a call missing them can't use.
+        let mut credentials = None;
+        if !self.running.lock().await.contains_key(plugin_name) {
+            match self.host.credentials(&plugin).await {
+                Ok(read) => credentials = Some(read),
                 Err(missing) => return Some(mcp::error(missing)),
-            },
-        };
+            }
+        }
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
         }
@@ -881,6 +881,14 @@ impl SessionTools {
             let peer = {
                 let mut running = self.running.lock().await;
                 if !running.contains_key(plugin_name) {
+                    // It may have stopped since: it always starts with them.
+                    let credentials = match credentials.take() {
+                        Some(read) => read,
+                        None => match self.host.credentials(&plugin).await {
+                            Ok(read) => read,
+                            Err(missing) => return Ok(mcp::error(missing)),
+                        },
+                    };
                     let client = self.host.start(&plugin, &credentials).await?;
                     running.insert(plugin_name.to_owned(), client);
                 }
