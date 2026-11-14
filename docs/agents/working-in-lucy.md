@@ -72,6 +72,8 @@ Socket paths are limited to about 108 bytes. The session scratchpad path is too 
 
 The `tdd` skill asks the user to approve seams first, and a subagent can't ask. The ticket's acceptance checks driven through the harness, plus the adapter traits above, are the approved seams. A ticket that needs a new adapter trait names it in the implementer's report. The ticket's `Seams:` line says which shared seams it owns and which it only uses. Report only once every background job you started has finished or been stopped; a running one keeps your worktree locked.
 
+Worktrees share the main checkout's `target/` and build with 8 jobs, through `CARGO_TARGET_DIR` and `CARGO_BUILD_JOBS` in the machine's `.claude/settings.local.json`. Don't override them. "Blocking waiting for file lock on build directory" means another worktree is building; wait for it.
+
 ## Merging
 
 A merge that combines two tickets' changes to the same seam (both edit one adapter trait, the Session start, the notification fallback) gets one harness test of the combination before the merge commit. Each ticket's own tests pass alone; the combination is where the bugs were in slice 2 (a refused Provider swallowing the first-run introduction; a TTS-failure notification replacing the End button).

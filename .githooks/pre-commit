@@ -8,4 +8,7 @@ if ! git diff --cached --name-only --diff-filter=ACMR \
     | grep -qvE '(\.md$|^\.scratch/|^docs/)'; then
     exec "$root/scripts/check-glossary-terms.sh" "$root"
 fi
-exec "$root/scripts/check.sh"
+# At low CPU and IO priority, so the desktop stays usable while it runs.
+quiet=(nice -n 10)
+command -v ionice >/dev/null && quiet+=(ionice -c2 -n7)
+exec "${quiet[@]}" "$root/scripts/check.sh"
