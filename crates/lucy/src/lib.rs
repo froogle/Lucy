@@ -2,6 +2,7 @@
 //! `lucy setup` ([`setup`]). Each is a model driven by key presses and
 //! drawn with ratatui, so tests drive them with scripted keys.
 
+pub mod credentials;
 pub mod home;
 mod piper;
 pub mod setup;

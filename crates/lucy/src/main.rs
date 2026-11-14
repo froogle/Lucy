@@ -29,6 +29,12 @@ enum Command {
         #[arg(long, hide = true, default_value = "/etc/os-release")]
         os_release: PathBuf,
     },
+    /// Enter the credentials a Plugin declares, such as an API key. They
+    /// go into your keyring, never to Lucy's model.
+    Credentials {
+        /// The Plugin's name.
+        plugin: String,
+    },
     /// Print a snapshot of lucyd's state.
     Status,
     /// Print lucyd's raw event stream as NDJSON, for client authors.
@@ -58,6 +64,7 @@ fn main() -> ExitCode {
     let result = match cli.command {
         None => return home_page(),
         Some(Command::Setup { os_release }) => return setup_page(&os_release),
+        Some(Command::Credentials { plugin }) => return credentials_page(&plugin),
         Some(Command::Status) => status(),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
@@ -133,6 +140,30 @@ fn setup_page(os_release: &Path) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("lucy: setup: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn credentials_page(plugin: &str) -> ExitCode {
+    let terminal = match full_screen("lucy credentials") {
+        Ok(terminal) => terminal,
+        Err(code) => return code,
+    };
+    let env = Env::of_process(Path::new("/etc/os-release"));
+    let mut keys = Console;
+    let mut ui = Ui::new(terminal, &mut keys, "Lucy credentials");
+    let store = lucy_config::credentials::SecretService;
+    let result = lucy::credentials::run(&mut ui, &env, plugin, &store);
+    ratatui::restore();
+    // The transcript holds names only, never what was typed.
+    for line in &ui.screen.lines {
+        println!("{line}");
+    }
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("lucy: credentials: {e}");
             ExitCode::FAILURE
         }
     }

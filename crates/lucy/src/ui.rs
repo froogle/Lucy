@@ -180,6 +180,11 @@ pub enum Prompt {
         default: String,
         typed: String,
     },
+    /// Text typed hidden, never drawn or kept in the transcript.
+    Secret {
+        question: String,
+        typed: String,
+    },
 }
 
 /// What a question was answered with.
@@ -210,6 +215,13 @@ impl Prompt {
         Prompt::Ask {
             question: question.to_owned(),
             default: default.to_owned(),
+            typed: String::new(),
+        }
+    }
+
+    pub fn secret(question: &str) -> Prompt {
+        Prompt::Secret {
+            question: question.to_owned(),
             typed: String::new(),
         }
     }
@@ -259,6 +271,18 @@ impl Prompt {
                 })),
                 _ => None,
             },
+            Prompt::Secret { typed, .. } => match key.code {
+                KeyCode::Char(c) => {
+                    typed.push(c);
+                    None
+                }
+                KeyCode::Backspace => {
+                    typed.pop();
+                    None
+                }
+                KeyCode::Enter => Some(Answer::Text(std::mem::take(typed))),
+                _ => None,
+            },
         }
     }
 
@@ -272,6 +296,10 @@ impl Prompt {
                 format!("{question} {}", if *yes { "yes" } else { "no" })
             }
             (Prompt::Ask { question, .. }, Answer::Text(text)) => format!("{question} {text}"),
+            (Prompt::Secret { question, .. }, Answer::Text(text)) => match text.is_empty() {
+                true => format!("{question} (nothing typed)"),
+                false => format!("{question} (typed, hidden)"),
+            },
             _ => unreachable!("an answer of another kind"),
         }
     }
@@ -286,6 +314,7 @@ impl Prompt {
             Prompt::Ask {
                 question, default, ..
             } => vec![question.clone(), default.clone()],
+            Prompt::Secret { question, .. } => vec![question.clone()],
         }
     }
 }
@@ -458,6 +487,16 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> &'static str {
             frame.set_cursor_position((x.min(area.right().saturating_sub(2)), area.y + 1));
             "Type, then Enter; empty takes the suggestion."
         }
+        Prompt::Secret { question, typed } => {
+            let stars = "*".repeat(typed.chars().count());
+            frame.render_widget(
+                Paragraph::new(stars).block(Block::bordered().title(question.as_str())),
+                area,
+            );
+            let x = area.x + 1 + typed.chars().count() as u16;
+            frame.set_cursor_position((x.min(area.right().saturating_sub(2)), area.y + 1));
+            "Type or paste it (hidden), then Enter."
+        }
     }
 }
 
@@ -530,6 +569,15 @@ impl<'k, B: Backend> Ui<'k, B> {
     /// Text typed in answer to `question`, `default` if none.
     pub fn ask(&mut self, question: &str, default: &str) -> Result<String, Stop> {
         match self.answer(Prompt::ask(question, default))? {
+            Answer::Text(text) => Ok(text),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Text typed hidden in answer to `question`; empty if none. It is never
+    /// drawn, and the transcript keeps only whether something was typed.
+    pub fn secret(&mut self, question: &str) -> Result<String, Stop> {
+        match self.answer(Prompt::secret(question))? {
             Answer::Text(text) => Ok(text),
             _ => unreachable!(),
         }
