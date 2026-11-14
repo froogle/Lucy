@@ -172,17 +172,6 @@ pub fn unasked(question: &str) -> Notification {
     }
 }
 
-/// What Lucy was to tell the user in a Turn of her own, with no Session
-/// open to tell it in.
-pub fn untold(text: &str) -> Notification {
-    Notification {
-        summary: "Lucy couldn't tell you".into(),
-        body: text.to_owned(),
-        action: None,
-        kind: NotificationKind::Reply,
-    }
-}
-
 /// Pinned devices that weren't there at Session start, so the defaults
 /// stand in. The pins stay.
 pub fn devices_missing(missing: &[(Direction, String)]) -> Notification {

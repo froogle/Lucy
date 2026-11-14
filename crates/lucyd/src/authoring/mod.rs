@@ -343,10 +343,17 @@ impl Authoring {
             match self.start(next) {
                 Ok(next) => builds.current = Some(next),
                 Err(reason) => {
-                    let _ = self.commands.send(Command::Turn(format!(
-                        "{PLUGIN_BUILD} The {name} Plugin, which was queued, couldn't be \
-                         started: {reason}\n\nTell the user plainly, in a sentence."
-                    )));
+                    let kept = build_notification(
+                        format!("Lucy couldn't start the {name} Plugin"),
+                        format!("{reason}\nShe'll tell you more at your next Session."),
+                    );
+                    let _ = self.commands.send(Command::TurnOrNextSession(
+                        format!(
+                            "{PLUGIN_BUILD} The {name} Plugin, which was queued, couldn't be \
+                             started: {reason}\n\nTell the user plainly, in a sentence."
+                        ),
+                        kept,
+                    ));
                 }
             }
         }
@@ -780,12 +787,22 @@ impl Build {
                 return self.finish();
             }
         }
-        let _ = authoring.commands.send(Command::Turn(format!(
-            "{PLUGIN_BUILD} The user approved the new {} Plugin, and its tools are \
-             yours now. Use it to answer the request it was built for, as if they'd just \
-             asked: \"{}\". Don't ask whether that's what they wanted; Lucy asks that next.",
-            self.name, self.request
-        )));
+        let kept = build_notification(
+            format!("The {} Plugin is approved", self.name),
+            format!(
+                "Lucy will answer \"{}\" with it at your next Session.",
+                self.request
+            ),
+        );
+        let _ = authoring.commands.send(Command::TurnOrNextSession(
+            format!(
+                "{PLUGIN_BUILD} The user approved the new {} Plugin, and its tools are \
+                 yours now. Use it to answer the request it was built for, as if they'd just \
+                 asked: \"{}\". Don't ask whether that's what they wanted; Lucy asks that next.",
+                self.name, self.request
+            ),
+            kept,
+        ));
         let question = Question {
             prompt: IS_THAT_THE_ONE.to_owned(),
             expects: Expects::YesOrWords,

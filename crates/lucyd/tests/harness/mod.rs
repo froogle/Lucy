@@ -426,6 +426,15 @@ impl Harness {
         self.end_utterance();
     }
 
+    /// The user says something that the fake STT will hear as `transcript`,
+    /// and goes on speaking: the next `say` ends it.
+    pub fn say_and_go_on(&self, transcript: &str) {
+        self.start_speaking();
+        self.stt.script(transcript);
+        let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
+        speech.send(SpeechSegment { samples: vec![] }).unwrap();
+    }
+
     /// The user says something and the fake STT fails on it.
     pub fn say_but_stt_fails(&self) {
         self.stt.script_failure();

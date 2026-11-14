@@ -48,11 +48,9 @@ pub enum Command {
     /// Lucy says this herself, in the open Session, straight away.
     Say(String),
     /// Starts a Turn with these instructions in the open Session, once
-    /// neither Lucy nor the user is speaking. With no open Session, they
-    /// are shown instead.
-    Turn(String),
-    /// As `Turn`, but with no Session open, or if it ends first, the Turn
-    /// waits for the next Session and this is shown meanwhile.
+    /// neither Lucy nor the user is speaking. With no Session open, or if
+    /// it ends first, the Turn waits for the next Session and this is shown
+    /// meanwhile: the instructions are for the model, never shown.
     TurnOrNextSession(String, Notification),
     /// `test.voice_preview`: say a sentence outside any Session.
     VoicePreview(VoicePreview),
@@ -261,8 +259,8 @@ impl Runner {
     }
 
     /// Handles `command` outside a Session: an end is refused, a question
-    /// kept for the next Session is kept, and any other question or Turn
-    /// meant for the user is shown instead. Returns any other command.
+    /// or Turn kept for the next Session is kept, and any other question is
+    /// shown instead. Returns any other command.
     fn outside_session(&mut self, command: Command) -> Option<Command> {
         match command {
             Command::End(reply) | Command::EndAfterSpeech(reply) => {
@@ -271,7 +269,6 @@ impl Runner {
             Command::Ask(ask) if ask.when.keeps() => self.keep(Parked::Ask(ask)),
             // `reply` is dropped unanswered: no one can answer.
             Command::Ask(ask) => self.notify(notifications::unasked(&ask.question.prompt)),
-            Command::Turn(text) => self.notify(notifications::untold(&text)),
             Command::TurnOrNextSession(text, kept) => {
                 self.keep(Parked::Turn(text, When::QuietOrNextSession(kept)));
             }
@@ -312,12 +309,10 @@ impl Runner {
         let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
         // What wasn't said: what is kept for the next Session waits for
-        // it, a Turn's instructions are shown, and questions go unasked.
+        // it, and questions go unasked.
         for mut parked in std::mem::take(&mut self.parked) {
             if parked.when().keeps() {
                 self.keep(parked);
-            } else if let Parked::Turn(text, _) = parked {
-                self.notify(notifications::untold(&text));
             }
         }
         if let Some(hearing) = &mut self.adapters.hearing {
@@ -476,10 +471,6 @@ impl Runner {
                         continue;
                     }
                     Some(Command::Say(text)) => Input::Say(text),
-                    Some(Command::Turn(text)) => {
-                        self.parked.push_back(Parked::Turn(text, When::Quiet));
-                        continue;
-                    }
                     Some(Command::TurnOrNextSession(text, kept)) => {
                         let when = When::QuietOrNextSession(kept);
                         self.parked.push_back(Parked::Turn(text, when));

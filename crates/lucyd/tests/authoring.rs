@@ -433,6 +433,46 @@ fn with_no_session_open_cannot_is_shown_plainly_and_told_once_at_the_next_sessio
 }
 
 #[test]
+fn with_no_session_open_a_queued_build_that_cant_start_is_shown_plainly_and_told_once_later() {
+    const TAKEN: &str = "there's already a Plugin called music that Lucy didn't write";
+    let lucyd = Harness::start();
+    let mut events = request_photos(&lucyd);
+    let delegate = &lucyd.thinking.delegate;
+    delegate.next_turn();
+    ok(Ok(request_music(&lucyd)));
+    assert_eq!(lucyd.tts.next_sentence(), QUEUED);
+    lucyd.tts.finish_playing();
+    end_mid_build(&lucyd);
+    until_state(&mut events, State::Idle);
+    let theirs = photos_manifest("play music").replace("\"photos\"", "\"music\"");
+    lucyd.install_plugin("music", &theirs.replace("\"lucy\"", "\"ann\""));
+
+    ok(delegate.call_tool_with(
+        "cannot",
+        json!({"reason": "no API", "fallback": "open the website"}),
+    ));
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
+    assert_eq!(shown.summary, "Lucy can't build the photos Plugin");
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
+    assert_eq!(shown.summary, "Lucy couldn't start the music Plugin");
+    assert_eq!(
+        shown.body,
+        format!("I can't build it: {TAKEN}.\nShe'll tell you more at your next Session.")
+    );
+
+    lucyd.client().start_session().unwrap();
+    lucyd.thinking.next_turn();
+    lucyd.thinking.turn_end();
+    let told = lucyd.thinking.next_turn();
+    assert!(told.contains(TAKEN), "{told}");
+    lucyd.thinking.turn_end();
+    lucyd.client().end_session().unwrap();
+    lucyd.client().start_session().unwrap();
+    lucyd.barrier();
+    lucyd.thinking.assert_no_turn();
+}
+
+#[test]
 fn the_building_mark_is_off_while_a_build_waits_on_the_user() {
     let lucyd = Harness::start();
     let mut events = request_photos(&lucyd);
@@ -711,6 +751,44 @@ fn a_passing_build_is_approved_answered_and_a_no_to_is_that_the_one_is_fixed() {
     assert!(delegate
         .call_tool_with("report_progress", json!({"text": "hi"}))
         .is_err());
+}
+
+#[test]
+fn an_approval_whose_session_ends_before_the_answer_is_shown_plainly_and_answered_once_later() {
+    let lucyd = Harness::start();
+    let mut events = request_photos(&lucyd);
+    let delegate = &lucyd.thinking.delegate;
+    delegate.next_turn();
+    submit(&lucyd, &delegate.workspace().dir, "find photos by place");
+    until_state(&mut events, State::Confirming);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+
+    // The user goes on speaking, so the answer waits; then the Session ends.
+    lucyd.say_and_go_on("yes");
+    until_state(&mut events, State::Listening);
+    lucyd.client().end_session().unwrap();
+    let shown = loop {
+        let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
+        if shown.summary != "Lucy is still building the photos Plugin" {
+            break shown;
+        }
+    };
+    assert_eq!(shown.summary, "The photos Plugin is approved");
+    assert_eq!(
+        shown.body,
+        format!("Lucy will answer \"{REQUEST}\" with it at your next Session.")
+    );
+    lucyd.mumble();
+
+    lucyd.client().start_session().unwrap();
+    let told = lucyd.thinking.next_turn();
+    assert!(told.contains(REQUEST), "{told}");
+    lucyd.thinking.turn_end();
+    lucyd.client().end_session().unwrap();
+    lucyd.client().start_session().unwrap();
+    lucyd.barrier();
+    lucyd.thinking.assert_no_turn();
 }
 
 #[test]
