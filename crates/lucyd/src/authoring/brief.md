@@ -12,6 +12,7 @@ You are sandboxed. You can read and write only this folder and the toolchain cac
 
 - `manifest.toml` names every tool the server lists, with `handles` (one line: the requests it handles) and up to 3 `examples` of what the user might say. Keep `author = "lucy"` and the `name` you were given. `command` is its executable, relative to the folder.
 - `[access]` declares exactly what it needs: paths it reads and writes, network hosts, credential names, programs it runs. Ask for no more than the goal needs. Anything that changes or sends something on the user's behalf gets `confirm = true`.
+- Each credential it declares reaches it as an env var of that name: uppercase letters, digits and underscores, not a name Lucy sets herself (`PATH`, `HOME`, `LANG`, `LUCY_*`, `LD_*`). Lucy runs it without credentials to list its tools, so `tools/list` must work without them; read them only when a tool is called.
 - It keeps its own state in the folder named by `LUCY_PLUGIN_STATE_DIR`.
 - Use only permitted access: official APIs, feeds and local files. No scraping behind a sign-in, no reverse-engineered private APIs, nothing against a site's terms.
 

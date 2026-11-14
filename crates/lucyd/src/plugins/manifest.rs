@@ -103,8 +103,35 @@ impl Manifest {
                 return Err(format!("its tool {} has more than 3 examples", tool.name));
             }
         }
+        for credential in &self.access.credentials {
+            credential_name(credential)?;
+        }
         Ok(())
     }
+}
+
+/// Checks that `name` can be passed as an env var without replacing one
+/// Lucy sets for every Plugin, or the dynamic loader reads.
+fn credential_name(name: &str) -> Result<(), String> {
+    let is_env_name = name.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    if !is_env_name {
+        return Err(format!(
+            "its credential {name:?} must be an env var name: uppercase letters, digits and \
+             underscores, not starting with a digit"
+        ));
+    }
+    let lucys = ["PATH", "HOME", "LANG"].contains(&name)
+        || name.starts_with("LUCY_")
+        || name.starts_with("LD_");
+    if lucys {
+        return Err(format!(
+            "its credential {name:?} names an env var Lucy or the system sets"
+        ));
+    }
+    Ok(())
 }
 
 fn one_line(what: &str, text: &str) -> Result<(), String> {

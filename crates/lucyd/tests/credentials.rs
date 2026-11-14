@@ -4,6 +4,7 @@
 mod harness;
 
 use harness::Harness;
+use lucy_ipc::PluginStatus;
 use serde_json::json;
 
 /// A Manifest for the fixture Plugin offering the `env` tool, declaring
@@ -165,4 +166,35 @@ fn credential_values_never_reach_the_bus_or_the_model() {
     lucyd.assert_nothing_private_on_bus();
     let config = std::fs::read_to_string(lucyd.config_path()).unwrap_or_default();
     assert!(!config.contains("w-secret-123"));
+}
+
+#[test]
+fn a_manifest_declaring_a_credential_lucy_sets_herself_or_no_env_var_name_is_broken() {
+    let lucyd = Harness::start();
+    let refused = [
+        "PATH",
+        "HOME",
+        "LANG",
+        "LUCY_PLUGIN_STATE_DIR",
+        "LD_PRELOAD",
+    ];
+    let invalid = ["weather-key", "1KEY", "A=B", ""];
+    let declared: Vec<&str> = refused.iter().chain(&invalid).copied().collect();
+    for (i, credential) in declared.iter().enumerate() {
+        let name = format!("plugin{i}");
+        lucyd.install_plugin(&name, &manifest(&name, &[credential]));
+    }
+    lucyd.install_plugin("weather", &manifest("weather", &["WEATHER_KEY", "_CITY2"]));
+
+    let listed = lucyd.client().plugins().unwrap().plugins;
+
+    for (i, credential) in declared.iter().enumerate() {
+        let name = format!("plugin{i}");
+        let plugin = listed.iter().find(|p| p.name == name).unwrap();
+        assert_eq!(plugin.status, PluginStatus::Broken, "{credential}");
+        let problem = plugin.problem.as_deref().unwrap_or_default();
+        assert!(problem.contains(&format!("{credential:?}")), "{problem}");
+    }
+    let weather = listed.iter().find(|p| p.name == "weather").unwrap();
+    assert_ne!(weather.status, PluginStatus::Broken, "{weather:?}");
 }

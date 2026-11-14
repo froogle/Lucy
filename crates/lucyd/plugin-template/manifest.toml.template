@@ -18,5 +18,7 @@ confirm = false
 read = []          # paths it reads, such as "~/Pictures"
 write = []         # paths it writes
 network = []       # hosts it reaches
-credentials = []   # names of secrets it needs, passed as env vars
+# Names of secrets it needs, passed as env vars, such as "PHOTOS_API_KEY".
+# Listing its tools runs it without them: read them only in a tool call.
+credentials = []
 commands = []      # programs it runs, such as "xdg-open"
