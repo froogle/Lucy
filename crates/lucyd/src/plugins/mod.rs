@@ -29,6 +29,7 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{CredentialStore, Notification, NotificationKind};
 use crate::mcp;
+use crate::model_text::CALL_FINISHED;
 use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
@@ -919,7 +920,7 @@ impl SessionTools {
             if barge_ins.has_changed().unwrap_or(false) {
                 if let Ok(result) = &outcome {
                     self.finished.lock().unwrap().push(format!(
-                        "[A confirmed call finished after the user cut in: {name} returned: {}]",
+                        "{CALL_FINISHED} {name} returned: {}]",
                         mcp::result_text(result)
                     ));
                 }

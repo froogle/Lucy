@@ -13,6 +13,7 @@ mod ipc;
 pub mod launcher;
 mod limits;
 mod mcp;
+pub mod model_text;
 mod notifications;
 pub mod notify_send;
 mod persona;

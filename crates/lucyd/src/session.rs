@@ -7,6 +7,7 @@ use lucy_ipc::State;
 
 use crate::adapters::ThinkingEvent;
 use crate::authoring::Building;
+use crate::model_text::INTERRUPTED;
 
 pub enum Input {
     /// Lucy speaks first: start a Turn with these instructions.
@@ -258,9 +259,9 @@ impl Session {
                 self.heard.clear();
                 self.turn = match self.interrupted.take() {
                     // Cut off before anything played.
-                    Some(heard) if heard.is_empty() => format!("[You were interrupted]\n{text}"),
+                    Some(heard) if heard.is_empty() => format!("{INTERRUPTED}]\n{text}"),
                     Some(heard) => {
-                        format!("[You were interrupted; the user heard up to: \"{heard}\"]\n{text}")
+                        format!("{INTERRUPTED}; the user heard up to: \"{heard}\"]\n{text}")
                     }
                     None => text.to_owned(),
                 };

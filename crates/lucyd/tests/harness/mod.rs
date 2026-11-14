@@ -34,6 +34,8 @@ const WAIT: Duration = Duration::from_secs(5);
 pub struct Harness {
     // Dropped first, so lucyd stops before its runtime dir goes away.
     daemon: lucyd::Daemon,
+    /// Dropped once lucyd has stopped: checks every notification it showed.
+    _no_model_text: NoModelText,
     /// Where `say` sends utterances, unless lucyd hears through `mic`.
     speech: Option<mpsc::UnboundedSender<SpeechSegment>>,
     /// Where `wake` sends scripted detections, unless lucyd hears through
@@ -227,6 +229,7 @@ impl Harness {
         .expect("lucyd starts");
         let harness = Harness {
             daemon,
+            _no_model_text: NoModelText(notifier.clone()),
             speech,
             wake_word,
             speaking,
@@ -1332,6 +1335,8 @@ pub struct FakeNotifier {
     shown: Arc<Mutex<std_mpsc::Receiver<Notification>>>,
     /// The last notification that offered an action.
     offered: Arc<Mutex<Option<OfferedAction>>>,
+    /// Every notification lucyd showed, read or not.
+    every: Arc<Mutex<Vec<Notification>>>,
 }
 
 /// An action, and where lucyd listens for it.
@@ -1347,6 +1352,7 @@ impl FakeNotifier {
             shown_tx,
             shown: Arc::new(Mutex::new(shown)),
             offered: Arc::default(),
+            every: Arc::default(),
         }
     }
 
@@ -1395,7 +1401,29 @@ impl Notifier for FakeNotifier {
         if let Some(action) = notification.action {
             *self.offered.lock().unwrap() = Some((action, actions));
         }
+        self.every.lock().unwrap().push(notification.clone());
         let _ = self.shown_tx.send(notification);
+    }
+}
+
+/// The "no model text in notifications" rule: no notification lucyd showed
+/// says what Lucy wrote for the model (`lucyd::model_text`). Checked for
+/// every test, when its Harness is dropped.
+struct NoModelText(FakeNotifier);
+
+impl Drop for NoModelText {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        for shown in self.0.every.lock().unwrap().iter() {
+            for marker in lucyd::model_text::MARKERS {
+                assert!(
+                    !shown.summary.contains(marker) && !shown.body.contains(marker),
+                    "a notification showed text written for the model: {shown:?}"
+                );
+            }
+        }
     }
 }
 

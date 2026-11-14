@@ -32,6 +32,7 @@ use crate::adapters::{
     ThinkingEvent, Timer, Workspace,
 };
 use crate::mcp::{error, text, tool, Caller, Relays, Token};
+use crate::model_text::PLUGIN_BUILD;
 use crate::plugins::{sandbox, Host};
 use crate::runner::{self, Command};
 use crate::session::{Answer, Expects, Question};
@@ -343,7 +344,7 @@ impl Authoring {
                 Ok(next) => builds.current = Some(next),
                 Err(reason) => {
                     let _ = self.commands.send(Command::Turn(format!(
-                        "[Lucy's Plugin build] The {name} Plugin, which was queued, couldn't be \
+                        "{PLUGIN_BUILD} The {name} Plugin, which was queued, couldn't be \
                          started: {reason}\n\nTell the user plainly, in a sentence."
                     )));
                 }
@@ -562,7 +563,7 @@ impl Build {
         let allowance = spoken_duration(self.allowance);
         self.tell(
             format!(
-                "[Lucy's Plugin build] The {} Plugin ran out of time: it wasn't done after \
+                "{PLUGIN_BUILD} The {} Plugin ran out of time: it wasn't done after \
                  {allowance}. Its work so far is kept, and asking for it again carries on from \
                  there. Tell the user plainly, in a sentence, and that they can say \"try \
                  again\".",
@@ -780,7 +781,7 @@ impl Build {
             }
         }
         let _ = authoring.commands.send(Command::Turn(format!(
-            "[Lucy's Plugin build] The user approved the new {} Plugin, and its tools are \
+            "{PLUGIN_BUILD} The user approved the new {} Plugin, and its tools are \
              yours now. Use it to answer the request it was built for, as if they'd just \
              asked: \"{}\". Don't ask whether that's what they wanted; Lucy asks that next.",
             self.name, self.request
@@ -812,7 +813,7 @@ impl Build {
         }
         self.tell(
             format!(
-                "[Lucy's Plugin build] The {} Plugin can't be built with permitted access: \
+                "{PLUGIN_BUILD} The {} Plugin can't be built with permitted access: \
                  {reason}. The best permitted fallback: {fallback}. Tell the user that limit \
                  plainly, in a sentence, and offer the fallback.",
                 self.name
@@ -847,7 +848,7 @@ impl Build {
         }
         self.tell(
             format!(
-                "[Lucy's Plugin build] The {} Plugin couldn't be built: {reason}\n\nTell the \
+                "{PLUGIN_BUILD} The {} Plugin couldn't be built: {reason}\n\nTell the \
                  user plainly, in a sentence or two, what failed.",
                 self.name
             ),
