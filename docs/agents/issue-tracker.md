@@ -7,7 +7,7 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - One feature per directory: `.scratch/<feature-slug>/`
 - The spec is `.scratch/<feature-slug>/spec.md`
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
+- Triage state is recorded as a `**Status:** <role>` line in each issue file, below **What to build** (see `triage-labels.md` for the role strings). Wayfinder tickets write plain `Status:`. `scripts/tickets.sh [issues-dir]` lists every ticket's status and blockers, for finding the frontier
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
 
 ## Slices

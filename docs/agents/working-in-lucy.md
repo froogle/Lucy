@@ -6,6 +6,8 @@ Facts about the codebase that aren't obvious from reading it.
 
 `scripts/check.sh` runs every gate: fmt, clippy, tests, the client-deps check, the glossary-term check, the lint-allow check and `cargo deny`. The pre-commit hook runs it once you've run `git config core.hooksPath .githooks`; a commit that only touches markdown, `docs/` or `.scratch/` runs just the glossary check. Commit with the hook on; `--no-verify` leaves the gates to CI.
 
+`target/` only grows (108 GB by slice 6). Between slices, with no agents running, `cargo clean` frees it; the next build is cold.
+
 ## lucyd test harness
 
 - **Where it is:** `crates/lucyd/tests/harness/mod.rs` starts lucyd in-process through `lucyd::spawn(Options { .. })` and connects through the real `lucy-ipc` client.
@@ -72,9 +74,17 @@ Socket paths are limited to about 108 bytes. The session scratchpad path is too 
 
 ## Implementer subagents
 
-The `tdd` skill asks the user to approve seams first, and a subagent can't ask. The ticket's acceptance checks driven through the harness, plus the adapter traits above, are the approved seams. A ticket that needs a new adapter trait names it in the implementer's report. The ticket's `Seams:` line says which shared seams it owns and which it only uses. Report only once every background job you started has finished or been stopped; a running one keeps your worktree locked.
+The `tdd` skill asks the user to approve seams first, and a subagent can't ask. The ticket's acceptance checks driven through the harness, plus the adapter traits above, are the approved seams. A ticket that needs a new adapter trait names it in the implementer's report. The ticket's `Seams:` line says which shared seams it owns and which it only uses.
 
-Worktrees share the main checkout's `target/` and build with 8 jobs, through `CARGO_TARGET_DIR` and `CARGO_BUILD_JOBS` in the machine's `.claude/settings.local.json`. Don't override them. "Blocking waiting for file lock on build directory" means another worktree is building; wait for it.
+The last step before reporting: stop every background Bash task you started (TaskStop each one) and confirm none remain. A running one keeps your worktree locked.
+
+Worktrees share the main checkout's `target/` and build with 8 jobs, through `CARGO_TARGET_DIR` and `CARGO_BUILD_JOBS` in the machine's `.claude/settings.local.json`. Keep them as set. "Blocking waiting for file lock on build directory" means another worktree is building; wait for it. On a new machine, create that file with its own checkout's path:
+
+```json
+{ "env": { "CARGO_TARGET_DIR": "/path/to/lucy/target", "CARGO_BUILD_JOBS": "8" } }
+```
+
+Without it, each worktree builds everything cold in its own `target/`, and parallel agents can stall the desktop.
 
 ## Merging
 
