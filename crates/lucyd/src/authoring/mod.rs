@@ -34,7 +34,7 @@ use crate::adapters::{
 use crate::mcp::{error, text, tool, Caller, Relays, Token};
 use crate::model_text::PLUGIN_BUILD;
 use crate::plugins::{sandbox, Host};
-use crate::runner::{self, Command};
+use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 
 /// The Delegate's system prompt.
@@ -807,7 +807,8 @@ impl Build {
             prompt: IS_THAT_THE_ONE.to_owned(),
             expects: Expects::YesOrWords,
         };
-        match runner::ask_when_quiet(&authoring.commands, question, None).await {
+        // Kept with the answer's Turn, which has shown that it waits.
+        match runner::ask_at(&authoring.commands, question, None, When::Kept).await {
             Some(Answer::Said(said)) => {
                 if self.advance(Stage::Approving, Stage::Working).is_ok() {
                     self.send_turn(format!(

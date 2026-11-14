@@ -426,8 +426,14 @@ impl Harness {
         self.end_utterance();
     }
 
+    /// The user stops speaking with nothing more said.
+    pub fn stop_speaking(&self) {
+        let speaking = self.speaking.as_ref().expect("lucyd hears through `mic`");
+        speaking.send_replace(false);
+    }
+
     /// The user says something that the fake STT will hear as `transcript`,
-    /// and goes on speaking: the next `say` ends it.
+    /// and goes on speaking: the next `say`, or `stop_speaking`, ends it.
     pub fn say_and_go_on(&self, transcript: &str) {
         self.start_speaking();
         self.stt.script(transcript);

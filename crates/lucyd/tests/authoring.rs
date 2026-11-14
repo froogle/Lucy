@@ -754,7 +754,8 @@ fn a_passing_build_is_approved_answered_and_a_no_to_is_that_the_one_is_fixed() {
 }
 
 #[test]
-fn an_approval_whose_session_ends_before_the_answer_is_shown_plainly_and_answered_once_later() {
+fn an_approval_whose_session_ends_before_the_answer_is_shown_plainly_then_answered_and_asked_about_once_later(
+) {
     let lucyd = Harness::start();
     let mut events = request_photos(&lucyd);
     let delegate = &lucyd.thinking.delegate;
@@ -779,16 +780,38 @@ fn an_approval_whose_session_ends_before_the_answer_is_shown_plainly_and_answere
         shown.body,
         format!("Lucy will answer \"{REQUEST}\" with it at your next Session.")
     );
-    lucyd.mumble();
+    lucyd.stop_speaking();
 
     lucyd.client().start_session().unwrap();
     let told = lucyd.thinking.next_turn();
     assert!(told.contains(REQUEST), "{told}");
+    lucyd.thinking.delta("Here's your Mount Rainier photo.");
     lucyd.thinking.turn_end();
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Here's your Mount Rainier photo."
+    );
+    lucyd.tts.finish_playing();
+    assert_eq!(lucyd.tts.next_sentence(), IS_THAT_THE_ONE);
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+
+    // A yes ends the build, as it does in the Session it was approved in.
+    let delegate = &lucyd.thinking.delegate;
+    wait_until("the build to end", || {
+        delegate
+            .call_tool_with("report_progress", json!({"text": "hi"}))
+            .is_err()
+            .then_some(())
+    });
+    delegate.assert_no_turn();
     lucyd.client().end_session().unwrap();
     lucyd.client().start_session().unwrap();
     lucyd.barrier();
     lucyd.thinking.assert_no_turn();
+    let said = lucyd.tts.sentences();
+    let asked = said.iter().filter(|s| *s == IS_THAT_THE_ONE).count();
+    assert_eq!(asked, 1, "{said:?}");
 }
 
 #[test]

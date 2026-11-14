@@ -70,14 +70,12 @@ pub struct Ask {
 pub enum When {
     /// As part of the Turn in progress.
     Now,
-    /// Once neither Lucy nor the user is speaking.
-    Quiet,
-    /// As `Quiet`; but with no Session open, or if the Session ends
-    /// first, at the next Session, and this is shown meanwhile, rather than
-    /// it going unsaid.
+    /// Once neither Lucy nor the user is speaking; but with no Session
+    /// open, or if the Session ends first, at the next Session, and this is
+    /// shown meanwhile, rather than it going unsaid.
     QuietOrNextSession(Notification),
-    /// Kept for the next Session, as `QuietOrNextSession` once its
-    /// notification has been shown.
+    /// As `QuietOrNextSession` once its notification has been shown, or
+    /// when something said before it has shown that it waits.
     Kept,
 }
 
@@ -100,19 +98,9 @@ pub async fn ask(
 }
 
 /// Asks the user `question`, as `ask` does, but only once neither Lucy nor
-/// the user is speaking. The question is queued by the time this is first
-/// polled.
-pub fn ask_when_quiet(
-    commands: &mpsc::UnboundedSender<Command>,
-    question: Question,
-    shown: Option<Notification>,
-) -> impl std::future::Future<Output = Option<Answer>> {
-    ask_at(commands, question, shown, When::Quiet)
-}
-
-/// Asks the user `question`, as `ask_when_quiet` does, but with no Session
-/// open it waits for the next one, showing `kept` meanwhile. It goes
-/// unasked if the answer is no longer awaited by then.
+/// the user is speaking; with no Session open it waits for the next one,
+/// showing `kept` meanwhile. It goes unasked if the answer is no longer
+/// awaited by then.
 pub fn ask_when_quiet_or_next_session(
     commands: &mpsc::UnboundedSender<Command>,
     question: Question,
