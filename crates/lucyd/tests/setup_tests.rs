@@ -32,6 +32,28 @@ fn the_mic_level_is_how_loud_the_microphone_has_been_since_last_asked() {
 }
 
 #[test]
+fn a_mic_level_too_low_for_lucy_to_boost_is_quiet() {
+    let lucyd = Harness::hearing("");
+    lucyd.mic.wait_until_open();
+    let mut client = lucyd.client();
+
+    // About −60 dBFS.
+    lucyd.mic.feed(0.001, Duration::from_millis(100));
+    lucyd.mic.wait_until_heard();
+    let level = client.mic_level().unwrap();
+    assert!(level.quiet, "{level:?}");
+
+    // About −20 dBFS.
+    lucyd.mic.feed(0.1, Duration::from_millis(100));
+    lucyd.mic.wait_until_heard();
+    let level = client.mic_level().unwrap();
+    assert!(!level.quiet, "{level:?}");
+
+    // Silence looks the same as a mic too quiet to hear.
+    assert!(client.mic_level().unwrap().quiet);
+}
+
+#[test]
 fn the_mic_level_follows_the_microphone_config_names_now() {
     let lucyd = Harness::hearing("");
     lucyd.mic.wait_until_open();

@@ -205,6 +205,48 @@ fn piper_is_installed_after_a_yes_with_uv_when_there_is_no_distro_package() {
     assert!(setup.shown.contains("Lucy's voice:"), "{}", setup.shown);
 }
 
+const BARELY: &str = "Lucy can barely hear you on this mic, so talking over her may not work. \
+                      Move it closer, turn it up in your sound settings, or pick another mic.";
+
+#[test]
+fn a_mic_lucy_can_barely_hear_is_flagged_and_not_kept_by_default() {
+    // About −60 dBFS: too quiet even for Lucy's boost.
+    let home = Home::with_mic(0.001);
+    home.fake("systemctl", "exit 0");
+
+    // No Piper, Whisper's model, the mic, Enter at "Keep this
+    // microphone?" picks No, so the mic again, then keep it with a "y",
+    // then the speaker, heard, the Wake word and the service.
+    let keys = Script::new().typed("n").enters(4).typed("y").enters(4);
+    let setup = home.setup(&home.env(), keys);
+
+    assert_eq!(setup.result, Ok(()), "{}", setup.shown);
+    assert!(setup.shown.contains(BARELY), "{}", setup.shown);
+    let asked = setup
+        .lines
+        .iter()
+        .filter(|line| line.contains("Keep this microphone?"))
+        .count();
+    assert_eq!(asked, 2, "{:?}", setup.lines);
+}
+
+#[test]
+fn a_mic_at_a_normal_level_is_kept_by_default_with_no_warning() {
+    // About −20 dBFS.
+    let home = Home::with_mic(0.1);
+    home.fake("systemctl", "exit 0");
+
+    let setup = home.setup(&home.env(), Script::new().typed("n").enters(7));
+
+    assert_eq!(setup.result, Ok(()), "{}", setup.shown);
+    assert!(!setup.shown.contains("barely hear"), "{}", setup.shown);
+    assert!(
+        setup.shown.contains("the meter should move"),
+        "{}",
+        setup.shown
+    );
+}
+
 #[test]
 fn ctrl_c_leaves_setup_at_once() {
     let home = Home::with_lucyd();

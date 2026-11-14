@@ -263,7 +263,8 @@ impl Connection {
             }
             "test.mic_level" => {
                 let rms = self.setup_test(SetupTest::MicLevel).await?;
-                Ok(json!(MicLevel { rms }))
+                let quiet = crate::audio::too_quiet(rms);
+                Ok(json!(MicLevel { rms, quiet }))
             }
             "test.wake_word" => {
                 let WakeWordTest { timeout_secs } = parse_params(params)?;

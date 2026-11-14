@@ -22,6 +22,10 @@ pub struct Home {
 impl Home {
     /// A home where lucyd runs, with no adapters that hear or speak.
     pub fn with_lucyd() -> Home {
+        Home::with_adapters(lucyd::adapters::Adapters::inert())
+    }
+
+    fn with_adapters(adapters: lucyd::adapters::Adapters) -> Home {
         let home = Home::without_lucyd();
         std::fs::write(home.config_dir().join("persona.md"), "You are Lucy.").unwrap();
         let daemon = lucyd::spawn(lucyd::Options {
@@ -29,7 +33,7 @@ impl Home {
             config_path: home.config_path(),
             persona_path: home.config_dir().join("persona.md"),
             lucy_program: env!("CARGO_BIN_EXE_lucy").into(),
-            adapters: lucyd::adapters::Adapters::inert(),
+            adapters,
             plugin_paths: lucyd::plugins::Paths {
                 user: home.dir.path().join("plugins"),
                 shipped: home.dir.path().join("shipped"),
@@ -41,6 +45,27 @@ impl Home {
             _lucyd: Some(daemon),
             ..home
         }
+    }
+
+    /// A home where lucyd hears a microphone that stays at `level` (RMS),
+    /// with nothing else that hears or speaks.
+    pub fn with_mic(level: f32) -> Home {
+        let ears = lucyd::audio::listen(
+            Box::new(SteadyMic(level)),
+            &lucy_config::Audio::default(),
+            Box::new(DeafVad),
+            None,
+            None,
+            &lucy_config::Endpointing::default(),
+        )
+        .unwrap();
+        Home::with_adapters(lucyd::adapters::Adapters {
+            speech: ears.speech,
+            wake_word: ears.wake_word,
+            speaking: ears.speaking,
+            hearing: Some(ears.hearing),
+            ..lucyd::adapters::Adapters::inert()
+        })
     }
 
     pub fn without_lucyd() -> Home {
@@ -164,6 +189,54 @@ impl Home {
         // It may finish without reading everything.
         let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
         child.wait_with_output().unwrap()
+    }
+}
+
+/// A microphone that hears a steady tone at an RMS level, from when lucyd
+/// opens it until it lets go.
+struct SteadyMic(f32);
+
+impl lucyd::audio::AudioIo for SteadyMic {
+    fn capture(
+        &self,
+        _mic: &str,
+        mut ring: rtrb::Producer<f32>,
+    ) -> Result<Box<dyn Send>, lucyd::audio::Error> {
+        let peak = self.0 * std::f32::consts::SQRT_2;
+        std::thread::spawn(move || {
+            let mut n = 0usize;
+            while !ring.is_abandoned() {
+                while ring.slots() > 0 {
+                    let t = n as f32 / 16_000.0;
+                    let _ = ring.push(peak * (std::f32::consts::TAU * 300.0 * t).sin());
+                    n += 1;
+                }
+                // sleep-ok: paces the microphone to roughly real time
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        });
+        Ok(Box::new(()))
+    }
+
+    fn has_device(&self, _direction: lucyd::audio::Direction, _name: &str) -> bool {
+        true
+    }
+
+    fn is_pipewire(&self) -> bool {
+        true
+    }
+}
+
+/// A VAD that never hears speech.
+struct DeafVad;
+
+impl lucyd::audio::Vad for DeafVad {
+    fn chunk_len(&self) -> usize {
+        512
+    }
+
+    fn speech_probability(&mut self, _chunk: &[f32]) -> f32 {
+        0.0
     }
 }
 

@@ -8,7 +8,7 @@ Spec: Audio pipeline (AEC, VAD gate); TUI setup (mic test). Raised by [wayfinder
 
 **Seams:** changes `Sonora` internally, `EchoCanceller` unchanged (owned by 09, resolved; extended by 27); extends `test.mic_level`'s `MicLevel` with `quiet` (owned by 20, resolved; this ticket owns the extension)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Decisions** (settled with the user):
 
@@ -24,12 +24,31 @@ Spec: Audio pipeline (AEC, VAD gate); TUI setup (mic test). Raised by [wayfinder
 
 **Acceptance:**
 
-- [ ] Through the bench with lucyd's `Sonora`: wayfinder 23's quiet-voice recording (`.scratch/lucy-v0-1/prototypes/aec-bench/runs/wrong-mic/desk-talk`) catches 3 of 3 talk-overs
-- [ ] No new false Barge-ins on any of wayfinder 23's recordings, and the gain stays at 0 dB on `desk-*` and `headphones-talk` (so no clipped echo)
-- [ ] The gain is unit-tested in `sonora.rs`: a quiet input is boosted up to +24 dB, a loud one isn't, nothing changes while the reference plays, and a gap under 6 dB is left alone
-- [ ] `test.mic_level` reports `quiet` (tested in `crates/lucyd/tests/setup_tests.rs`); the schema is regenerated (`LUCY_UPDATE_SCHEMA=1 cargo test -p lucy-ipc`)
-- [ ] Setup, through `Home::setup`: a quiet meter shows the message and "Keep this microphone?" defaults to No; a normal one shows neither
+- [x] Through the bench with lucyd's `Sonora`: wayfinder 23's quiet-voice recording (`.scratch/lucy-v0-1/prototypes/aec-bench/runs/wrong-mic/desk-talk`) catches 3 of 3 talk-overs
+- [x] No new false Barge-ins on any of wayfinder 23's recordings, and the gain stays at 0 dB on `desk-*` and `headphones-talk` (so no clipped echo)
+- [x] The gain is unit-tested in `sonora.rs`: a quiet input is boosted up to +24 dB, a loud one isn't, nothing changes while the reference plays, and a gap under 6 dB is left alone
+- [x] `test.mic_level` reports `quiet` (tested in `crates/lucyd/tests/setup_tests.rs`); the schema is regenerated (`LUCY_UPDATE_SCHEMA=1 cargo test -p lucy-ipc`)
+- [x] Setup, through `Home::setup`: a quiet meter shows the message and "Keep this microphone?" defaults to No; a normal one shows neither
 
 The bench in `prototypes/aec-bench/` (README there; `./bench analyse <run>`, its copy of the gate in `src/gate.rs`) replays those recordings through lucyd's `Sonora`, Silero and gate.
 
 ## Comments
+
+Resolved on `main`. `Sonora`'s `PreGain` (`sonora.rs`) sets AEC3's capture pre-gain, which AEC3 sees as an echo path gain change. It keeps every frame's level over the last 30 s, and works out the room's floor from it once a second: the 10th percentile.
+
+- **Only sound counts (decided with the user while implementing):** following every frame raised the gain to +24 dB after 30 s of an idle, quiet room. On a normal mic the next Wake word and request would then have been clipped by up to ~20 dB. Only frames at least 20 dB over the floor enter the gain's window, so idle time doesn't age it. The gain moves only once that window holds 3 s of sound, so a fresh lucyd stays at 0 dB until it has heard some. A quiet room no longer raises the noise floor. Minutes of loud typing near the mic could still count as sound.
+- **The gain:** once a second while Lucy is silent (no reference for 100 ms), it brings the 99th percentile of that sound to −22 dBFS (frame RMS), clamped to 0..+24 dB. It changes only when that differs by more than 6 dB from the gain in use. `EchoMeter` divides the gain back out of the cancelled power, so `echo_heard` compares like with like across a change.
+- **Setup:** `too_quiet(rms)` holds when even +24 dB leaves the loudest frame under −22 dBFS, so under −46 dBFS. lucyd reports it as `MicLevel.quiet`.
+
+Bench (`./bench analyse`, now 2 passes through the same cancellers as two Sessions in one lucyd, with a `gain` column):
+
+| run | gain | false (pass 1 / 2) | talk-overs, pass 2 |
+|---|---|---|---|
+| wrong-mic/desk-talk | +23.4 dB | 0d0b / 1d0b | 380, 290, 350 ms (pass 1: 3 missed) |
+| wrong-mic/desk-silent | +22.3 dB | 0d0b / 2d0b | |
+| desk-talk | 0 | 0d0b / 0d0b | 290, 290, 280 ms |
+| desk-silent | 0 | 2d0b / 0d0b | |
+| headphones-talk | 0 | 0d0b / 0d0b | 290, 290, 290 ms |
+| headphones-silent | 0 | 0d0b / 0d0b | |
+
+The false ducks on wrong-mic pass 2 are the first ~300 ms of Lucy's first word after the gain changed (2.3–2.6 s): echo leaks until AEC3 re-adapts, as expected. The gate's warm-up bar keeps them to ducks. In a boosted pass the bench's ERLE and residual columns compare boosted output with the raw mic, so they read low by the gain.

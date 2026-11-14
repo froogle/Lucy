@@ -18,7 +18,7 @@ use lucy_config::{Audio, BargeIn, BargeInMode, EchoCancellation, Endpointing};
 use tokio::sync::{mpsc, watch};
 
 pub use self::cpal::Cpal;
-pub use self::sonora::Sonora;
+pub use self::sonora::{too_quiet, Sonora};
 use crate::adapters::SpeechSegment;
 use endpoint::Endpointer;
 pub use gate::BargeInEvent;

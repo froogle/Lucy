@@ -108,6 +108,10 @@
     "MicLevel": {
       "description": "Result of `test.mic_level`. lucyd first switches to the microphone\n`config.toml` names now. Refused while a Session is open or another\nsetup test runs.",
       "properties": {
+        "quiet": {
+          "description": "`rms` is so low that even Lucy's +24 dB boost of a quiet microphone\nleaves it under the level she wants, so Barge-in by speech may not\nwork. Silence is quiet too.",
+          "type": "boolean"
+        },
         "rms": {
           "description": "The loudest RMS the microphone heard since the last `test.mic_level`,\nfrom 0.0 (silent) to 1.0.",
           "format": "float",
@@ -115,7 +119,8 @@
         }
       },
       "required": [
-        "rms"
+        "rms",
+        "quiet"
       ],
       "type": "object"
     },

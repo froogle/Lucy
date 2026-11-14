@@ -1619,6 +1619,7 @@ dependencies = [
  "lucy-ipc",
  "lucyd",
  "ratatui",
+ "rtrb",
  "serde_json",
  "tempfile",
  "toml_edit",

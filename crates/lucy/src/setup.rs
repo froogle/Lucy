@@ -286,8 +286,14 @@ fn devices_step<B: Backend>(
         ui.say("")?;
         let mic = pick_device(ui, env, "Microphone:", "sources")?;
         config.set(&["audio", "mic"], mic)?;
-        meter(ui, client)?;
-        if ui.yes("Keep this microphone?", true)? {
+        let quiet = meter(ui, client)?;
+        if quiet {
+            ui.say(
+                "Lucy can barely hear you on this mic, so talking over her may not work. \
+                 Move it closer, turn it up in your sound settings, or pick another mic.",
+            )?;
+        }
+        if ui.yes("Keep this microphone?", !quiet)? {
             break;
         }
     }
@@ -311,25 +317,31 @@ fn devices_step<B: Backend>(
     Ok(())
 }
 
-/// Shows how loud the microphone is for a few seconds.
-fn meter<B: Backend>(ui: &mut Ui<B>, client: &mut Client) -> Result<(), Stop> {
+/// Shows how loud the microphone is for a few seconds. True if every
+/// reading was too quiet for Lucy to hear well.
+fn meter<B: Backend>(ui: &mut Ui<B>, client: &mut Client) -> Result<bool, Stop> {
     // The first asks lucyd to switch to it.
     if let Err(e) = client.mic_level() {
-        return ui.say(format!("Can't test it: {e}"));
+        ui.say(format!("Can't test it: {e}"))?;
+        return Ok(false);
     }
     ui.say("Say something: the meter should move.")?;
     ui.meter(Some(0.0))?;
     let started = std::time::Instant::now();
+    let (mut readings, mut all_quiet) = (0, true);
     while started.elapsed() < METER {
         std::thread::sleep(METER_EVERY);
         let Ok(level) = client.mic_level() else {
             break;
         };
+        readings += 1;
+        all_quiet &= level.quiet;
         // Speech is around 0.05 to 0.3 RMS; show it on a log scale.
         let db = 20.0 * level.rms.max(1e-5).log10();
         ui.meter(Some(f64::from((db + 60.0) / 60.0)))?;
     }
-    ui.meter(None)
+    ui.meter(None)?;
+    Ok(readings > 0 && all_quiet)
 }
 
 fn voice_step<B: Backend>(

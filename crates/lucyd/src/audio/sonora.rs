@@ -1,10 +1,12 @@
 //! Lucy's own echo canceller: WebRTC's AEC3, through `sonora`, its pure-Rust
 //! port. The render reference is the 16 kHz copy of what playback actually
 //! played; AEC3 finds the delay between it and the microphone itself.
+//! A quiet microphone is boosted ahead of AEC3, so a weak voice can still
+//! Barge in: otherwise AEC3 takes it out with Lucy's echo.
 
 use std::collections::VecDeque;
 
-use sonora::config::EchoCanceller as Aec3;
+use sonora::config::{CaptureLevelAdjustment, EchoCanceller as Aec3};
 use sonora::{AudioProcessing, Config, StreamConfig};
 
 use super::{EchoCanceller, FRAME_LEN, SAMPLE_RATE};
@@ -35,6 +37,29 @@ const USER_OVER_QUIET: f64 = 10.0;
 /// follow her voice; this keeps a few of them from passing for echo.
 const CAP_OVER_LOUD: f64 = 4.0;
 
+/// The stretch the pre-gain follows: the last 30 s, in frames.
+const LEVEL_WINDOW: usize = 3000;
+/// The room's noise floor: this far up the window's frame levels.
+const FLOOR_PERCENTILE: f64 = 0.1;
+/// How far over the floor a frame has to be to count as sound, in dB. Only
+/// sound enters the pre-gain's window, so a quiet room doesn't raise it.
+const SOUND_OVER_FLOOR_DB: f64 = 20.0;
+/// The loud end of the sound the pre-gain follows: this far up its frame
+/// levels.
+const LOUD_PERCENTILE: f64 = 0.99;
+/// Where the pre-gain brings the loud end, in dBFS (a frame's RMS): far
+/// enough under full scale that Lucy's echo doesn't clip.
+const TARGET_DB: f64 = -22.0;
+/// The most the pre-gain boosts, in dB.
+const MAX_GAIN_DB: f64 = 24.0;
+/// How far the wanted gain has to be from the one in use for it to change,
+/// in dB. Each change leaks echo until AEC3 re-adapts, and resets its ERLE.
+const STEP_DB: f64 = 6.0;
+/// The sound the pre-gain needs before it changes, in frames.
+const MIN_SOUND: usize = 300;
+/// How often the floor and the pre-gain are worked out, in frames.
+const GAIN_EVERY: usize = 100;
+
 pub struct Sonora {
     apm: AudioProcessing,
     /// What Lucy played, at 16 kHz.
@@ -44,6 +69,7 @@ pub struct Sonora {
     frames: usize,
     erle_db: Option<f32>,
     echo: EchoMeter,
+    pre_gain: PreGain,
 }
 
 impl Sonora {
@@ -53,6 +79,7 @@ impl Sonora {
         let apm = AudioProcessing::builder()
             .config(Config {
                 echo_canceller: Some(Aec3::default()),
+                capture_level_adjustment: Some(CaptureLevelAdjustment::default()),
                 ..Config::default()
             })
             .capture_config(stream)
@@ -66,8 +93,20 @@ impl Sonora {
             frames: 0,
             erle_db: None,
             echo: EchoMeter::default(),
+            pre_gain: PreGain::default(),
         }
     }
+
+    /// How much the microphone is boosted ahead of AEC3, in dB.
+    pub fn gain_db(&self) -> f32 {
+        self.pre_gain.gain_db as f32
+    }
+}
+
+/// Whether a microphone whose loudest frame was `rms` stays under the
+/// pre-gain's target even at its most, +24 dB.
+pub fn too_quiet(rms: f32) -> bool {
+    db(f64::from(rms).powi(2)) + MAX_GAIN_DB < TARGET_DB
 }
 
 impl EchoCanceller for Sonora {
@@ -93,7 +132,14 @@ impl EchoCanceller for Sonora {
         {
             frame.copy_from_slice(&self.scratch);
         }
-        self.echo.push(power(&self.scratch), power(frame), played);
+        let mic = power(&self.scratch);
+        // The echo is measured as the microphone heard it, before the gain.
+        let gain = 10f32.powf(self.gain_db() / 10.0);
+        self.echo.push(mic, power(frame) / gain, played);
+        if let Some(gain_db) = self.pre_gain.push(mic, !self.echo.lucy_speaking()) {
+            self.apm
+                .set_capture_pre_gain(10f32.powf(gain_db as f32 / 20.0));
+        }
         self.frames += 1;
         if self.frames.is_multiple_of(STATS_EVERY) {
             let erle = self.apm.statistics().echo_return_loss_enhancement;
@@ -176,6 +222,11 @@ impl EchoMeter {
         }
     }
 
+    /// Lucy's reference arrived in the last [`HOLD`] frames.
+    fn lucy_speaking(&self) -> bool {
+        self.since_played <= HOLD
+    }
+
     fn measure(&mut self) -> Option<bool> {
         let frames = self.frames.make_contiguous();
         // The mean of `what` over block `k`'s frames, or those `lag` before.
@@ -237,6 +288,74 @@ fn mic_while(played: &[f64], mic: &[f64], when: impl Fn(f64) -> bool) -> Vec<f64
         .filter(|(p, _)| when(**p))
         .map(|(_, m)| *m)
         .collect()
+}
+
+/// The boost ahead of AEC3: it brings the loud end of the sound the
+/// microphone heard over the last [`LEVEL_WINDOW`] frames, the user's voice
+/// or Lucy's echo, up towards [`TARGET_DB`]. Following the loudest sound
+/// keeps her echo from clipping. It changes only while Lucy is silent, and
+/// only by more than [`STEP_DB`].
+struct PreGain {
+    /// Every frame's level, in dB.
+    levels: VecDeque<f64>,
+    /// The levels of the frames that were sound.
+    sound: VecDeque<f64>,
+    floor_db: f64,
+    frames: usize,
+    gain_db: f64,
+}
+
+impl Default for PreGain {
+    fn default() -> PreGain {
+        PreGain {
+            levels: VecDeque::with_capacity(LEVEL_WINDOW),
+            sound: VecDeque::with_capacity(LEVEL_WINDOW),
+            // No frame is sound until the floor is known.
+            floor_db: f64::INFINITY,
+            frames: 0,
+            gain_db: 0.0,
+        }
+    }
+}
+
+impl PreGain {
+    /// Takes a frame's power before the gain, and whether Lucy is silent.
+    /// The new gain in dB, if it changes.
+    fn push(&mut self, power: f32, lucy_silent: bool) -> Option<f64> {
+        let level = db(f64::from(power));
+        push_within(&mut self.levels, level);
+        self.frames += 1;
+        let due = self.frames.is_multiple_of(GAIN_EVERY);
+        if due {
+            self.floor_db = percentile(self.levels.make_contiguous(), FLOOR_PERCENTILE);
+        }
+        if level >= self.floor_db + SOUND_OVER_FLOOR_DB {
+            push_within(&mut self.sound, level);
+        }
+        if !due || !lucy_silent || self.sound.len() < MIN_SOUND {
+            return None;
+        }
+        let loud = percentile(self.sound.make_contiguous(), LOUD_PERCENTILE);
+        let wanted = (TARGET_DB - loud).clamp(0.0, MAX_GAIN_DB);
+        if (wanted - self.gain_db).abs() <= STEP_DB {
+            return None;
+        }
+        self.gain_db = wanted;
+        Some(wanted)
+    }
+}
+
+/// Pushes `level`, dropping the oldest once there are [`LEVEL_WINDOW`].
+fn push_within(levels: &mut VecDeque<f64>, level: f64) {
+    if levels.len() == LEVEL_WINDOW {
+        levels.pop_front();
+    }
+    levels.push_back(level);
+}
+
+/// `power` in dB.
+fn db(power: f64) -> f64 {
+    10.0 * power.max(1e-12).log10()
 }
 
 /// The value `p` of the way up `values` sorted.
@@ -472,5 +591,153 @@ mod echo_heard {
         assert_eq!(room.sonora.echo_heard(), Some(true));
         room.speaks(10.0, 0.0);
         assert_eq!(room.sonora.echo_heard(), Some(false));
+    }
+}
+
+#[cfg(test)]
+mod pre_gain {
+    use std::f32::consts::TAU;
+
+    use super::*;
+
+    /// A microphone in a quiet room, through `Sonora`, with Lucy silent
+    /// unless a test hands it her reference.
+    struct Mic {
+        sonora: Sonora,
+        reference: rtrb::Producer<f32>,
+        samples: usize,
+        /// What came out of the last frame, and what went in.
+        out_rms: f32,
+        in_rms: f32,
+    }
+
+    /// `db` dBFS as an RMS level.
+    fn rms_of(db: f32) -> f32 {
+        10f32.powf(db / 20.0)
+    }
+
+    impl Mic {
+        fn new() -> Mic {
+            let (reference, consumer) = rtrb::RingBuffer::new(SAMPLE_RATE as usize);
+            Mic {
+                sonora: Sonora::new(consumer),
+                reference,
+                samples: 0,
+                out_rms: 0.0,
+                in_rms: 0.0,
+            }
+        }
+
+        /// Runs `seconds` of the user talking at `voice_db` (RMS, in dBFS)
+        /// half the time, in a room at about −90 dBFS, with Lucy speaking
+        /// if `lucy` says so.
+        fn run(&mut self, seconds: f32, voice_db: Option<f32>, lucy: bool) {
+            for n in 0..(seconds * 100.0) as usize {
+                if lucy {
+                    for _ in 0..FRAME_LEN {
+                        self.reference.push(0.01).unwrap();
+                    }
+                }
+                // Half a second on, half off.
+                let talking = voice_db.filter(|_| n % 100 < 50);
+                let mut frame: Vec<f32> = (0..FRAME_LEN)
+                    .map(|_| {
+                        let t = self.samples as f32 / SAMPLE_RATE as f32;
+                        self.samples += 1;
+                        let noise = rms_of(-90.0) * (TAU * 3100.0 * t).sin();
+                        let voice = talking.map_or(0.0, |db| {
+                            rms_of(db) * std::f32::consts::SQRT_2 * (TAU * 300.0 * t).sin()
+                        });
+                        noise + voice
+                    })
+                    .collect();
+                self.in_rms = power(&frame).sqrt();
+                self.sonora.cancel(&mut frame);
+                self.out_rms = power(&frame).sqrt();
+            }
+        }
+    }
+
+    #[test]
+    fn a_quiet_voice_is_boosted_by_up_to_24_db() {
+        let mut mic = Mic::new();
+        mic.run(10.0, Some(-60.0), false);
+        assert_eq!(mic.sonora.gain_db(), 24.0);
+
+        // A frame of the voice comes out 24 dB louder.
+        mic.run(0.2, Some(-60.0), false);
+        let boost = 20.0 * (mic.out_rms / mic.in_rms).log10();
+        assert!((boost - 24.0).abs() < 1.0, "{boost} dB");
+    }
+
+    #[test]
+    fn a_voice_at_a_normal_level_is_not_boosted() {
+        let mut mic = Mic::new();
+        mic.run(10.0, Some(-15.0), false);
+        assert_eq!(mic.sonora.gain_db(), 0.0);
+    }
+
+    #[test]
+    fn a_voice_just_under_the_target_is_boosted_to_it() {
+        let mut mic = Mic::new();
+        // The loud end of a steady tone is its level.
+        mic.run(10.0, Some(-35.0), false);
+        assert!(
+            (mic.sonora.gain_db() - 13.0).abs() < 0.5,
+            "{}",
+            mic.sonora.gain_db()
+        );
+    }
+
+    #[test]
+    fn nothing_changes_while_lucy_speaks() {
+        let mut mic = Mic::new();
+        mic.run(10.0, Some(-60.0), true);
+        assert_eq!(mic.sonora.gain_db(), 0.0);
+
+        // Once she stops it can.
+        mic.run(1.5, Some(-60.0), false);
+        assert_eq!(mic.sonora.gain_db(), 24.0);
+    }
+
+    #[test]
+    fn a_gap_under_6_db_is_left_alone() {
+        let mut mic = Mic::new();
+        // 4 dB under the target wants 4 dB.
+        mic.run(10.0, Some(-26.0), false);
+        assert_eq!(mic.sonora.gain_db(), 0.0);
+    }
+
+    #[test]
+    fn a_quiet_room_with_nobody_talking_raises_nothing() {
+        let mut mic = Mic::new();
+        mic.run(40.0, None, false);
+        assert_eq!(mic.sonora.gain_db(), 0.0);
+    }
+
+    #[test]
+    fn a_quiet_spell_keeps_the_gain_the_last_sound_set() {
+        let mut mic = Mic::new();
+        mic.run(10.0, Some(-15.0), false);
+        mic.run(40.0, None, false);
+        assert_eq!(mic.sonora.gain_db(), 0.0);
+    }
+
+    #[test]
+    fn the_gain_follows_a_louder_voice_back_down() {
+        let mut mic = Mic::new();
+        mic.run(10.0, Some(-60.0), false);
+        assert_eq!(mic.sonora.gain_db(), 24.0);
+        // The window's loud end moves as soon as the louder voice is in it.
+        mic.run(2.0, Some(-15.0), false);
+        assert_eq!(mic.sonora.gain_db(), 0.0);
+    }
+
+    #[test]
+    fn a_microphone_too_quiet_for_24_db_to_reach_the_target_is_too_quiet() {
+        assert!(too_quiet(0.0));
+        assert!(too_quiet(rms_of(-50.0)));
+        assert!(!too_quiet(rms_of(-40.0)));
+        assert!(!too_quiet(rms_of(-15.0)));
     }
 }

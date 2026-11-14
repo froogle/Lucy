@@ -319,6 +319,10 @@ pub struct MicLevel {
     /// The loudest RMS the microphone heard since the last `test.mic_level`,
     /// from 0.0 (silent) to 1.0.
     pub rms: f32,
+    /// `rms` is so low that even Lucy's +24 dB boost of a quiet microphone
+    /// leaves it under the level she wants, so Barge-in by speech may not
+    /// work. Silence is quiet too.
+    pub quiet: bool,
 }
 
 /// Params of `test.wake_word`: lucyd listens for the Wake word, outside any
