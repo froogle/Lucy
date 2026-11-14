@@ -87,12 +87,6 @@ fn until_state(events: &mut Client, state: State) {
     while next_state(events).state != state {}
 }
 
-/// Makes every command sent to the Session before this one take effect
-/// first: lucyd handles them in order, and refuses this one.
-fn barrier(lucyd: &Harness) {
-    assert!(lucyd.client().start_session().is_err());
-}
-
 /// Ends the Session by the Indicator or `lucy end` while a build runs:
 /// Lucy can't say she'll keep working on it, so she shows it.
 fn end_mid_build(lucyd: &Harness) {
@@ -164,11 +158,10 @@ fn the_state_carries_a_building_mark_while_a_build_runs_even_after_the_session_e
 
 #[test]
 fn the_session_stays_open_in_listening_while_the_build_runs() {
-    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 30\n");
     let _events = request_photos(&lucyd);
 
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_secs(1));
+    lucyd.clock.advance(Duration::from_secs(60));
 
     assert_eq!(lucyd.client().status().unwrap().state, State::Listening);
     let said = lucyd.tts.sentences();
@@ -299,7 +292,7 @@ fn report_progress_is_shown_as_a_notification_and_never_spoken() {
     let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
     assert!(shown.summary.contains("photos"), "{shown:?}");
     assert_eq!(shown.body, "Writing the photo search");
-    barrier(&lucyd);
+    lucyd.barrier();
     assert_eq!(lucyd.tts.sentences(), [A_FEW_MINUTES]);
 }
 
@@ -340,7 +333,7 @@ fn a_build_out_of_time_stops_with_a_plain_report_and_asking_again_resumes_its_wo
     std::fs::write(dir.join("notes.txt"), "half done").unwrap();
 
     lucyd.clock.advance(Duration::from_secs(599));
-    barrier(&lucyd);
+    lucyd.barrier();
     lucyd.thinking.assert_no_turn();
     lucyd.clock.advance(Duration::from_secs(1));
 
@@ -433,7 +426,7 @@ fn with_no_session_open_cannot_is_shown_plainly_and_told_once_at_the_next_sessio
     lucyd.thinking.turn_end();
     lucyd.client().end_session().unwrap();
     lucyd.client().start_session().unwrap();
-    barrier(&lucyd);
+    lucyd.barrier();
     lucyd.thinking.assert_no_turn();
     let shown = lucyd.notifier.shown();
     assert!(!shown.iter().any(|n| n.body.contains(NO_API)), "{shown:?}");
@@ -579,9 +572,9 @@ fn ask_user_waits_until_neither_side_is_speaking_and_the_answer_goes_to_the_dele
         json!({"question": "Which folder are your photos in?"}),
     ));
     delegate.turn_end();
-    barrier(&lucyd);
+    lucyd.barrier();
     lucyd.thinking.turn_end();
-    barrier(&lucyd);
+    lucyd.barrier();
     assert_eq!(lucyd.tts.sentences(), [A_FEW_MINUTES, "It's sunny."]);
     lucyd.tts.finish_playing();
 
@@ -712,7 +705,7 @@ fn a_passing_build_is_approved_answered_and_a_no_to_is_that_the_one_is_fixed() {
     );
     lucyd.say("yes");
 
-    barrier(&lucyd);
+    lucyd.barrier();
     delegate.assert_no_turn();
     // The build is over: its token is revoked.
     assert!(delegate
@@ -752,7 +745,7 @@ fn a_build_that_passes_after_the_session_ended_is_notified_and_offered_at_the_ne
     // Offered once: the next Session doesn't ask again.
     lucyd.client().end_session().unwrap();
     lucyd.client().start_session().unwrap();
-    barrier(&lucyd);
+    lucyd.barrier();
     assert_eq!(lucyd.client().status().unwrap().state, State::Listening);
 }
 

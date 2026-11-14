@@ -1,8 +1,8 @@
 mod harness;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use harness::{next_state, Harness};
+use harness::{next_state, wait_until, Harness};
 use lucy_ipc::{error_code, Error, State, StateEvent};
 
 #[test]
@@ -57,17 +57,24 @@ fn session_end_with_no_session_is_refused() {
     );
 }
 
+fn ms(ms: u64) -> Duration {
+    Duration::from_millis(ms)
+}
+
 fn with_silence_timeout(secs: f64) -> Harness {
     Harness::with_config(&format!("[session]\nsilence_timeout_secs = {secs}\n"))
 }
 
 #[test]
 fn silence_in_listening_ends_the_session_quietly() {
-    let lucyd = with_silence_timeout(0.3);
+    let lucyd = with_silence_timeout(30.0);
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     assert_eq!(next_state(&mut events).state, State::Listening);
 
+    lucyd.clock.advance(ms(29_900));
+    assert_eq!(events.status().unwrap().state, State::Listening);
+    lucyd.clock.advance(ms(100));
     assert_eq!(
         next_state(&mut events),
         StateEvent {
@@ -81,73 +88,66 @@ fn silence_in_listening_ends_the_session_quietly() {
 
 #[test]
 fn silence_timer_pauses_while_thinking_and_speaking() {
-    let lucyd = with_silence_timeout(0.5);
+    let lucyd = with_silence_timeout(30.0);
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_millis(300));
+    lucyd.clock.advance(ms(20_000));
     lucyd.say("tell me a long story");
     lucyd.thinking.next_turn();
     assert_eq!(next_state(&mut events).state, State::Thinking);
 
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_secs(1));
+    lucyd.clock.advance(ms(60_000));
     lucyd.thinking.delta("Once upon a time.");
     lucyd.thinking.turn_end();
     assert_eq!(next_state(&mut events).state, State::Speaking);
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_secs(1));
+    lucyd.clock.advance(ms(60_000));
     lucyd.tts.finish_playing();
 
-    // Still open after two timeouts' worth outside Listening. Back in
-    // Listening the timer starts over, rather than using the 200 ms left.
+    // Still open after four timeouts' worth outside Listening. Back in
+    // Listening the timer starts over, rather than using the 10 s left.
     assert_eq!(next_state(&mut events).state, State::Listening);
-    let listening = Instant::now();
+    lucyd.clock.advance(ms(29_900));
+    assert_eq!(events.status().unwrap().state, State::Listening);
+    lucyd.clock.advance(ms(100));
     assert_eq!(next_state(&mut events).state, State::Idle);
-    assert!(listening.elapsed() >= Duration::from_millis(400));
 }
 
 #[test]
 fn no_speech_recognised_keeps_listening_without_resetting_the_timer() {
-    let lucyd = with_silence_timeout(1.5);
+    let lucyd = with_silence_timeout(30.0);
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
-    let opened = Instant::now();
 
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_secs(1));
+    lucyd.clock.advance(ms(20_000));
     lucyd.mumble();
+    wait_until("the mumble transcribed", || {
+        (!lucyd.stt.heard().is_empty()).then_some(())
+    });
 
     // Straight from Listening to Idle, at the original deadline.
+    lucyd.clock.advance_once_set(ms(10_000));
     assert_eq!(next_state(&mut events).state, State::Idle);
-    assert!(
-        opened.elapsed() < Duration::from_millis(2200),
-        "{:?}",
-        opened.elapsed()
-    );
     lucyd.thinking.assert_no_turn();
 }
 
 #[test]
 fn silence_timer_keeps_running_while_an_utterance_is_transcribed() {
-    let lucyd = with_silence_timeout(0.5);
+    let lucyd = with_silence_timeout(30.0);
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
-    let opened = Instant::now();
 
     lucyd.stt.take(Duration::from_secs(2));
     lucyd.say("hello");
+    wait_until("the utterance being transcribed", || {
+        (!lucyd.stt.segments().is_empty()).then_some(())
+    });
 
     // Transcribing is still Listening, so the timer fires mid-transcription.
+    lucyd.clock.advance(ms(30_000));
     assert_eq!(next_state(&mut events).state, State::Idle);
-    assert!(
-        opened.elapsed() < Duration::from_millis(1500),
-        "{:?}",
-        opened.elapsed()
-    );
 }
 
 #[test]

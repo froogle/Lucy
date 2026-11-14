@@ -3,7 +3,7 @@
 
 mod harness;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use harness::{next_state, Harness, SILENCE, SPEECH, WAKE};
 use lucy_ipc::State;
@@ -53,40 +53,38 @@ fn with_no_speech_after_the_wake_word_the_session_ends_after_8_seconds_with_a_cl
 
     lucyd.wake();
     assert_eq!(next_state(&mut events).state, State::Listening);
-    let woken = Instant::now();
+    lucyd.clock.advance(ms(7_900));
+    assert_eq!(events.status().unwrap().state, State::Listening);
 
-    assert_eq!(next_state_within(&mut events, 10).state, State::Idle);
-    let open_for = woken.elapsed();
-    assert!(
-        open_for >= ms(7_900) && open_for < ms(9_000),
-        "{open_for:?}"
-    );
+    lucyd.clock.advance(ms(100));
+
+    assert_eq!(next_state(&mut events).state, State::Idle);
     assert_eq!(lucyd.tts.sounds(), [Sound::Start, Sound::Closing]);
     assert_eq!(lucyd.tts.sentences(), Vec::<String>::new());
 }
 
 #[test]
 fn a_silence_timeout_shorter_than_8_seconds_ends_a_false_wake_sooner() {
-    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 3\n");
     let mut events = lucyd.state_client();
 
     lucyd.wake();
     assert_eq!(next_state(&mut events).state, State::Listening);
+    lucyd.clock.advance(ms(3_000));
 
-    assert_eq!(next_state_within(&mut events, 3).state, State::Idle);
+    assert_eq!(next_state(&mut events).state, State::Idle);
 }
 
 #[test]
 fn speech_under_way_holds_off_the_end_of_a_false_wake() {
-    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 3\n");
     let mut events = lucyd.state_client();
 
     // The utterance starts before the Wake word in it is recognised.
     lucyd.start_speaking();
     lucyd.wake();
     assert_eq!(next_state(&mut events).state, State::Listening);
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(ms(800));
+    lucyd.clock.advance(ms(60_000));
     lucyd.say("what's the time");
 
     assert_eq!(lucyd.thinking.next_turn(), "what's the time");
@@ -94,10 +92,11 @@ fn speech_under_way_holds_off_the_end_of_a_false_wake() {
 
 #[test]
 fn a_silence_timeout_ends_with_a_closing_sound() {
-    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.3\n");
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 30\n");
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     assert_eq!(next_state(&mut events).state, State::Listening);
+    lucyd.clock.advance(ms(30_000));
 
     assert_eq!(next_state(&mut events).state, State::Idle);
 
@@ -153,7 +152,7 @@ fn the_wake_word_alone_is_no_speech() {
     // A Plugin's question shows what was heard: the words, or "no answer"
     // once the wait for one is over. That wait doesn't run while a reply
     // is being transcribed, so the reply is always heard first.
-    let lucyd = Harness::with_config(&format!("{HEY_LUCY}[confirmation]\ntimeout_secs = 0.3\n"));
+    let lucyd = Harness::with_config(HEY_LUCY);
     lucyd.install_plugin(
         "asker",
         "name = \"asker\"\nversion = \"0.1.0\"\nauthor = \"human\"\nsummary = \"Asks\"\n\
@@ -176,6 +175,7 @@ fn the_wake_word_alone_is_no_speech() {
 
     lucyd.say("Hey Lucy.");
     lucyd.tts.finish_playing();
+    lucyd.clock.advance_once_set(ms(8_000));
 
     let result = call.join().unwrap().unwrap();
     let said: String = result
@@ -184,14 +184,6 @@ fn the_wake_word_alone_is_no_speech() {
         .filter_map(|block| block.as_text().map(|text| text.text.clone()))
         .collect();
     assert_eq!(said, "no answer");
-}
-
-/// Waits up to `secs` for the next state event.
-fn next_state_within(client: &mut lucy_ipc::Client, secs: u64) -> lucy_ipc::StateEvent {
-    client
-        .set_read_timeout(Some(Duration::from_secs(secs)))
-        .unwrap();
-    next_state(client)
 }
 
 // Tickets 07 and 11 together: a Session the Wake word opens re-resolves a

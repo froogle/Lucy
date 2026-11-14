@@ -4,7 +4,7 @@
 mod harness;
 
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use harness::{next_state, Harness};
 use lucy_ipc::{Client, State};
@@ -64,6 +64,10 @@ fn model_writes(
         thinking.call_tool_with("files__write_file", json!({"path": path, "text": "hello"}))
     });
     (file, call)
+}
+
+fn ms(ms: u64) -> Duration {
+    Duration::from_millis(ms)
 }
 
 fn text(result: &rmcp::model::CallToolResult) -> String {
@@ -138,7 +142,7 @@ fn a_yes_said_during_the_prompt_counts() {
 
 #[test]
 fn silence_after_the_prompt_declines() {
-    let lucyd = with_files_plugin("[confirmation]\ntimeout_secs = 0.3\n");
+    let lucyd = with_files_plugin("");
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
@@ -146,22 +150,29 @@ fn silence_after_the_prompt_declines() {
     assert_eq!(next_state(&mut events).state, State::Confirming);
     lucyd.tts.next_sentence();
     // The wait starts only once the prompt has been said.
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_millis(600));
-    assert!(!call.is_finished(), "declined while the prompt played");
-    let prompted = Instant::now();
+    lucyd.clock.advance(ms(16_000));
+    assert!(!declined(&lucyd), "declined while the prompt played");
     lucyd.tts.finish_playing();
+    lucyd.barrier();
+    lucyd.clock.advance(ms(7_900));
+    assert!(!declined(&lucyd), "declined before the 8 s wait was over");
+
+    lucyd.clock.advance(ms(100));
 
     let result = call.join().unwrap().unwrap();
-    assert!(prompted.elapsed() >= Duration::from_millis(250));
     assert!(text(&result).starts_with("declined"), "{}", text(&result));
     assert!(!file.exists());
     assert_eq!(lucyd.tts.next_sentence(), "Okay, I won't.");
 }
 
+/// Lucy has said she won't.
+fn declined(lucyd: &Harness) -> bool {
+    lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned())
+}
+
 #[test]
 fn a_reply_still_being_spoken_when_the_wait_runs_out_is_heard() {
-    let lucyd = with_files_plugin("[confirmation]\ntimeout_secs = 0.3\n");
+    let lucyd = with_files_plugin("");
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
@@ -171,8 +182,8 @@ fn a_reply_still_being_spoken_when_the_wait_runs_out_is_heard() {
 
     lucyd.start_speaking();
     lucyd.tts.finish_playing();
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_millis(800));
+    lucyd.barrier();
+    lucyd.clock.advance_once_stopped(ms(16_000));
     lucyd.say("yes");
 
     let result = call.join().unwrap().unwrap();
@@ -182,7 +193,9 @@ fn a_reply_still_being_spoken_when_the_wait_runs_out_is_heard() {
 
 #[test]
 fn the_silence_timer_is_paused_while_confirming() {
-    let lucyd = with_files_plugin("[session]\nsilence_timeout_secs = 0.3\n");
+    let lucyd = with_files_plugin(
+        "[session]\nsilence_timeout_secs = 30\n[confirmation]\ntimeout_secs = 120\n",
+    );
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
@@ -191,8 +204,7 @@ fn the_silence_timer_is_paused_while_confirming() {
     lucyd.tts.next_sentence();
     lucyd.tts.finish_playing();
 
-    // sleep-ok: timer test; lucyd has no clock seam yet
-    std::thread::sleep(Duration::from_secs(1));
+    lucyd.clock.advance(ms(60_000));
 
     assert_eq!(events.status().unwrap().state, State::Confirming);
     lucyd.say("yes");
@@ -323,11 +335,12 @@ fn a_plugins_mid_call_question_is_asked_and_the_answer_relayed_to_it() {
 
 #[test]
 fn a_mid_call_question_met_with_silence_goes_unanswered() {
-    let (lucyd, mut events) = with_asker("[confirmation]\ntimeout_secs = 0.3\n");
+    let (lucyd, mut events) = with_asker("");
     let call = model_calls_ask(&lucyd);
     assert_eq!(next_state(&mut events).state, State::Confirming);
     lucyd.tts.next_sentence();
     lucyd.tts.finish_playing();
+    lucyd.clock.advance_once_set(ms(8_000));
 
     let result = call.join().unwrap().unwrap();
 

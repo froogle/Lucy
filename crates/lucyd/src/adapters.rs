@@ -259,7 +259,7 @@ pub enum NotificationAction {
     EndSession,
 }
 
-/// Time, as an Authoring build's budget counts it.
+/// Time, as lucyd's timers count it: a Session's and an Authoring build's.
 pub trait Clock: Send + Sync {
     fn now(&self) -> Instant;
     /// A timer, not yet set.
@@ -360,7 +360,7 @@ pub struct Adapters {
     pub launcher: Arc<dyn Launcher>,
     /// Where Plugin credentials are kept: the Secret Service.
     pub credentials: Arc<dyn CredentialStore>,
-    /// What an Authoring build's budget counts time on.
+    /// What lucyd's timers count time on.
     pub clock: Arc<dyn Clock>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,

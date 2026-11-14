@@ -52,7 +52,8 @@ pub struct Harness {
     pub launcher: FakeLauncher,
     /// The Secret Service, as Plugin credentials are kept in it.
     pub credentials: FakeCredentials,
-    /// The clock Authoring budgets count on.
+    /// The clock lucyd's timers count on: the silence timeout, the wait
+    /// for an answer, and Authoring budgets.
     pub clock: FakeClock,
     /// Where lucyd looks for desktop entries: the user's dir, then the
     /// system's.
@@ -403,6 +404,13 @@ impl Harness {
         client
     }
 
+    /// Makes every command, Thinking event and TTS event sent to the open
+    /// Session before this one take effect first: lucyd handles them ahead
+    /// of a command, in order, and refuses this one.
+    pub fn barrier(&self) {
+        assert!(self.client().start_session().is_err());
+    }
+
     /// The user starts an utterance, which `say` ends.
     pub fn start_speaking(&self) {
         let speaking = self.speaking.as_ref().expect("lucyd hears through `mic`");
@@ -687,7 +695,8 @@ impl FakeStt {
         self.scripted.lock().unwrap().push_back(Err(failure));
     }
 
-    fn heard(&self) -> Vec<String> {
+    /// Every transcript it has produced so far.
+    pub fn heard(&self) -> Vec<String> {
         self.heard.lock().unwrap().clone()
     }
 
@@ -1666,7 +1675,7 @@ impl lucyd::audio::WakeWord for FakeWakeWord {
     }
 }
 
-/// The clock Authoring budgets count on. It stands still until `advance`.
+/// The clock lucyd's timers count on. It stands still until `advance`.
 #[derive(Clone)]
 pub struct FakeClock(Arc<ClockShared>);
 
@@ -1718,8 +1727,44 @@ impl FakeClock {
                 .values()
                 .any(|(deadline, _)| deadline.is_some_and(|d| d <= now))
         };
-        let (_state, waited) = shared.settled.wait_timeout_while(state, WAIT, due).unwrap();
+        let (state, waited) = shared.settled.wait_timeout_while(state, WAIT, due).unwrap();
+        // Unlocked first, so a failure doesn't poison the clock for lucyd.
+        drop(state);
         assert!(!waited.timed_out(), "a timer went off but wasn't handled");
+    }
+
+    /// As `advance`, once a timer is set to go off within `by`: for a timer
+    /// lucyd sets on something the test can't see it handle.
+    pub fn advance_once_set(&self, by: Duration) {
+        self.wait_for("a timer set to go off", true, by);
+        self.advance(by);
+    }
+
+    /// As `advance`, once no timer is set to go off within `by`: for a
+    /// timer lucyd stops on something the test can't see it handle.
+    pub fn advance_once_stopped(&self, by: Duration) {
+        self.wait_for("every timer stopped", false, by);
+        self.advance(by);
+    }
+
+    /// Waits until whether a timer is set to go off within `by` is `due`.
+    fn wait_for(&self, what: &str, due: bool, by: Duration) {
+        let shared = &self.0;
+        let state = shared.state.lock().unwrap();
+        let waiting = |state: &mut ClockState| {
+            let until = state.now(shared.start) + by;
+            let set = state
+                .timers
+                .values()
+                .any(|(deadline, _)| deadline.is_some_and(|d| d <= until));
+            set != due
+        };
+        let (state, waited) = shared
+            .settled
+            .wait_timeout_while(state, WAIT, waiting)
+            .unwrap();
+        drop(state);
+        assert!(!waited.timed_out(), "timed out waiting for {what}");
     }
 }
 

@@ -54,14 +54,19 @@ fn the_next_utterance_tells_the_model_what_the_user_heard() {
 
 #[test]
 fn nothing_said_after_a_barge_in_returns_silently_to_listening() {
-    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 0.5\n");
+    let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 30\n");
     let mut events = lucy_speaking(&lucyd);
     lucyd.wake();
     assert_eq!(next_state(&mut events).state, State::Listening);
 
+    let heard = lucyd.stt.heard().len();
     lucyd.mumble();
+    wait_until("the mumble transcribed", || {
+        (lucyd.stt.heard().len() > heard).then_some(())
+    });
 
     // Nothing more is said, and the Session goes on to its silence timeout.
+    lucyd.clock.advance(ms(30_000));
     assert_eq!(next_state(&mut events).state, State::Idle);
     assert_eq!(lucyd.tts.sentences(), ["One."]);
     lucyd.thinking.assert_no_turn();

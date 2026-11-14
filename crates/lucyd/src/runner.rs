@@ -16,7 +16,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 
 use crate::adapters::{
-    Adapters, Notification, RateLimitStatus, Sound, SpeakerEvent, SttError, ThinkingEvent,
+    Adapters, Clock, Notification, RateLimitStatus, Sound, SpeakerEvent, SttError, ThinkingEvent,
+    Timer,
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
 use crate::authoring::{Authoring, Building};
@@ -373,7 +374,8 @@ impl Runner {
         }
         session.handle(Input::Building(*self.building.borrow_and_update()));
         let silence_timeout = Duration::from_secs_f64(silence_timeout);
-        let mut silence = SilenceTimer::new(silence_timeout);
+        let clock = &self.adapters.clock;
+        let mut silence = SilenceTimer::new(silence_timeout, clock.clone());
         if woken {
             // A false wake clears quickly.
             silence.first_timeout(WAKE_TIMEOUT.min(silence_timeout));
@@ -383,8 +385,10 @@ impl Runner {
         // being asked goes.
         let mut questions: VecDeque<Ask> = VecDeque::new();
         let mut answer_to = None;
-        let mut answer_timer =
-            SilenceTimer::new(Duration::from_secs_f64(confirmation.timeout_secs));
+        let mut answer_timer = SilenceTimer::new(
+            Duration::from_secs_f64(confirmation.timeout_secs),
+            clock.clone(),
+        );
 
         // Sent before anything the user says. The first run lasts until the
         // introduction's Turn has ended, so a Provider that can't be used
@@ -542,12 +546,12 @@ impl Runner {
                     }
                     Heard::Gate(BargeInEvent::BargeIn) => Input::BargeIn,
                 },
-                () = tokio::time::sleep_until(silence.deadline()), if silence.is_running() => {
+                () = silence.fired() => {
                     speaker.sound(Sound::Closing);
                     self.publish(State::Idle, None);
                     return;
                 }
-                () = tokio::time::sleep_until(answer_timer.deadline()), if answer_timer.is_running() => {
+                () = answer_timer.fired() => {
                     Input::AnswerTimedOut
                 }
                 }
@@ -709,14 +713,19 @@ struct SilenceTimer {
     remaining: Duration,
     /// When it last resumed, while running.
     resumed: Option<Instant>,
+    clock: Arc<dyn Clock>,
+    /// Set to when it runs out, while running.
+    timer: Box<dyn Timer>,
 }
 
 impl SilenceTimer {
-    fn new(timeout: Duration) -> Self {
+    fn new(timeout: Duration, clock: Arc<dyn Clock>) -> Self {
         SilenceTimer {
             timeout,
             remaining: timeout,
             resumed: None,
+            timer: clock.timer(),
+            clock,
         }
     }
 
@@ -725,30 +734,41 @@ impl SilenceTimer {
     }
 
     fn set_running(&mut self, running: bool) {
+        let now = self.clock.now();
         match (running, self.resumed) {
-            (true, None) => self.resumed = Some(Instant::now()),
+            (true, None) => self.resumed = Some(now),
             (false, Some(resumed)) => {
-                self.remaining = self.remaining.saturating_sub(resumed.elapsed());
+                let ran = now.saturating_duration_since(resumed);
+                self.remaining = self.remaining.saturating_sub(ran);
                 self.resumed = None;
             }
-            _ => {}
+            _ => return,
         }
+        self.timer.set(self.deadline());
     }
 
     /// Counts down from `timeout` until the next reset, instead of the
     /// usual timeout.
     fn first_timeout(&mut self, timeout: Duration) {
         self.remaining = timeout;
+        self.timer.set(self.deadline());
     }
 
     fn reset(&mut self) {
         self.remaining = self.timeout;
         if self.is_running() {
-            self.resumed = Some(Instant::now());
+            self.resumed = Some(self.clock.now());
         }
+        self.timer.set(self.deadline());
     }
 
-    fn deadline(&self) -> Instant {
-        self.resumed.unwrap_or_else(Instant::now) + self.remaining
+    /// When it runs out, while running.
+    fn deadline(&self) -> Option<Instant> {
+        self.resumed.map(|resumed| resumed + self.remaining)
+    }
+
+    /// Resolves once it runs out, while running.
+    fn fired(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        self.timer.fired()
     }
 }
