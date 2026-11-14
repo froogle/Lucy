@@ -11,3 +11,7 @@ Train the `hey_lucy.onnx` (default) and `lucy.onnx` (alternative) models with Li
 ## Comments
 
 2026-11-13 (user decision): no rented cloud GPU. Train on the maintainer's Apple-silicon Mac ("wawa"), which ticket 16's research lists as supported; Claude sets the Mac up for the LiveKit WakeWord v2 recipe when this ticket is picked up. Once trained, `hey_lucy.onnx` ships as the bundled default, replacing the interim `crates/lucyd/models/wake/hey_livekit.onnx`. Until then, the wake phrase is "Hey LiveKit".
+
+2026-11-14: "Hey Lucy" trained on wawa (M5 Pro) and bundled as `crates/lucyd/models/wake/hey_lucy.onnx`, replacing `hey_livekit.onnx`; how to reproduce it, the versions and the scores are in the README beside it (score 0.822; at threshold 0.5, recall 0.874 at 0.99 false alarms/h, 15.2% of sound-alikes accepted). The models live next to lucyd's other bundled models, not in a top-level `models/wake/`. `positive.wav` is now the maintainer saying "Hey Lucy" (score 0.79 in lucyd's engine). The pinned `livekit-wakeword` rev loads models from the 2.1.2 trainer.
+
+Still open: plain "Lucy". Its speech run used up the LiveKit free plan's $2.50 of Inference credit for November: 956 of 1,150 training clips were written before every request got HTTP 429. Rerun `setup --wakeword "lucy" --eval`, `train` and `eval` in `~/lucy-wake` on wawa on or after 2026-12-01; the clips already made are cached in `.cache/lkwb` and are reused. Then commit `lucy.onnx` beside `hey_lucy.onnx` and add it to the README.

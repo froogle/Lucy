@@ -1,6 +1,6 @@
-//! The real wake-word engine, LiveKit WakeWord v2 on tract, with the model
-//! bundled until the "Hey Lucy" models land. The recordings come from
-//! livekit-wakeword's own fixtures (Apache-2.0).
+//! The real wake-word engine, LiveKit WakeWord v2 on tract, with the bundled
+//! "Hey Lucy" model. `positive.wav` is the maintainer saying "Hey Lucy";
+//! `negative.wav` comes from livekit-wakeword's own fixtures (Apache-2.0).
 
 use std::path::{Path, PathBuf};
 

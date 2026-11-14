@@ -2,8 +2,8 @@
 //! the same tract runtime as the VAD. One fixed engine with a swappable
 //! model file; it is not a Provider.
 //!
-//! The bundled model is LiveKit's `hey_livekit.onnx` (Apache-2.0), standing
-//! in until the "Hey Lucy" and "Lucy" models are trained.
+//! The bundled model is `hey_lucy.onnx`, trained with LiveKit's recipe; its
+//! README in `models/wake/` says how to reproduce it.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,8 +13,8 @@ use livekit_wakeword::WakeWordModel;
 use super::{Error, WakeWord, SAMPLE_RATE};
 
 /// The bundled model's file name, which names its phrase.
-pub(crate) const BUNDLED_NAME: &str = "hey_livekit.onnx";
-const BUNDLED: &[u8] = include_bytes!("../../models/wake/hey_livekit.onnx");
+pub(crate) const BUNDLED_NAME: &str = "hey_lucy.onnx";
+const BUNDLED: &[u8] = include_bytes!("../../models/wake/hey_lucy.onnx");
 
 /// Writes the bundled model into `dir`, unless it is already there as it
 /// is, and returns its path: the engine loads models from files only. It is
