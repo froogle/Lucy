@@ -9,6 +9,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub use lucy_config::credentials::CredentialStore;
 use lucy_config::Provider;
 use tokio::sync::{mpsc, watch};
 
@@ -292,6 +293,8 @@ pub struct Adapters {
     pub tts: Box<dyn Tts>,
     pub notifier: Arc<dyn Notifier>,
     pub launcher: Arc<dyn Launcher>,
+    /// Where Plugin credentials are kept: the Secret Service.
+    pub credentials: Arc<dyn CredentialStore>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
 }
@@ -313,12 +316,23 @@ impl Adapters {
             tts: Box::new(Inert),
             notifier: Arc::new(Inert),
             launcher: Arc::new(Inert),
+            credentials: Arc::new(Inert),
             applications: vec![],
         }
     }
 }
 
 struct Inert;
+
+impl CredentialStore for Inert {
+    fn get(&self, _plugin: &str, _name: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn set(&self, _plugin: &str, _name: &str, _value: &str) -> Result<(), String> {
+        Err("this lucyd keeps no credentials".into())
+    }
+}
 
 impl Stt for Inert {
     fn transcribe(&self, _segment: SpeechSegment) -> Result<String, SttError> {

@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use lucy_config::credentials::CredentialStore;
 use lucy_config::{Config, Provider};
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
@@ -46,6 +47,8 @@ pub struct Harness {
     pub tts: FakeTts,
     pub notifier: FakeNotifier,
     pub launcher: FakeLauncher,
+    /// The Secret Service, as Plugin credentials are kept in it.
+    pub credentials: FakeCredentials,
     /// Where lucyd looks for desktop entries: the user's dir, then the
     /// system's.
     applications: [PathBuf; 2],
@@ -187,6 +190,7 @@ impl Harness {
             state: dir.path().join("state/lucy"),
         };
         let launcher = FakeLauncher::default();
+        let credentials = FakeCredentials::default();
         let applications = ["applications", "system-applications"].map(|d| dir.path().join(d));
         for dir in &applications {
             std::fs::create_dir(dir).unwrap();
@@ -208,6 +212,7 @@ impl Harness {
                 tts: Box::new(tts.clone()),
                 notifier: Arc::new(notifier.clone()),
                 launcher: Arc::new(launcher.clone()),
+                credentials: Arc::new(credentials.clone()),
                 applications: applications.to_vec(),
             },
         })
@@ -224,6 +229,7 @@ impl Harness {
             tts,
             notifier,
             launcher,
+            credentials,
             applications,
             bus: Arc::default(),
             config_path,
@@ -450,9 +456,9 @@ impl Harness {
         });
     }
 
-    /// The "never on the bus" rule: no transcript the STT produced and no text
-    /// the Thinking Provider streamed or TTS spoke appears in any IPC message.
-    /// Call it once a Session has ended.
+    /// The "never on the bus" rule: no transcript the STT produced, no text
+    /// the Thinking Provider streamed or TTS spoke, and no credential value
+    /// appears in any IPC message. Call it once a Session has ended.
     pub fn assert_nothing_private_on_bus(&self) {
         let deadline = Instant::now() + WAIT;
         while !self.bus_is_idle() {
@@ -465,6 +471,7 @@ impl Harness {
             self.stt.heard(),
             self.thinking.streamed(),
             self.tts.sentences(),
+            self.credentials.values(),
         ]
         .concat()
         .into_iter()
@@ -1407,6 +1414,50 @@ impl Launcher for FakeLauncher {
         self.launched.lock().unwrap().push(entry.to_owned());
         let launcher = launcher.map(<[String]>::to_vec);
         self.launched_through.lock().unwrap().push(launcher);
+        Ok(())
+    }
+}
+
+/// A Secret Service the test fills, never the user's own.
+#[derive(Clone, Default)]
+pub struct FakeCredentials {
+    /// By (Plugin, credential name).
+    values: Arc<Mutex<HashMap<(String, String), String>>>,
+    /// Why it can't be read, if it can't.
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+impl FakeCredentials {
+    /// The user has entered `value` as `plugin`'s credential `name`.
+    pub fn enter(&self, plugin: &str, name: &str, value: &str) {
+        self.values
+            .lock()
+            .unwrap()
+            .insert((plugin.into(), name.into()), value.into());
+    }
+
+    /// Every value entered.
+    pub fn values(&self) -> Vec<String> {
+        self.values.lock().unwrap().values().cloned().collect()
+    }
+
+    /// From now on it can't be read, for `reason`.
+    pub fn fail(&self, reason: &str) {
+        *self.failure.lock().unwrap() = Some(reason.into());
+    }
+}
+
+impl CredentialStore for FakeCredentials {
+    fn get(&self, plugin: &str, name: &str) -> Result<Option<String>, String> {
+        if let Some(reason) = self.failure.lock().unwrap().clone() {
+            return Err(reason);
+        }
+        let key = (plugin.to_owned(), name.to_owned());
+        Ok(self.values.lock().unwrap().get(&key).cloned())
+    }
+
+    fn set(&self, plugin: &str, name: &str, value: &str) -> Result<(), String> {
+        self.enter(plugin, name, value);
         Ok(())
     }
 }

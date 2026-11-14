@@ -139,6 +139,14 @@
             }
           ]
         },
+        "credentials": {
+          "default": [],
+          "description": "The names of the credentials its Manifest declares, entered with\n`lucy credentials <name>`. Never their values.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "enabled": {
           "description": "False once disabled. A disabled Plugin keeps its files and Approval.",
           "type": "boolean"

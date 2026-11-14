@@ -234,6 +234,10 @@ pub struct PluginInfo {
     pub status: PluginStatus,
     /// Why it is broken, when it is.
     pub problem: Option<String>,
+    /// The names of the credentials its Manifest declares, entered with
+    /// `lucy credentials <name>`. Never their values.
+    #[serde(default)]
+    pub credentials: Vec<String>,
 }
 
 /// Who wrote a Plugin. Lucy changes only her own.

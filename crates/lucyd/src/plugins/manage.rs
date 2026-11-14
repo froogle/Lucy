@@ -170,6 +170,10 @@ impl Host {
                         Author::Lucy => PluginAuthor::Lucy,
                         Author::Human => PluginAuthor::Human,
                     }),
+                    credentials: manifest
+                        .as_ref()
+                        .map(|m| m.access.credentials.clone())
+                        .unwrap_or_default(),
                     summary: manifest.map(|m| m.summary),
                     status,
                     problem,

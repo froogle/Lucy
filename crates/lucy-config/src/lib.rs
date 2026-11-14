@@ -2,6 +2,8 @@
 //!
 //! lucyd runs with no config file at all; every setting has a default here.
 
+pub mod credentials;
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fmt;

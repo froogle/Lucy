@@ -12,6 +12,8 @@ lucy-ipc.workspace = true
 serde.workspace = true
 toml.workspace = true
 toml_edit.workspace = true
+oo7 = { version = "0.7.1", default-features = false, features = ["tokio", "native_crypto"] }
+tokio = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 tempfile.workspace = true

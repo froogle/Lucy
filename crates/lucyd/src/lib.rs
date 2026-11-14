@@ -90,7 +90,12 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         notifications::fallback(&buses.status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
     let plugins_dir = plugin_paths.user.clone();
-    let plugin_host = plugins::Host::new(plugin_paths, sessions.clone(), buses.plugins.clone());
+    let plugin_host = plugins::Host::new(
+        plugin_paths,
+        sessions.clone(),
+        buses.plugins.clone(),
+        adapters.credentials.clone(),
+    );
     let thinking = adapters.thinking.clone();
     let authoring = authoring::Authoring::new(
         adapters.thinking.clone(),

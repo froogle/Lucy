@@ -56,6 +56,7 @@ fn main() -> ExitCode {
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
     adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher);
+    adapters.credentials = Arc::new(lucy_config::credentials::SecretService);
     // Utterances go beside the socket, in the user's runtime dir.
     let utterances = socket_path.parent().expect("the socket is in a dir");
     adapters.superwhisper = Arc::new(Superwhisper::new(

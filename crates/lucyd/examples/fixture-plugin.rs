@@ -5,6 +5,8 @@
 //! - `read_file {path}`: returns the file's contents.
 //! - `write_file {path, text}`: writes `text` to the file.
 //! - `save_state {text}`: writes `text` to `saved` in its private state dir.
+//! - `env`: writes its environment to `env` in its private state dir, one
+//!   `NAME=value` a line, sorted, and returns `ok`.
 //! - `pid`: returns its process id.
 //! - `crash`: exits without answering.
 //! - `reject`: answers with an MCP error.
@@ -118,6 +120,15 @@ impl ServerHandler for Fixture {
                     arg(&request, "text"),
                 )
                 .map(|()| "ok".into())
+            }
+            "env" => {
+                let dir = std::env::var("LUCY_PLUGIN_STATE_DIR").unwrap_or_default();
+                let mut vars: Vec<String> = std::env::vars()
+                    .map(|(name, value)| format!("{name}={value}\n"))
+                    .collect();
+                vars.sort();
+                std::fs::write(std::path::Path::new(&dir).join("env"), vars.concat())
+                    .map(|()| "ok".into())
             }
             "pid" => Ok(std::process::id().to_string()),
             "ask" => match &request.input_responses {

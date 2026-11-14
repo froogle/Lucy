@@ -27,7 +27,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Notification, NotificationKind};
+use crate::adapters::{CredentialStore, Notification, NotificationKind};
 use crate::mcp;
 use crate::runner::{self, Command};
 use crate::session::{Answer, Expects, Question};
@@ -146,6 +146,8 @@ pub struct Host {
     /// Held while changing `approvals.toml`, `plugins.toml` or a Plugin's
     /// files, so one change never undoes another.
     editing: Mutex<()>,
+    /// Where the credentials Plugins declare are kept.
+    credentials: Arc<dyn CredentialStore>,
 }
 
 /// A Plugin's Manifest and executable as they are now.
@@ -194,6 +196,7 @@ impl Host {
         paths: Paths,
         commands: mpsc::UnboundedSender<Command>,
         changes: ChangeBus,
+        credentials: Arc<dyn CredentialStore>,
     ) -> Arc<Host> {
         Arc::new(Host {
             paths,
@@ -202,6 +205,7 @@ impl Host {
             session: Mutex::default(),
             changes,
             editing: Mutex::default(),
+            credentials,
         })
     }
 
@@ -546,9 +550,10 @@ impl Host {
         verdict
     }
 
-    /// Starts the Plugin just to ask for its `tools/list`.
+    /// Starts the Plugin just to ask for its `tools/list`, with no
+    /// credentials: it may not be approved yet.
     async fn live_tools(&self, plugin: &Usable) -> Result<Vec<Tool>, String> {
-        let client = self.start(plugin).await?;
+        let client = self.start(plugin, &[]).await?;
         let listed = tokio::time::timeout(START_TIMEOUT, client.list_all_tools())
             .await
             .map_err(|_| "it didn't list its tools in time".to_owned())?
@@ -568,8 +573,54 @@ impl Host {
             .insert(hash.to_owned(), Err(reason));
     }
 
-    /// Starts the Plugin in its sandbox and connects to it.
-    async fn start(&self, plugin: &Usable) -> Result<RunningService<RoleClient, ()>, String> {
+    /// The approved `plugin`'s declared credentials, as env vars, or what
+    /// to tell the model when they can't all be had.
+    async fn credentials(&self, plugin: &Usable) -> Result<Vec<(String, String)>, String> {
+        let store = self.credentials.clone();
+        let name = plugin.name.clone();
+        let declared = plugin.manifest.access.credentials.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            declared
+                .into_iter()
+                .map(|credential| Ok((store.get(&name, &credential)?, credential)))
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .flatten()
+        .map_err(|e| {
+            format!(
+                "The {} Plugin's credentials can't be read: {e}.",
+                plugin.name
+            )
+        })?;
+        let missing: Vec<&str> = found
+            .iter()
+            .filter(|(value, _)| value.is_none())
+            .map(|(_, name)| &**name)
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "The {plugin} Plugin needs {}, which the user hasn't entered yet. They enter it \
+                 by running `lucy credentials {plugin}` in a terminal, never by voice or \
+                 through you.",
+                missing.join(" and "),
+                plugin = plugin.name,
+            ));
+        }
+        Ok(found
+            .into_iter()
+            .filter_map(|(value, name)| Some((name, value?)))
+            .collect())
+    }
+
+    /// Starts the Plugin in its sandbox with `env` added to its
+    /// environment, and connects to it.
+    async fn start(
+        &self,
+        plugin: &Usable,
+        env: &[(String, String)],
+    ) -> Result<RunningService<RoleClient, ()>, String> {
         let state_dir = self.paths.state_dir(&plugin.name);
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -589,6 +640,7 @@ impl Host {
                 command.env(var, value);
             }
         }
+        command.envs(env.iter().map(|(name, value)| (name, value)));
         sandbox::confine(
             &mut command,
             &plugin.folder,
@@ -805,6 +857,14 @@ impl SessionTools {
         let (plugin_name, tool) = name.split_once("__")?;
         let plugin = self.working().into_iter().find(|p| p.name == plugin_name)?;
         let entry = plugin.manifest.tools.iter().find(|t| t.name == tool)?;
+        let running = self.running.lock().await.contains_key(plugin_name);
+        let credentials = match running {
+            true => Vec::new(),
+            false => match self.host.credentials(&plugin).await {
+                Ok(credentials) => credentials,
+                Err(missing) => return Some(mcp::error(missing)),
+            },
+        };
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
         }
@@ -813,7 +873,7 @@ impl SessionTools {
             let peer = {
                 let mut running = self.running.lock().await;
                 if !running.contains_key(plugin_name) {
-                    let client = self.host.start(&plugin).await?;
+                    let client = self.host.start(&plugin, &credentials).await?;
                     running.insert(plugin_name.to_owned(), client);
                 }
                 running[plugin_name].peer().clone()
