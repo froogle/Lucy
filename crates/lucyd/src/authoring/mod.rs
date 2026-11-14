@@ -14,7 +14,9 @@
 
 mod template;
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -26,7 +28,8 @@ use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use crate::adapters::{
-    Notification, NotificationKind, Notifier, SessionModel, Thinking, ThinkingEvent, Workspace,
+    Adapters, Clock, Notification, NotificationKind, Notifier, SessionModel, Thinking,
+    ThinkingEvent, Timer, Workspace,
 };
 use crate::mcp::{error, text, tool, Caller, Relays, Token};
 use crate::plugins::{sandbox, Host};
@@ -56,11 +59,23 @@ pub struct Authoring {
     plugins_dir: PathBuf,
     host: Arc<Host>,
     commands: mpsc::UnboundedSender<Command>,
-    /// For the builder's progress lines.
+    /// For what a build shows rather than says.
     notifier: Arc<dyn Notifier>,
-    /// Whether a build is running.
-    building: watch::Sender<bool>,
+    /// What each build's budget counts on.
+    clock: Arc<dyn Clock>,
+    building: watch::Sender<Building>,
     builds: Mutex<Builds>,
+}
+
+/// What Authoring is doing, for the building mark and the Session.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Building {
+    #[default]
+    No,
+    /// The Delegate is working on a build, or lucyd is checking it.
+    Working,
+    /// A build waits on the user: for an answer, or their Approval.
+    Waiting,
 }
 
 #[derive(Default)]
@@ -80,31 +95,67 @@ struct Request {
 }
 
 impl Authoring {
+    /// Builds through `adapters`' Thinking, notifier and clock.
     pub fn new(
-        thinking: Arc<dyn Thinking>,
+        adapters: &Adapters,
         relays: Relays,
         config_path: PathBuf,
         plugins_dir: PathBuf,
         host: Arc<Host>,
         commands: mpsc::UnboundedSender<Command>,
-        notifier: Arc<dyn Notifier>,
     ) -> Arc<Authoring> {
         Arc::new(Authoring {
-            thinking,
+            thinking: adapters.thinking.clone(),
             relays,
             config_path,
             plugins_dir,
             host,
             commands,
-            notifier,
-            building: watch::Sender::new(false),
+            notifier: adapters.notifier.clone(),
+            clock: adapters.clock.clone(),
+            building: watch::Sender::new(Building::No),
             builds: Mutex::default(),
         })
     }
 
-    /// Whether a build is running, as it changes.
-    pub fn building(&self) -> watch::Receiver<bool> {
+    /// What Authoring is doing, as it changes.
+    pub fn building(&self) -> watch::Receiver<Building> {
         self.building.subscribe()
+    }
+
+    /// Publishes what the current build in `builds` is doing.
+    fn show_building(&self, builds: &Builds) {
+        let building = match &builds.current {
+            Some(build) => build.state.lock().unwrap().stage.building(),
+            None => Building::No,
+        };
+        self.building.send_replace(building);
+    }
+
+    /// Shows `notification`, which offers no action.
+    fn show(&self, notification: Notification) {
+        self.notifier
+            .notify(notification, mpsc::unbounded_channel().0);
+    }
+
+    /// Shows a `report_progress` line from the build of `plugin`.
+    fn show_progress(&self, plugin: &str, progress: String) {
+        self.show(build_notification(
+            format!("Building the {plugin} Plugin"),
+            progress,
+        ));
+    }
+
+    /// The Session ended without Lucy saying she'll keep working on the
+    /// build running, if one is: she shows it instead.
+    pub fn show_still_building(&self) {
+        let building = self.builds.lock().unwrap().current.clone();
+        if let Some(build) = building {
+            self.show(build_notification(
+                format!("Lucy is still building the {} Plugin", build.name),
+                "She'll keep working on it, and let you know when it's ready.".to_owned(),
+            ));
+        }
     }
 
     /// `request_plugin`: starts a build, and Lucy says it will take a few
@@ -133,8 +184,8 @@ impl Authoring {
             Ok(build) => builds.current = Some(build),
             Err(reason) => return error(reason),
         }
+        self.show_building(&builds);
         drop(builds);
-        self.building.send_replace(true);
         let _ = self.commands.send(Command::Say(A_FEW_MINUTES.to_owned()));
         text(
             "The build has started, and Lucy has told the user it will take a few minutes. \
@@ -191,24 +242,23 @@ impl Authoring {
             .workspace(&name)
             .map_err(|e| format!("I can't make the build folder: {e}"))?;
 
-        let budget = Duration::from_secs_f64(settings.budget_secs);
+        let allowance = Duration::from_secs_f64(settings.budget_secs);
         let build = Arc::new(Build {
             name: name.clone(),
             request,
             workspace: workspace.clone(),
             authoring: Arc::downgrade(self),
             progress_notifications: settings.progress_notifications,
-            budget,
+            allowance,
             state: Mutex::new(BuildState {
                 stage: Stage::Working,
                 turns: 0,
                 failure: None,
                 model: None,
                 token: None,
-                budget: Budget::new(budget),
+                budget: Budget::new(allowance, self.clock.clone()),
                 waiting: Vec::new(),
             }),
-            changed: Notify::new(),
             over: Notify::new(),
         });
         let (relay, token) = self.relays.issue(Caller::Delegate(Arc::downgrade(&build)));
@@ -299,7 +349,7 @@ impl Authoring {
                 }
             }
         }
-        self.building.send_replace(builds.current.is_some());
+        self.show_building(&builds);
     }
 }
 
@@ -370,10 +420,8 @@ pub struct Build {
     /// Show `report_progress` lines as notifications.
     progress_notifications: bool,
     /// How long it may work.
-    budget: Duration,
+    allowance: Duration,
     state: Mutex<BuildState>,
-    /// Told when the stage changes.
-    changed: Notify,
     /// Told when the build is over.
     over: Notify,
 }
@@ -407,31 +455,52 @@ struct Budget {
     remaining: Duration,
     /// When it last resumed, while running.
     resumed: Option<Instant>,
+    clock: Arc<dyn Clock>,
+    /// Set to when it runs out, while running.
+    timer: Box<dyn Timer>,
 }
 
 impl Budget {
-    /// A running countdown from `budget`.
-    fn new(budget: Duration) -> Self {
-        Budget {
-            remaining: budget,
-            resumed: Some(Instant::now()),
-        }
+    /// A running countdown from `allowance`.
+    fn new(allowance: Duration, clock: Arc<dyn Clock>) -> Self {
+        let mut budget = Budget {
+            remaining: allowance,
+            resumed: Some(clock.now()),
+            timer: clock.timer(),
+            clock,
+        };
+        budget.timer.set(budget.deadline());
+        budget
     }
 
     fn set_running(&mut self, running: bool) {
+        let now = self.clock.now();
         match (running, self.resumed) {
-            (true, None) => self.resumed = Some(Instant::now()),
+            (true, None) => self.resumed = Some(now),
             (false, Some(resumed)) => {
-                self.remaining = self.remaining.saturating_sub(resumed.elapsed());
+                let worked = now.saturating_duration_since(resumed);
+                self.remaining = self.remaining.saturating_sub(worked);
                 self.resumed = None;
             }
-            _ => {}
+            _ => return,
         }
+        self.timer.set(self.deadline());
     }
 
     /// When it runs out, while running.
     fn deadline(&self) -> Option<Instant> {
         self.resumed.map(|resumed| resumed + self.remaining)
+    }
+
+    /// Whether it has run out.
+    fn is_spent(&self) -> bool {
+        self.deadline()
+            .is_some_and(|deadline| deadline <= self.clock.now())
+    }
+
+    /// Resolves once it may have run out.
+    fn fired(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        self.timer.fired()
     }
 }
 
@@ -448,11 +517,23 @@ enum Stage {
     Over,
 }
 
+impl Stage {
+    fn building(self) -> Building {
+        match self {
+            Stage::Working | Stage::Checking => Building::Working,
+            Stage::Asking | Stage::Approving => Building::Waiting,
+            Stage::Over => Building::No,
+        }
+    }
+}
+
 impl Build {
     /// Follows the Delegate's model process until the build is over.
     async fn follow(self: Arc<Self>, mut events: mpsc::UnboundedReceiver<ThinkingEvent>) {
         loop {
-            let deadline = self.state.lock().unwrap().budget.deadline();
+            // Dropped only once its wake-up is handled, which a test's clock
+            // waits for.
+            let mut budget_fired = self.state.lock().unwrap().budget.fired();
             tokio::select! {
                 event = events.recv() => match event {
                     Some(ThinkingEvent::TurnEnd) => self.turn_ended(),
@@ -463,10 +544,9 @@ impl Build {
                     }
                     Some(_) => {}
                 },
-                () = until(deadline) => if self.out_of_time() {
+                () = &mut budget_fired => if self.out_of_time() {
                     return;
                 },
-                () = self.changed.notified() => {}
                 () = self.over.notified() => return,
             }
         }
@@ -475,18 +555,27 @@ impl Build {
     /// If the budget ran out, the build stops, its staging kept, and Lucy
     /// says so. Returns whether it did.
     fn out_of_time(&self) -> bool {
-        let deadline = self.state.lock().unwrap().budget.deadline();
         // It may have stopped counting just now.
-        if !deadline.is_some_and(|deadline| deadline <= Instant::now()) {
+        if !self.state.lock().unwrap().budget.is_spent() {
             return false;
         }
-        self.tell(format!(
-            "[Lucy's Plugin build] The {} Plugin ran out of time: it wasn't done after {}. Its \
-             work so far is kept, and asking for it again carries on from there. Tell the user \
-             plainly, in a sentence, and that they can say \"try again\".",
-            self.name,
-            spoken_duration(self.budget)
-        ));
+        let allowance = spoken_duration(self.allowance);
+        self.tell(
+            format!(
+                "[Lucy's Plugin build] The {} Plugin ran out of time: it wasn't done after \
+                 {allowance}. Its work so far is kept, and asking for it again carries on from \
+                 there. Tell the user plainly, in a sentence, and that they can say \"try \
+                 again\".",
+                self.name
+            ),
+            build_notification(
+                format!("The {} Plugin ran out of time", self.name),
+                format!(
+                    "It wasn't done after {allowance}. Its work so far is kept: ask Lucy to try \
+                     again."
+                ),
+            ),
+        );
         self.finish();
         true
     }
@@ -503,15 +592,7 @@ impl Build {
                 eprintln!("lucyd: building {}: {progress}", self.name);
                 if let Some(authoring) = self.authoring.upgrade() {
                     if self.progress_notifications {
-                        let shown = Notification {
-                            summary: format!("Building the {} Plugin", self.name),
-                            body: progress,
-                            action: None,
-                            kind: NotificationKind::Build,
-                        };
-                        authoring
-                            .notifier
-                            .notify(shown, mpsc::unbounded_channel().0);
+                        authoring.show_progress(&self.name, progress);
                     }
                 }
                 text("Noted.")
@@ -546,7 +627,9 @@ impl Build {
         }
         state.enter(to);
         drop(state);
-        self.changed.notify_one();
+        if let Some(authoring) = self.authoring.upgrade() {
+            authoring.show_building(&authoring.builds.lock().unwrap());
+        }
         Ok(())
     }
 
@@ -570,12 +653,10 @@ impl Build {
         let Some(authoring) = self.authoring.upgrade() else {
             return error("Lucy is stopping.");
         };
-        let kept = Notification {
-            summary: format!("Lucy has a question about the {} Plugin", self.name),
-            body: format!("{question}\nShe'll ask at your next Session."),
-            action: None,
-            kind: NotificationKind::Build,
-        };
+        let kept = build_notification(
+            format!("Lucy has a question about the {} Plugin", self.name),
+            format!("{question}\nShe'll ask at your next Session."),
+        );
         let question = Question {
             prompt: question,
             expects: Expects::Words,
@@ -682,12 +763,10 @@ impl Build {
     /// Asks the user's Approval; on a yes, answers the request the Plugin
     /// was built for and asks whether that was the one.
     async fn approve(self: Arc<Self>, authoring: Arc<Authoring>) {
-        let kept = Notification {
-            summary: format!("The {} Plugin is ready", self.name),
-            body: "Lucy will ask for your Approval at the start of your next Session.".to_owned(),
-            action: None,
-            kind: NotificationKind::Build,
-        };
+        let kept = build_notification(
+            format!("The {} Plugin is ready", self.name),
+            "Lucy will ask for your Approval at the start of your next Session.".to_owned(),
+        );
         match authoring
             .host
             .request_approval_when_quiet(&self.name, kept)
@@ -731,12 +810,18 @@ impl Build {
         if let Err(refused) = self.advance(Stage::Working, Stage::Over) {
             return refused;
         }
-        self.tell(format!(
-            "[Lucy's Plugin build] The {} Plugin can't be built with permitted access: \
-             {reason}. The best permitted fallback: {fallback}. Tell the user that limit \
-             plainly, in a sentence, and offer the fallback.",
-            self.name
-        ));
+        self.tell(
+            format!(
+                "[Lucy's Plugin build] The {} Plugin can't be built with permitted access: \
+                 {reason}. The best permitted fallback: {fallback}. Tell the user that limit \
+                 plainly, in a sentence, and offer the fallback.",
+                self.name
+            ),
+            build_notification(
+                format!("Lucy can't build the {} Plugin", self.name),
+                format!("{reason}.\nShe'll tell you more at your next Session."),
+            ),
+        );
         self.finish();
         text("Lucy will tell the user. End your turn.")
     }
@@ -760,18 +845,27 @@ impl Build {
         if self.state.lock().unwrap().stage == Stage::Over {
             return;
         }
-        self.tell(format!(
-            "[Lucy's Plugin build] The {} Plugin couldn't be built: {reason}\n\nTell the user \
-             plainly, in a sentence or two, what failed.",
-            self.name
-        ));
+        self.tell(
+            format!(
+                "[Lucy's Plugin build] The {} Plugin couldn't be built: {reason}\n\nTell the \
+                 user plainly, in a sentence or two, what failed.",
+                self.name
+            ),
+            build_notification(
+                format!("Lucy couldn't build the {} Plugin", self.name),
+                format!("{reason}.\nShe'll tell you more at your next Session."),
+            ),
+        );
         self.finish();
     }
 
-    /// Starts a Turn of the Session model once neither side is speaking.
-    fn tell(&self, text: String) {
+    /// Starts a Turn of the Session model once neither side is speaking,
+    /// at the next Session if none is open, showing `kept` meanwhile.
+    fn tell(&self, text: String, kept: Notification) {
         if let Some(authoring) = self.authoring.upgrade() {
-            let _ = authoring.commands.send(Command::Turn(text));
+            let _ = authoring
+                .commands
+                .send(Command::TurnOrNextSession(text, kept));
         }
     }
 
@@ -795,11 +889,13 @@ impl Build {
     }
 }
 
-/// Resolves at `deadline`, or never.
-async fn until(deadline: Option<Instant>) {
-    match deadline {
-        Some(deadline) => tokio::time::sleep_until(deadline).await,
-        None => std::future::pending().await,
+/// What a build shows rather than says.
+fn build_notification(summary: String, body: String) -> Notification {
+    Notification {
+        summary,
+        body,
+        action: None,
+        kind: NotificationKind::Build,
     }
 }
 

@@ -5,13 +5,16 @@
 //! An adapter keeps the sender it was handed alive for as long as the handle
 //! it returned (`SessionModel`, `Speaker`).
 
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 pub use lucy_config::credentials::CredentialStore;
 use lucy_config::Provider;
 use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
 
 use crate::audio::Hearing;
 
@@ -256,6 +259,65 @@ pub enum NotificationAction {
     EndSession,
 }
 
+/// Time, as an Authoring build's budget counts it.
+pub trait Clock: Send + Sync {
+    fn now(&self) -> Instant;
+    /// A timer, not yet set.
+    fn timer(&self) -> Box<dyn Timer>;
+}
+
+/// Goes off at the deadline it was last set to.
+pub trait Timer: Send {
+    /// `None` stops it.
+    fn set(&mut self, deadline: Option<Instant>);
+    /// Resolves once the clock reaches the deadline, as it is set while
+    /// this waits.
+    fn fired(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+}
+
+/// The monotonic clock, through tokio.
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn timer(&self) -> Box<dyn Timer> {
+        Box::new(SystemTimer(watch::Sender::new(None)))
+    }
+}
+
+struct SystemTimer(watch::Sender<Option<Instant>>);
+
+impl Timer for SystemTimer {
+    fn set(&mut self, deadline: Option<Instant>) {
+        self.0.send_replace(deadline);
+    }
+
+    fn fired(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let mut deadline = self.0.subscribe();
+        Box::pin(async move {
+            loop {
+                let set = *deadline.borrow_and_update();
+                match set {
+                    Some(at) if at <= Instant::now() => return,
+                    Some(at) => tokio::select! {
+                        () = tokio::time::sleep_until(at) => {}
+                        _ = deadline.changed() => {}
+                    },
+                    None => {
+                        if deadline.changed().await.is_err() {
+                            // The timer is gone: it never goes off.
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                }
+            }
+        })
+    }
+}
+
 /// Desktop notifications (`org.freedesktop.Notifications`).
 pub trait Notifier: Send + Sync {
     /// Shows `notification` without blocking. If the user picks its action,
@@ -298,6 +360,8 @@ pub struct Adapters {
     pub launcher: Arc<dyn Launcher>,
     /// Where Plugin credentials are kept: the Secret Service.
     pub credentials: Arc<dyn CredentialStore>,
+    /// What an Authoring build's budget counts time on.
+    pub clock: Arc<dyn Clock>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
 }
@@ -320,6 +384,7 @@ impl Adapters {
             notifier: Arc::new(Inert),
             launcher: Arc::new(Inert),
             credentials: Arc::new(Inert),
+            clock: Arc::new(SystemClock),
             applications: vec![],
         }
     }

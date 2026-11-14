@@ -98,13 +98,12 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
     );
     let thinking = adapters.thinking.clone();
     let authoring = authoring::Authoring::new(
-        adapters.thinking.clone(),
+        &adapters,
         relays.clone(),
         config_path.clone(),
         plugins_dir,
         plugin_host.clone(),
         sessions.clone(),
-        adapters.notifier.clone(),
     );
     let providers = ipc::Providers {
         thinking: adapters.thinking.clone(),

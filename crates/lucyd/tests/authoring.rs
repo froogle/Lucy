@@ -93,6 +93,18 @@ fn barrier(lucyd: &Harness) {
     assert!(lucyd.client().start_session().is_err());
 }
 
+/// Ends the Session by the Indicator or `lucy end` while a build runs:
+/// Lucy can't say she'll keep working on it, so she shows it.
+fn end_mid_build(lucyd: &Harness) {
+    lucyd.client().end_session().unwrap();
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
+    assert_eq!(shown.summary, "Lucy is still building the photos Plugin");
+    assert_eq!(
+        shown.body,
+        "She'll keep working on it, and let you know when it's ready."
+    );
+}
+
 #[test]
 fn request_plugin_starts_an_advanced_tier_delegate_with_the_brief_and_the_template() {
     let lucyd = Harness::start();
@@ -302,7 +314,7 @@ fn progress_notifications_can_be_switched_off() {
         "report_progress",
         json!({"text": "Writing the photo search"}),
     ));
-    lucyd.client().end_session().unwrap();
+    end_mid_build(&lucyd);
     ok(delegate.call_tool_with(
         "cannot",
         json!({"reason": "no API", "fallback": "open the website"}),
@@ -311,8 +323,8 @@ fn progress_notifications_can_be_switched_off() {
     // Everything shown up to the build's last word.
     loop {
         let shown = lucyd.notifier.next_notification();
-        assert_ne!(shown.kind, NotificationKind::Build, "{shown:?}");
-        if shown.kind == NotificationKind::Reply {
+        assert_ne!(shown.body, "Writing the photo search", "{shown:?}");
+        if shown.summary == "Lucy can't build the photos Plugin" {
             break;
         }
     }
@@ -320,16 +332,22 @@ fn progress_notifications_can_be_switched_off() {
 
 #[test]
 fn a_build_out_of_time_stops_with_a_plain_report_and_asking_again_resumes_its_work() {
-    let lucyd = Harness::with_config("[authoring]\nbudget_secs = 0.3\n");
+    let lucyd = Harness::with_config("[authoring]\nbudget_secs = 600\n");
     let _events = request_photos(&lucyd);
     let delegate = &lucyd.thinking.delegate;
     delegate.next_turn();
     let dir = delegate.workspace().dir;
     std::fs::write(dir.join("notes.txt"), "half done").unwrap();
 
+    lucyd.clock.advance(Duration::from_secs(599));
+    barrier(&lucyd);
+    lucyd.thinking.assert_no_turn();
+    lucyd.clock.advance(Duration::from_secs(1));
+
     let report = lucyd.thinking.next_turn();
     assert!(report.contains("photos"), "{report}");
     assert!(report.contains("ran out of time"), "{report}");
+    assert!(report.contains("10 minutes"), "{report}");
     assert!(report.contains("try again"), "{report}");
     assert!(delegate
         .call_tool_with("report_progress", json!({"text": "hi"}))
@@ -374,37 +392,115 @@ fn ending_the_session_by_voice_mid_build_says_lucy_keeps_working_and_the_build_g
 }
 
 #[test]
-fn with_no_session_open_cannot_is_shown_as_a_notification() {
+fn ending_the_session_by_the_indicator_mid_build_shows_that_lucy_keeps_working() {
     let lucyd = Harness::start();
     let _events = request_photos(&lucyd);
+    lucyd.thinking.delegate.next_turn();
+
+    end_mid_build(&lucyd);
+
+    assert_eq!(lucyd.tts.sentences(), [A_FEW_MINUTES]);
+    assert!(lucyd.client().status().unwrap().building);
+}
+
+#[test]
+fn with_no_session_open_cannot_is_shown_plainly_and_told_once_at_the_next_session_start() {
+    const NO_API: &str = "Google Photos has no API for reading your library";
+    let lucyd = Harness::start();
+    let mut events = request_photos(&lucyd);
     let delegate = &lucyd.thinking.delegate;
     delegate.next_turn();
-    lucyd.client().end_session().unwrap();
+    end_mid_build(&lucyd);
+    until_state(&mut events, State::Idle);
 
     ok(delegate.call_tool_with(
         "cannot",
         json!({
-            "reason": "Google Photos has no API for reading your library",
+            "reason": NO_API,
             "fallback": "open Google Photos search for Mount Rainier",
         }),
     ));
-    let shown = lucyd.notifier.next_notification_of(NotificationKind::Reply);
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
+    assert_eq!(shown.summary, "Lucy can't build the photos Plugin");
+    assert_eq!(
+        shown.body,
+        format!("{NO_API}.\nShe'll tell you more at your next Session.")
+    );
+
+    lucyd.client().start_session().unwrap();
+    let told = lucyd.thinking.next_turn();
+    assert!(told.contains(NO_API), "{told}");
+    lucyd.thinking.turn_end();
+    lucyd.client().end_session().unwrap();
+    lucyd.client().start_session().unwrap();
+    barrier(&lucyd);
+    lucyd.thinking.assert_no_turn();
+    let shown = lucyd.notifier.shown();
+    assert!(!shown.iter().any(|n| n.body.contains(NO_API)), "{shown:?}");
+}
+
+#[test]
+fn the_building_mark_is_off_while_a_build_waits_on_the_user() {
+    let lucyd = Harness::start();
+    let mut events = request_photos(&lucyd);
+    let delegate = &lucyd.thinking.delegate;
+    delegate.next_turn();
+    end_mid_build(&lucyd);
+    until_state(&mut events, State::Idle);
+
+    ok(delegate.call_tool_with(
+        "ask_user",
+        json!({"question": "Which folder are your photos in?"}),
+    ));
+    let waiting = next_state(&mut events);
+    assert_eq!((waiting.state, waiting.building), (State::Idle, false));
+
+    lucyd.client().start_session().unwrap();
+    until_state(&mut events, State::Confirming);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("the Pictures folder");
+    delegate.next_turn();
+    wait_until("the building mark", || {
+        lucyd.client().status().unwrap().building.then_some(())
+    });
+}
+
+#[test]
+fn a_kept_question_is_shown_once_however_many_sessions_end_before_it_is_asked() {
+    const QUESTION: &str = "Which folder are your photos in?";
+    let lucyd = Harness::start();
+    let mut events = request_photos(&lucyd);
+    let delegate = &lucyd.thinking.delegate;
+    delegate.next_turn();
+    end_mid_build(&lucyd);
+    ok(delegate.call_tool_with("ask_user", json!({"question": QUESTION})));
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
+    assert!(shown.body.contains(QUESTION), "{shown:?}");
+
+    // The user is still speaking, so it isn't asked before this Session ends.
+    lucyd.start_speaking();
+    lucyd.client().start_session().unwrap();
+    lucyd.client().end_session().unwrap();
+    lucyd.mumble();
+    lucyd.client().start_session().unwrap();
+    until_state(&mut events, State::Confirming);
+    assert_eq!(lucyd.tts.next_sentence(), QUESTION);
+
+    let shown = lucyd.notifier.shown();
     assert!(
-        shown
-            .body
-            .contains("Google Photos has no API for reading your library"),
+        !shown.iter().any(|n| n.body.contains(QUESTION)),
         "{shown:?}"
     );
 }
 
 #[test]
 fn a_question_parked_with_no_session_open_is_shown_then_asked_at_the_next_session_start() {
-    // The budget doesn't count while the question waits.
-    let lucyd = Harness::with_config("[authoring]\nbudget_secs = 0.5\n");
+    let lucyd = Harness::with_config("[authoring]\nbudget_secs = 600\n");
     let mut events = request_photos(&lucyd);
     let delegate = &lucyd.thinking.delegate;
     delegate.next_turn();
-    lucyd.client().end_session().unwrap();
+    end_mid_build(&lucyd);
 
     ok(delegate.call_tool_with(
         "ask_user",
@@ -415,8 +511,8 @@ fn a_question_parked_with_no_session_open_is_shown_then_asked_at_the_next_sessio
         shown.body.contains("Which folder are your photos in?"),
         "{shown:?}"
     );
-    // sleep-ok: the budget must not run out while the question waits
-    std::thread::sleep(Duration::from_secs(1));
+    // The budget doesn't count while the question waits.
+    lucyd.clock.advance(Duration::from_secs(3600));
     delegate.assert_no_turn();
 
     lucyd.client().start_session().unwrap();
@@ -631,13 +727,16 @@ fn a_build_that_passes_after_the_session_ended_is_notified_and_offered_at_the_ne
     let delegate = &lucyd.thinking.delegate;
     delegate.next_turn();
     let dir = delegate.workspace().dir;
-    lucyd.client().end_session().unwrap();
+    end_mid_build(&lucyd);
     until_state(&mut events, State::Idle);
 
     submit(&lucyd, &dir, "find photos by place");
     let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
     assert_eq!(shown.summary, "The photos Plugin is ready");
-    assert!(lucyd.client().status().unwrap().building);
+    // It waits on the user, so the mark is off.
+    wait_until("the building mark to go", || {
+        (!lucyd.client().status().unwrap().building).then_some(())
+    });
 
     lucyd.client().start_session().unwrap();
     approve_and_answer(
@@ -664,7 +763,7 @@ fn a_plugin_built_after_the_session_ended_and_approved_at_the_next_gets_its_cred
     let delegate = &lucyd.thinking.delegate;
     delegate.next_turn();
     let dir = delegate.workspace().dir;
-    lucyd.client().end_session().unwrap();
+    end_mid_build(&lucyd);
     until_state(&mut events, State::Idle);
     lucyd.credentials.enter("photos", "PHOTOS_KEY", "p-123");
 

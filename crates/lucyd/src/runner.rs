@@ -19,7 +19,7 @@ use crate::adapters::{
     Adapters, Notification, RateLimitStatus, Sound, SpeakerEvent, SttError, ThinkingEvent,
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
-use crate::authoring::Authoring;
+use crate::authoring::{Authoring, Building};
 use crate::limits;
 use crate::mcp::Relays;
 use crate::notifications;
@@ -50,6 +50,9 @@ pub enum Command {
     /// neither Lucy nor the user is speaking. With no open Session, they
     /// are shown instead.
     Turn(String),
+    /// As `Turn`, but with no Session open, or if it ends first, the Turn
+    /// waits for the next Session and this is shown meanwhile.
+    TurnOrNextSession(String, Notification),
     /// `test.voice_preview`: say a sentence outside any Session.
     VoicePreview(VoicePreview),
     /// `test.mic_level` or `test.wake_word`, outside any Session.
@@ -61,13 +64,29 @@ pub struct Ask {
     /// Shown when the question is asked: details too long to say.
     pub shown: Option<Notification>,
     pub reply: oneshot::Sender<Answer>,
-    /// Wait to ask until neither Lucy nor the user is speaking, rather
-    /// than as part of the Turn in progress.
-    pub quiet: bool,
-    /// With no Session open, or if the Session ends before it is asked, the
-    /// question waits for the next Session and this is shown, rather than
-    /// it going unanswered. Only for a quiet question.
-    pub keep: Option<Notification>,
+    pub when: When,
+}
+
+/// When Lucy asks a question, or starts a Turn of her own.
+pub enum When {
+    /// As part of the Turn in progress.
+    Now,
+    /// Once neither Lucy nor the user is speaking.
+    Quiet,
+    /// As `Quiet`; but with no Session open, or if the Session ends
+    /// first, at the next Session, and this is shown meanwhile, rather than
+    /// it going unsaid.
+    QuietOrNextSession(Notification),
+    /// Kept for the next Session, as `QuietOrNextSession` once its
+    /// notification has been shown.
+    Kept,
+}
+
+impl When {
+    /// Whether it waits for the next Session rather than going unsaid.
+    pub fn keeps(&self) -> bool {
+        matches!(self, When::QuietOrNextSession(_) | When::Kept)
+    }
 }
 
 /// Asks the user `question` in the open Session, showing `shown` as it is
@@ -78,15 +97,7 @@ pub async fn ask(
     question: Question,
     shown: Option<Notification>,
 ) -> Option<Answer> {
-    let (reply, answer) = oneshot::channel();
-    let _ = commands.send(Command::Ask(Ask {
-        question,
-        shown,
-        reply,
-        quiet: false,
-        keep: None,
-    }));
-    answer.await.ok()
+    ask_at(commands, question, shown, When::Now).await
 }
 
 /// Asks the user `question`, as `ask` does, but only once neither Lucy nor
@@ -97,7 +108,7 @@ pub fn ask_when_quiet(
     question: Question,
     shown: Option<Notification>,
 ) -> impl std::future::Future<Output = Option<Answer>> {
-    ask_quietly(commands, question, shown, None)
+    ask_at(commands, question, shown, When::Quiet)
 }
 
 /// Asks the user `question`, as `ask_when_quiet` does, but with no Session
@@ -109,22 +120,23 @@ pub fn ask_when_quiet_or_next_session(
     shown: Option<Notification>,
     kept: Notification,
 ) -> impl std::future::Future<Output = Option<Answer>> {
-    ask_quietly(commands, question, shown, Some(kept))
+    ask_at(commands, question, shown, When::QuietOrNextSession(kept))
 }
 
-fn ask_quietly(
+/// Asks the user `question` `when` says. The question is queued by the
+/// time this returns.
+pub fn ask_at(
     commands: &mpsc::UnboundedSender<Command>,
     question: Question,
     shown: Option<Notification>,
-    keep: Option<Notification>,
+    when: When,
 ) -> impl std::future::Future<Output = Option<Answer>> {
     let (reply, answer) = oneshot::channel();
     let _ = commands.send(Command::Ask(Ask {
         question,
         shown,
         reply,
-        quiet: true,
-        keep,
+        when,
     }));
     async move { answer.await.ok() }
 }
@@ -163,18 +175,28 @@ pub struct Runner {
     /// False once the source of whether the user is speaking has gone away.
     speaking_open: bool,
     sessions_started: u64,
-    /// Whether an Authoring build is running.
-    building: watch::Receiver<bool>,
+    /// What Authoring is doing.
+    building: watch::Receiver<Building>,
     authoring: Arc<Authoring>,
     /// What waits to be said until neither Lucy nor the user is speaking,
-    /// in order. Between Sessions, only the questions kept for the next.
+    /// in order. Between Sessions, only what is kept for the next.
     parked: VecDeque<Parked>,
 }
 
 /// What waits to be said until neither Lucy nor the user is speaking.
 enum Parked {
     Ask(Ask),
-    Turn(String),
+    /// Instructions for a Turn of Lucy's own, never `When::Now`.
+    Turn(String, When),
+}
+
+impl Parked {
+    fn when(&mut self) -> &mut When {
+        match self {
+            Parked::Ask(ask) => &mut ask.when,
+            Parked::Turn(_, when) => when,
+        }
+    }
 }
 
 impl Runner {
@@ -245,10 +267,13 @@ impl Runner {
             Command::End(reply) | Command::EndAfterSpeech(reply) => {
                 let _ = reply.send(Err(EndError));
             }
-            Command::Ask(ask) if ask.keep.is_some() => self.keep(ask),
+            Command::Ask(ask) if ask.when.keeps() => self.keep(Parked::Ask(ask)),
             // `reply` is dropped unanswered: no one can answer.
             Command::Ask(ask) => self.notify(notifications::unasked(&ask.question.prompt)),
             Command::Turn(text) => self.notify(notifications::untold(&text)),
+            Command::TurnOrNextSession(text, kept) => {
+                self.keep(Parked::Turn(text, When::QuietOrNextSession(kept)));
+            }
             // Lucy's aside on a Turn of her own, which there isn't.
             Command::Say(_) => {}
             command => return Some(command),
@@ -285,13 +310,13 @@ impl Runner {
         let id = SessionId(self.sessions_started);
         let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
-        // What wasn't said: questions kept for the next Session wait for
-        // it, and the rest is shown.
-        for parked in std::mem::take(&mut self.parked) {
-            match parked {
-                Parked::Ask(ask) if ask.keep.is_some() => self.keep(ask),
-                Parked::Ask(ask) => drop(ask),
-                Parked::Turn(text) => self.notify(notifications::untold(&text)),
+        // What wasn't said: what is kept for the next Session waits for
+        // it, a Turn's instructions are shown, and questions go unasked.
+        for mut parked in std::mem::take(&mut self.parked) {
+            if parked.when().keeps() {
+                self.keep(parked);
+            } else if let Parked::Turn(text, _) = parked {
+                self.notify(notifications::untold(&text));
             }
         }
         if let Some(hearing) = &mut self.adapters.hearing {
@@ -346,9 +371,7 @@ impl Runner {
         if *self.adapters.speaking.borrow_and_update() {
             session.handle(Input::Speaking(true));
         }
-        if *self.building.borrow_and_update() {
-            session.handle(Input::Building(true));
-        }
+        session.handle(Input::Building(*self.building.borrow_and_update()));
         let silence_timeout = Duration::from_secs_f64(silence_timeout);
         let mut silence = SilenceTimer::new(silence_timeout);
         if woken {
@@ -399,7 +422,7 @@ impl Runner {
                         answer_timer.reset();
                         Input::Ask(ask.question)
                     }
-                    Parked::Turn(text) => Input::Opening(text),
+                    Parked::Turn(text, _) => Input::Opening(text),
                 }
             } else {
                 tokio::select! {
@@ -430,6 +453,8 @@ impl Runner {
                         continue;
                     }
                     Some(Command::End(reply)) => {
+                        // Lucy can't say she'll keep working on a build.
+                        self.authoring.show_still_building();
                         self.publish(State::Idle, None);
                         let _ = reply.send(Ok(()));
                         return;
@@ -438,7 +463,7 @@ impl Runner {
                         let _ = reply.send(Ok(()));
                         Input::EndRequested
                     }
-                    Some(Command::Ask(ask)) if ask.quiet => {
+                    Some(Command::Ask(ask)) if !matches!(ask.when, When::Now) => {
                         self.parked.push_back(Parked::Ask(ask));
                         continue;
                     }
@@ -448,7 +473,12 @@ impl Runner {
                     }
                     Some(Command::Say(text)) => Input::Say(text),
                     Some(Command::Turn(text)) => {
-                        self.parked.push_back(Parked::Turn(text));
+                        self.parked.push_back(Parked::Turn(text, When::Quiet));
+                        continue;
+                    }
+                    Some(Command::TurnOrNextSession(text, kept)) => {
+                        let when = When::QuietOrNextSession(kept);
+                        self.parked.push_back(Parked::Turn(text, when));
                         continue;
                     }
                     Some(Command::VoicePreview(preview)) => {
@@ -625,16 +655,15 @@ impl Runner {
         self.publish(State::Idle, None);
     }
 
-    /// Keeps `ask` for the next Session, showing that it waits.
-    fn keep(&mut self, mut ask: Ask) {
-        if ask.reply.is_closed() {
+    /// Keeps `parked` for the next Session, showing once that it waits.
+    fn keep(&mut self, mut parked: Parked) {
+        if matches!(&parked, Parked::Ask(ask) if ask.reply.is_closed()) {
             return;
         }
-        if let Some(kept) = ask.keep.take() {
-            self.notify(kept.clone());
-            ask.keep = Some(kept);
+        if let When::QuietOrNextSession(kept) = std::mem::replace(parked.when(), When::Kept) {
+            self.notify(kept);
         }
-        self.parked.push_back(Parked::Ask(ask));
+        self.parked.push_back(parked);
     }
 
     /// Shows a notification that offers no action.
@@ -647,7 +676,7 @@ impl Runner {
         self.buses.status.publish(Status {
             state,
             session_id: session_id.map(|id| id.to_string()),
-            building: *self.building.borrow(),
+            building: *self.building.borrow() == Building::Working,
         });
     }
 }

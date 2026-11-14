@@ -4,20 +4,23 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc as std_mpsc, Arc, Mutex};
+use std::sync::{mpsc as std_mpsc, Arc, Condvar, Mutex};
+use std::task::{Poll, Waker};
 use std::time::{Duration, Instant};
 
 use lucy_config::credentials::CredentialStore;
 use lucy_config::{Config, Provider};
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay, SessionModel,
-    Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking, ThinkingEvent, Tts,
-    Workspace,
+    Adapters, Clock, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay,
+    SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
+    ThinkingEvent, Timer, Tts, Workspace,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
@@ -49,6 +52,8 @@ pub struct Harness {
     pub launcher: FakeLauncher,
     /// The Secret Service, as Plugin credentials are kept in it.
     pub credentials: FakeCredentials,
+    /// The clock Authoring budgets count on.
+    pub clock: FakeClock,
     /// Where lucyd looks for desktop entries: the user's dir, then the
     /// system's.
     applications: [PathBuf; 2],
@@ -191,6 +196,7 @@ impl Harness {
         };
         let launcher = FakeLauncher::default();
         let credentials = FakeCredentials::default();
+        let clock = FakeClock::new();
         let applications = ["applications", "system-applications"].map(|d| dir.path().join(d));
         for dir in &applications {
             std::fs::create_dir(dir).unwrap();
@@ -213,6 +219,7 @@ impl Harness {
                 notifier: Arc::new(notifier.clone()),
                 launcher: Arc::new(launcher.clone()),
                 credentials: Arc::new(credentials.clone()),
+                clock: Arc::new(clock.clone()),
                 applications: applications.to_vec(),
             },
         })
@@ -230,6 +237,7 @@ impl Harness {
             notifier,
             launcher,
             credentials,
+            clock,
             applications,
             bus: Arc::default(),
             config_path,
@@ -1348,6 +1356,11 @@ impl FakeNotifier {
         }
     }
 
+    /// The notifications lucyd has shown that the test hasn't read.
+    pub fn shown(&self) -> Vec<Notification> {
+        self.shown.lock().unwrap().try_iter().collect()
+    }
+
     /// Fails if lucyd showed a notification the test hasn't read.
     pub fn assert_no_notification(&self) {
         let shown = self.shown.lock().unwrap().try_recv();
@@ -1650,5 +1663,121 @@ impl lucyd::audio::WakeWord for FakeWakeWord {
         self.score = frame[0];
         let was_in_wake = std::mem::replace(&mut self.in_wake, frame[0] == WAKE);
         self.in_wake && !was_in_wake
+    }
+}
+
+/// The clock Authoring budgets count on. It stands still until `advance`.
+#[derive(Clone)]
+pub struct FakeClock(Arc<ClockShared>);
+
+struct ClockShared {
+    start: tokio::time::Instant,
+    state: Mutex<ClockState>,
+    /// Told when a timer is set or dropped.
+    settled: Condvar,
+}
+
+#[derive(Default)]
+struct ClockState {
+    elapsed: Duration,
+    next_id: u64,
+    /// Each live timer's deadline, and who waits for it.
+    timers: HashMap<u64, (Option<tokio::time::Instant>, Option<Waker>)>,
+}
+
+impl ClockState {
+    fn now(&self, start: tokio::time::Instant) -> tokio::time::Instant {
+        start + self.elapsed
+    }
+}
+
+impl FakeClock {
+    fn new() -> Self {
+        FakeClock(Arc::new(ClockShared {
+            start: tokio::time::Instant::now(),
+            state: Mutex::default(),
+            settled: Condvar::new(),
+        }))
+    }
+
+    /// Moves the clock on by `by`, and returns once every timer that went
+    /// off has been handled: set again, or dropped.
+    pub fn advance(&self, by: Duration) {
+        let shared = &self.0;
+        let mut state = shared.state.lock().unwrap();
+        state.elapsed += by;
+        let now = state.now(shared.start);
+        for (_, waker) in state.timers.values_mut() {
+            if let Some(waker) = waker.take() {
+                waker.wake();
+            }
+        }
+        let due = |state: &mut ClockState| {
+            state
+                .timers
+                .values()
+                .any(|(deadline, _)| deadline.is_some_and(|d| d <= now))
+        };
+        let (_state, waited) = shared.settled.wait_timeout_while(state, WAIT, due).unwrap();
+        assert!(!waited.timed_out(), "a timer went off but wasn't handled");
+    }
+}
+
+impl Clock for FakeClock {
+    fn now(&self) -> tokio::time::Instant {
+        self.0.state.lock().unwrap().now(self.0.start)
+    }
+
+    fn timer(&self) -> Box<dyn Timer> {
+        let mut state = self.0.state.lock().unwrap();
+        let id = state.next_id;
+        state.next_id += 1;
+        state.timers.insert(id, (None, None));
+        Box::new(FakeTimer {
+            clock: self.0.clone(),
+            id,
+        })
+    }
+}
+
+struct FakeTimer {
+    clock: Arc<ClockShared>,
+    id: u64,
+}
+
+impl Timer for FakeTimer {
+    fn set(&mut self, deadline: Option<tokio::time::Instant>) {
+        let mut state = self.clock.state.lock().unwrap();
+        if let Some((set, waker)) = state.timers.get_mut(&self.id) {
+            *set = deadline;
+            if let Some(waker) = waker.take() {
+                waker.wake();
+            }
+        }
+        self.clock.settled.notify_all();
+    }
+
+    fn fired(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let clock = self.clock.clone();
+        let id = self.id;
+        Box::pin(std::future::poll_fn(move |cx| {
+            let mut state = clock.state.lock().unwrap();
+            let now = state.now(clock.start);
+            match state.timers.get_mut(&id) {
+                Some((Some(deadline), _)) if *deadline <= now => Poll::Ready(()),
+                Some((_, waker)) => {
+                    *waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+                None => Poll::Pending,
+            }
+        }))
+    }
+}
+
+impl Drop for FakeTimer {
+    fn drop(&mut self) {
+        self.clock.state.lock().unwrap().timers.remove(&self.id);
+        self.clock.settled.notify_all();
     }
 }

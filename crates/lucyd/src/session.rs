@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use lucy_ipc::State;
 
 use crate::adapters::ThinkingEvent;
+use crate::authoring::Building;
 
 pub enum Input {
     /// Lucy speaks first: start a Turn with these instructions.
@@ -37,9 +38,9 @@ pub enum Input {
     Withdrawn,
     /// Lucy says this herself, after any reply text so far.
     Say(String),
-    /// An Authoring build started (true) or ended (false). While one runs,
-    /// the Session stays open in Listening.
-    Building(bool),
+    /// What Authoring is doing now. While a build works, the Session stays
+    /// open in Listening.
+    Building(Building),
 }
 
 /// Something Lucy asks the user in the middle of a tool call.
@@ -135,8 +136,8 @@ pub struct Session {
     /// What the question being asked expects, while Confirming.
     asking: Option<Expects>,
     yes_phrases: Vec<String>,
-    /// An Authoring build is running.
-    building: bool,
+    /// What Authoring is doing.
+    building: Building,
 }
 
 impl Session {
@@ -174,7 +175,7 @@ impl Session {
     /// isn't speaking, including while an utterance is being transcribed,
     /// and no Authoring build is running.
     pub fn silence_timer_runs(&self) -> bool {
-        self.state() == State::Listening && !self.speaking && !self.building
+        self.state() == State::Listening && !self.speaking && self.building != Building::Working
     }
 
     /// Neither Lucy nor the user is speaking, and nothing they said is
@@ -247,7 +248,7 @@ impl Session {
                     // No speech recognised: keep listening, timer not reset.
                     return vec![];
                 }
-                if self.building && is_phrase(text, CANCEL_IT) {
+                if self.building != Building::No && is_phrase(text, CANCEL_IT) {
                     self.sentence = BUILD_STOPPED.to_owned();
                     let mut outputs = vec![Output::CancelBuild];
                     outputs.extend(self.speak_sentence());
@@ -315,7 +316,7 @@ impl Session {
             Input::EndRequested => {
                 self.closing = true;
                 let mut outputs: Vec<Output> = vec![];
-                if self.building {
+                if self.building != Building::No {
                     outputs.extend(self.speak_sentence());
                     self.sentence = KEEP_WORKING.to_owned();
                     outputs.extend(self.speak_sentence());

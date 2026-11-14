@@ -29,7 +29,7 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{CredentialStore, Notification, NotificationKind};
 use crate::mcp;
-use crate::runner::{self, Command};
+use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
 pub use manage::{manage_plugin_tool, Refusal};
@@ -264,7 +264,7 @@ impl Host {
     /// says whether the user approved; `Err` says why they couldn't be
     /// asked.
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
-        self.ask_approval(name, None).await
+        self.ask_approval(name, When::Now).await
     }
 
     /// Asks the user's Approval as `request_approval` does, once neither
@@ -275,14 +275,14 @@ impl Host {
         name: &str,
         kept: Notification,
     ) -> Result<bool, String> {
-        self.ask_approval(name, Some(kept)).await
+        self.ask_approval(name, When::QuietOrNextSession(kept))
+            .await
     }
 
-    /// `kept`: ask once neither side is speaking, at the next Session if
-    /// none is open, showing this meanwhile.
-    async fn ask_approval(&self, name: &str, kept: Option<Notification>) -> Result<bool, String> {
+    /// Asks at the time `when` says.
+    async fn ask_approval(&self, name: &str, when: When) -> Result<bool, String> {
         const NO_SESSION: &str = "no Session is open to ask in";
-        if kept.is_none() && self.session.lock().unwrap().upgrade().is_none() {
+        if !when.keeps() && self.session.lock().unwrap().upgrade().is_none() {
             return Err(NO_SESSION.into());
         }
         let candidate = self.candidate(name).await?;
@@ -307,12 +307,7 @@ impl Host {
             prompt,
             expects: Expects::Yes,
         };
-        let answer = match kept {
-            Some(kept) => {
-                runner::ask_when_quiet_or_next_session(&self.commands, question, shown, kept).await
-            }
-            None => runner::ask(&self.commands, question, shown).await,
-        };
+        let answer = runner::ask_at(&self.commands, question, shown, when).await;
         match answer {
             Some(Answer::Yes) => {}
             Some(_) => return Ok(false),

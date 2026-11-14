@@ -570,7 +570,8 @@ fn a_delegate_question_parked_while_lucy_speaks_waits_out_a_barge_in_and_its_tur
     // The user cuts in, and is still talking once Lucy has stopped.
     lucyd.start_speaking();
     lucyd.wake();
-    assert_eq!(next_state(&mut events).state, State::Listening);
+    // The building mark may go off first: the build waits on the user.
+    until_state(&mut events, State::Listening);
     lucyd.say("never mind");
     assert_eq!(
         lucyd.thinking.next_turn(),
