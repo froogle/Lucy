@@ -8,7 +8,7 @@ Spec: Audio pipeline (AEC, VAD gate). Raised by [wayfinder 23](../../lucy-v0-1/i
 
 **Seams:** extends `EchoCanceller` with `echo_heard` (owned by 09, resolved; this ticket owns the extension); uses the gate in `crates/lucyd/src/audio/gate.rs` and `[barge_in]` (owned by 09, resolved)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Decisions** (settled with the user):
 
@@ -24,12 +24,27 @@ Spec: Audio pipeline (AEC, VAD gate). Raised by [wayfinder 23](../../lucy-v0-1/i
 
 **Acceptance:**
 
-- [ ] On wayfinder 23's recordings (`.scratch/lucy-v0-1/prototypes/aec-bench/runs/`), the measurement says: `headphones-*` no echo; `desk-*` (webcam mic, echo ~16 dB above the floor) echo; `wrong-mic/desk-*` (headset mic, ~1 dB above the floor) echo
-- [ ] With no echo, a talk-over after the warm-up Barges in at the normal bar (~300 ms)
-- [ ] On speakers, an unconverged canceller still gets the stricter bar; `None` behaves as today
-- [ ] No false Barge-in on wayfinder 23's recordings
-- [ ] Gate tests through the harness with the fake canceller's settable `echo_heard`; the measurement unit-tested in `sonora.rs`
+- [x] On wayfinder 23's recordings (`.scratch/lucy-v0-1/prototypes/aec-bench/runs/`), the measurement says: `headphones-*` no echo; `desk-*` (webcam mic, echo ~16 dB above the floor) echo; `wrong-mic/desk-*` (headset mic, ~1 dB above the floor) echo
+- [x] With no echo, a talk-over after the warm-up Barges in at the normal bar (~300 ms)
+- [x] On speakers, an unconverged canceller still gets the stricter bar; `None` behaves as today
+- [x] No false Barge-in on wayfinder 23's recordings
+- [x] Gate tests through the harness with the fake canceller's settable `echo_heard`; the measurement unit-tested in `sonora.rs`
 
 The bench in `prototypes/aec-bench/` (README there; `./bench analyse <run>`, its copy of the gate in `src/gate.rs`) replays those recordings through lucyd's `Sonora`, Silero and gate. Copy the measurement in, or call it through `lucyd::audio`, to check the first and fourth boxes.
 
 ## Comments
+
+Resolved on `main`. `Sonora`'s `EchoMeter` (`sonora.rs`) keeps, for each 10 ms frame while the reference arrives (plus 100 ms), the mic's power before and after AEC3 and the reference's power. Once a second it looks at the last 10 s in 50 ms blocks:
+- Blocks whose cancelled output is over 10 dB above its quiet level are the user, or echo AEC3 hasn't learned yet, and are left out. If that's more than half the window, the answer is `None`.
+- At each lag from 0 to 500 ms it fits mic power to reference power by least squares, with mic power capped at 4× its median while Lucy is loudest. Without the cap, the user's voice that AEC3's suppressor hides passes for echo.
+- Echo is heard when slope × mean reference reaches the floor, which is the mean mic power while her reference is quietest. The user kept the threshold at 0 dB.
+
+Wayfinder 23's recordings, through the bench with lucyd's `Sonora` and the new gate rule:
+- desk-* and wrong-mic/desk-* say echo for 72% of Lucy's speech, headphones-* say no echo for 72%. The remaining 27% is `None`, while the first window fills.
+- The fit's echo estimate is at least +7 dB over the floor on speakers, and at most −4 dB on headphones.
+- No false Barge-in on any run.
+- headphones-talk catches its talk-overs in 480, 290 and 290 ms. The first, at 10 s, comes before the window has filled.
+- The same holds with the reference in 50 ms bursts, and with those bursts 40 ms late.
+
+The bench now feeds lucyd's `Sonora` its reference only while Lucy speaks, as lucyd does. That shifts two wayfinder 23 figures that have nothing to do with this ticket: desk-silent has 2 false ducks instead of 1, and wrong-mic/desk-talk misses 3 talk-overs instead of 2 (that is ticket 28's problem). `ALWAYS_REF=1` brings back wayfinder 23's exact numbers.
+

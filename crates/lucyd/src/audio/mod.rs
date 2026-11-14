@@ -118,6 +118,10 @@ pub trait EchoCanceller: Send {
 
     /// How much echo it removes (ERLE, in dB), once it can tell.
     fn erle_db(&self) -> Option<f32>;
+
+    /// Whether Lucy's voice reaches the microphone at all: `None` until it
+    /// can tell.
+    fn echo_heard(&self) -> Option<bool>;
 }
 
 /// A wake-word detector. It hears every frame, in and out of Sessions.
@@ -478,10 +482,11 @@ impl Listeners {
     fn hear(&mut self, frame: &mut [f32]) {
         Meter::raise(&self.meter.level, rms(frame));
         let own_canceller = self.echo.is_some() && self.cancelling;
-        let mut erle_db = None;
+        let (mut erle_db, mut echo_heard) = (None, None);
         if let Some(echo) = self.echo.as_mut().filter(|_| own_canceller) {
             echo.cancel(frame);
             erle_db = echo.erle_db();
+            echo_heard = echo.echo_heard();
         }
         // Heard before the utterance it starts ends, so the Session it
         // opens gets that utterance.
@@ -497,7 +502,7 @@ impl Listeners {
         let was_speaking = self.endpointer.speaking();
         let (gate, gate_events) = (&mut self.gate, &self.gate_events);
         let segment = self.endpointer.push(frame, |probability, len| {
-            if let Some(event) = gate.judge(probability, len, erle_db, own_canceller) {
+            if let Some(event) = gate.judge(probability, len, erle_db, echo_heard, own_canceller) {
                 let _ = gate_events.send(event);
             }
         });

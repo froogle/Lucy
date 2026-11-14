@@ -1683,10 +1683,11 @@ impl lucyd::audio::AudioIo for FakeMic {
 }
 
 /// An echo canceller that passes the microphone through, or silences it all,
-/// and reports the ERLE the test sets.
+/// and reports the ERLE and whether Lucy's echo is heard as the test sets.
 #[derive(Clone, Default)]
 pub struct FakeEchoCanceller {
     erle_db: Arc<Mutex<Option<f32>>>,
+    echo_heard: Arc<Mutex<Option<bool>>>,
     cancel_everything: Arc<AtomicBool>,
     frames: Arc<Mutex<usize>>,
 }
@@ -1694,6 +1695,10 @@ pub struct FakeEchoCanceller {
 impl FakeEchoCanceller {
     pub fn set_erle(&self, erle_db: Option<f32>) {
         *self.erle_db.lock().unwrap() = erle_db;
+    }
+
+    pub fn set_echo_heard(&self, heard: Option<bool>) {
+        *self.echo_heard.lock().unwrap() = heard;
     }
 
     /// From now on it hears everything as Lucy's echo.
@@ -1717,6 +1722,10 @@ impl lucyd::audio::EchoCanceller for FakeEchoCanceller {
 
     fn erle_db(&self) -> Option<f32> {
         *self.erle_db.lock().unwrap()
+    }
+
+    fn echo_heard(&self) -> Option<bool> {
+        *self.echo_heard.lock().unwrap()
     }
 }
 

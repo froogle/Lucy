@@ -274,7 +274,7 @@ pub struct BargeIn {
     /// How long speech must stay above `unconverged_threshold`.
     pub unconverged_sustain_ms: u64,
     /// The echo canceller has converged once its echo return loss
-    /// enhancement reaches this.
+    /// enhancement reaches this, or once it hears no echo of Lucy at all.
     pub converged_erle_db: f32,
     /// The echo canceller counts as unconverged for this much of Lucy's
     /// speech at the start of each Session.

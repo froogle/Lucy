@@ -278,6 +278,44 @@ fn for_the_first_2_s_of_lucys_speech_the_echo_canceller_counts_as_unconverged() 
 }
 
 #[test]
+fn with_no_echo_at_the_microphone_the_canceller_counts_as_converged_after_the_warm_up() {
+    let lucyd = Harness::hearing("");
+    // On headphones the ERLE never gets anywhere: there is no echo to remove.
+    lucyd.echo.set_erle(Some(0.2));
+    lucyd.echo.set_echo_heard(Some(false));
+    let mut events = lucy_speaking_heard(&lucyd);
+
+    lucyd.mic.feed(SPEECH, ms(320));
+    lucyd.mic.feed(SILENCE, ms(64));
+    wait_for_ducks(&lucyd, &[true, false]);
+    lucyd.mic.feed(SILENCE, ms(2048));
+    lucyd.mic.feed(SPEECH, ms(320));
+    // Completes the last 10 ms frame and VAD chunk.
+    lucyd.mic.feed(SILENCE, ms(64));
+
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    assert_eq!(lucyd.tts.stops(), 1);
+}
+
+#[test]
+fn with_echo_at_the_microphone_or_no_answer_yet_an_unconverged_canceller_keeps_the_stricter_bar() {
+    for heard in [Some(true), None] {
+        let lucyd = Harness::hearing(NO_WARM_UP);
+        lucyd.echo.set_erle(Some(5.0));
+        lucyd.echo.set_echo_heard(heard);
+        let mut events = lucy_speaking_heard(&lucyd);
+
+        lucyd.mic.feed(SPEECH, ms(320));
+        lucyd.mic.feed(SILENCE, ms(1024));
+
+        wait_for_ducks(&lucyd, &[true, false]);
+        lucyd.tts.finish_playing();
+        assert_eq!(next_state(&mut events).state, State::Thinking, "{heard:?}");
+        assert_eq!(lucyd.tts.stops(), 0, "{heard:?}");
+    }
+}
+
+#[test]
 fn lucys_echo_just_after_she_speaks_is_not_heard_as_the_user() {
     let lucyd = Harness::hearing(NO_WARM_UP);
     lucyd.echo.set_erle(Some(20.0));

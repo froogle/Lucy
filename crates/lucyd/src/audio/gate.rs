@@ -84,13 +84,15 @@ impl Gate {
     }
 
     /// Judges the next VAD chunk of `len` samples, `probability` speech.
-    /// `erle_db` is how much echo the echo canceller removes, if it is
-    /// Lucy's own and can tell.
+    /// `erle_db` is how much echo the echo canceller removes, and
+    /// `echo_heard` whether Lucy's voice reaches the microphone at all, if it
+    /// is Lucy's own and can tell.
     pub fn judge(
         &mut self,
         probability: f32,
         len: usize,
         erle_db: Option<f32>,
+        echo_heard: Option<bool>,
         own_canceller: bool,
     ) -> Option<BargeInEvent> {
         if self.lucy_speaking {
@@ -101,9 +103,11 @@ impl Gate {
         if !self.on || self.cut || !self.window_open() {
             return self.unduck();
         }
+        // With no echo to remove, the ERLE never gets anywhere.
         let converged = self.warmed >= samples(self.config.warm_up_ms)
             && (!own_canceller
-                || erle_db.is_some_and(|erle| erle >= self.config.converged_erle_db));
+                || erle_db.is_some_and(|erle| erle >= self.config.converged_erle_db)
+                || echo_heard == Some(false));
         let (threshold, sustain) = if converged {
             (self.config.threshold, self.config.sustain_ms)
         } else {
