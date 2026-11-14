@@ -11,4 +11,11 @@ fi
 # At low CPU and IO priority, so the desktop stays usable while it runs.
 quiet=(nice -n 10)
 command -v ionice >/dev/null && quiet+=(ionice -c2 -n7)
-exec "${quiet[@]}" "$root/scripts/check.sh"
+# Silent on success; on failure, the end of the output and where the rest is.
+log="$(mktemp -t lucy-check.XXXXXX.log)"
+if ! "${quiet[@]}" "$root/scripts/check.sh" >"$log" 2>&1; then
+    tail -n 80 "$log" >&2
+    echo "pre-commit: scripts/check.sh failed; full output in $log" >&2
+    exit 1
+fi
+rm -f "$log"

@@ -24,13 +24,13 @@ Spec: Audio pipeline (AEC, VAD gate); TUI setup (mic test). Raised by [wayfinder
 
 **Acceptance:**
 
-- [x] Through the bench with lucyd's `Sonora`: wayfinder 23's quiet-voice recording (`.scratch/lucy-v0-1/prototypes/aec-bench/runs/wrong-mic/desk-talk`) catches 3 of 3 talk-overs
+- [x] Through the bench with lucyd's `Sonora`: wayfinder 23's quiet-voice recording (`tools/aec-bench/runs/wrong-mic/desk-talk`) catches 3 of 3 talk-overs
 - [x] No new false Barge-ins on any of wayfinder 23's recordings, and the gain stays at 0 dB on `desk-*` and `headphones-talk` (so no clipped echo)
 - [x] The gain is unit-tested in `sonora.rs`: a quiet input is boosted up to +24 dB, a loud one isn't, nothing changes while the reference plays, and a gap under 6 dB is left alone
 - [x] `test.mic_level` reports `quiet` (tested in `crates/lucyd/tests/setup_tests.rs`); the schema is regenerated (`LUCY_UPDATE_SCHEMA=1 cargo test -p lucy-ipc`)
 - [x] Setup, through `Home::setup`: a quiet meter shows the message and "Keep this microphone?" defaults to No; a normal one shows neither
 
-The bench in `prototypes/aec-bench/` (README there; `./bench analyse <run>`, its copy of the gate in `src/gate.rs`) replays those recordings through lucyd's `Sonora`, Silero and gate.
+The bench in `tools/aec-bench/` (README there; `./bench analyse <run>`, its copy of the gate in `src/gate.rs`) replays those recordings through lucyd's `Sonora`, Silero and gate.
 
 ## Comments
 

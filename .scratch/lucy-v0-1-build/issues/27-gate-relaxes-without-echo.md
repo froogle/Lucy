@@ -24,13 +24,13 @@ Spec: Audio pipeline (AEC, VAD gate). Raised by [wayfinder 23](../../lucy-v0-1/i
 
 **Acceptance:**
 
-- [x] On wayfinder 23's recordings (`.scratch/lucy-v0-1/prototypes/aec-bench/runs/`), the measurement says: `headphones-*` no echo; `desk-*` (webcam mic, echo ~16 dB above the floor) echo; `wrong-mic/desk-*` (headset mic, ~1 dB above the floor) echo
+- [x] On wayfinder 23's recordings (`tools/aec-bench/runs/`), the measurement says: `headphones-*` no echo; `desk-*` (webcam mic, echo ~16 dB above the floor) echo; `wrong-mic/desk-*` (headset mic, ~1 dB above the floor) echo
 - [x] With no echo, a talk-over after the warm-up Barges in at the normal bar (~300 ms)
 - [x] On speakers, an unconverged canceller still gets the stricter bar; `None` behaves as today
 - [x] No false Barge-in on wayfinder 23's recordings
 - [x] Gate tests through the harness with the fake canceller's settable `echo_heard`; the measurement unit-tested in `sonora.rs`
 
-The bench in `prototypes/aec-bench/` (README there; `./bench analyse <run>`, its copy of the gate in `src/gate.rs`) replays those recordings through lucyd's `Sonora`, Silero and gate. Copy the measurement in, or call it through `lucyd::audio`, to check the first and fourth boxes.
+The bench in `tools/aec-bench/` (README there; `./bench analyse <run>`, its copy of the gate in `src/gate.rs`) replays those recordings through lucyd's `Sonora`, Silero and gate. Copy the measurement in, or call it through `lucyd::audio`, to check the first and fourth boxes.
 
 ## Comments
 

@@ -11,5 +11,8 @@ target/
 # Prototypes are throwaway, often nested repos
 .scratch/**/prototypes/
 
+# The AEC bench's recordings and traces stay on the machine that made them
+tools/aec-bench/runs/
+
 # Agent worktrees
 .claude/worktrees/

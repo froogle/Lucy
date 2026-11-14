@@ -1,0 +1,2 @@
+#!/bin/sh
+cd "$(dirname "$0")" && exec ../../target/release/aec_bench "$@"
