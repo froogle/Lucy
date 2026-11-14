@@ -42,7 +42,7 @@ fn main() -> ExitCode {
     let (updates_tx, updates) = channel::channel();
     std::thread::spawn(move || loop {
         let update = match client.next_event() {
-            Ok(Event::State(status)) => Update::State(status.state),
+            Ok(Event::State(status)) => Update::State(status.state, status.building),
             Ok(Event::Level(level)) => Update::Level(level.rms),
             // Not subscribed to.
             Ok(Event::PluginsChanged(_)) => continue,

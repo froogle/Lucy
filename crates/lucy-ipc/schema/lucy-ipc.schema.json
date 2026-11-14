@@ -399,6 +399,11 @@
     "Status": {
       "description": "Result of `status`: a snapshot of lucyd.",
       "properties": {
+        "building": {
+          "default": false,
+          "description": "An Authoring build is running, with or without a Session: the\nIndicator adds a \"building\" mark.",
+          "type": "boolean"
+        },
         "session_id": {
           "description": "The current Session, if one is open.",
           "type": [

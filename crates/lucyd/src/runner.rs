@@ -19,6 +19,7 @@ use crate::adapters::{
     Adapters, Notification, RateLimitStatus, Sound, SpeakerEvent, SttError, ThinkingEvent,
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
+use crate::authoring::Authoring;
 use crate::limits;
 use crate::mcp::Relays;
 use crate::notifications;
@@ -63,6 +64,10 @@ pub struct Ask {
     /// Wait to ask until neither Lucy nor the user is speaking, rather
     /// than as part of the Turn in progress.
     pub quiet: bool,
+    /// With no Session open, or if the Session ends before it is asked, the
+    /// question waits for the next Session and this is shown, rather than
+    /// it going unanswered. Only for a quiet question.
+    pub keep: Option<Notification>,
 }
 
 /// Asks the user `question` in the open Session, showing `shown` as it is
@@ -79,6 +84,7 @@ pub async fn ask(
         shown,
         reply,
         quiet: false,
+        keep: None,
     }));
     answer.await.ok()
 }
@@ -91,12 +97,34 @@ pub fn ask_when_quiet(
     question: Question,
     shown: Option<Notification>,
 ) -> impl std::future::Future<Output = Option<Answer>> {
+    ask_quietly(commands, question, shown, None)
+}
+
+/// Asks the user `question`, as `ask_when_quiet` does, but with no Session
+/// open it waits for the next one, showing `kept` meanwhile. It goes
+/// unasked if the answer is no longer awaited by then.
+pub fn ask_when_quiet_or_next_session(
+    commands: &mpsc::UnboundedSender<Command>,
+    question: Question,
+    shown: Option<Notification>,
+    kept: Notification,
+) -> impl std::future::Future<Output = Option<Answer>> {
+    ask_quietly(commands, question, shown, Some(kept))
+}
+
+fn ask_quietly(
+    commands: &mpsc::UnboundedSender<Command>,
+    question: Question,
+    shown: Option<Notification>,
+    keep: Option<Notification>,
+) -> impl std::future::Future<Output = Option<Answer>> {
     let (reply, answer) = oneshot::channel();
     let _ = commands.send(Command::Ask(Ask {
         question,
         shown,
         reply,
         quiet: true,
+        keep,
     }));
     async move { answer.await.ok() }
 }
@@ -137,6 +165,10 @@ pub struct Runner {
     sessions_started: u64,
     /// Whether an Authoring build is running.
     building: watch::Receiver<bool>,
+    authoring: Arc<Authoring>,
+    /// What waits to be said until neither Lucy nor the user is speaking,
+    /// in order. Between Sessions, only the questions kept for the next.
+    parked: VecDeque<Parked>,
 }
 
 /// What waits to be said until neither Lucy nor the user is speaking.
@@ -153,7 +185,7 @@ impl Runner {
         relays: Relays,
         plugin_host: Arc<plugins::Host>,
         files: SessionFiles,
-        building: watch::Receiver<bool>,
+        authoring: Arc<Authoring>,
     ) -> Self {
         Runner {
             commands,
@@ -166,7 +198,9 @@ impl Runner {
             wake_open: true,
             speaking_open: true,
             sessions_started: 0,
-            building,
+            building: authoring.building(),
+            authoring,
+            parked: VecDeque::new(),
         }
     }
 
@@ -191,6 +225,8 @@ impl Runner {
                 speech = self.adapters.speech.recv(), if self.speech_open => {
                     self.speech_open = speech.is_some();
                 }
+                // The Indicator's building mark.
+                Ok(()) = self.building.changed() => self.publish(State::Idle, None),
                 // So the Wake word is heard again once a microphone is back.
                 () = mic_lost_for(&mut self.adapters.hearing, REOPEN_MIC_EVERY) => {
                     if let Some(hearing) = &mut self.adapters.hearing {
@@ -201,14 +237,15 @@ impl Runner {
         }
     }
 
-    /// Handles `command` outside a Session: an end is refused, and a
-    /// question or Turn meant for the user is shown instead (ticket 23 will
-    /// keep them for the next Session). Returns any other command.
-    fn outside_session(&self, command: Command) -> Option<Command> {
+    /// Handles `command` outside a Session: an end is refused, a question
+    /// kept for the next Session is kept, and any other question or Turn
+    /// meant for the user is shown instead. Returns any other command.
+    fn outside_session(&mut self, command: Command) -> Option<Command> {
         match command {
             Command::End(reply) | Command::EndAfterSpeech(reply) => {
                 let _ = reply.send(Err(EndError));
             }
+            Command::Ask(ask) if ask.keep.is_some() => self.keep(ask),
             // `reply` is dropped unanswered: no one can answer.
             Command::Ask(ask) => self.notify(notifications::unasked(&ask.question.prompt)),
             Command::Turn(text) => self.notify(notifications::untold(&text)),
@@ -223,7 +260,7 @@ impl Runner {
     /// Session: as `outside_session`, and another preview or test is
     /// refused as busy. Returns a Session start.
     fn while_busy(
-        &self,
+        &mut self,
         command: Command,
     ) -> Option<oneshot::Sender<Result<SessionId, StartError>>> {
         match self.outside_session(command)? {
@@ -248,6 +285,15 @@ impl Runner {
         let id = SessionId(self.sessions_started);
         let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
+        // What wasn't said: questions kept for the next Session wait for
+        // it, and the rest is shown.
+        for parked in std::mem::take(&mut self.parked) {
+            match parked {
+                Parked::Ask(ask) if ask.keep.is_some() => self.keep(ask),
+                Parked::Ask(ask) => drop(ask),
+                Parked::Turn(text) => self.notify(notifications::untold(&text)),
+            }
+        }
         if let Some(hearing) = &mut self.adapters.hearing {
             hearing.lucy_speaking(false);
         }
@@ -313,8 +359,6 @@ impl Runner {
         // Questions waiting to be asked, and where the answer to the one
         // being asked goes.
         let mut questions: VecDeque<Ask> = VecDeque::new();
-        // What waits for neither side to be speaking, in order.
-        let mut parked: VecDeque<Parked> = VecDeque::new();
         let mut answer_to = None;
         let mut answer_timer =
             SilenceTimer::new(Duration::from_secs_f64(confirmation.timeout_secs));
@@ -338,12 +382,15 @@ impl Runner {
             } else if let Some(next) = answer_to
                 .is_none()
                 .then(|| {
+                    let parked = &mut self.parked;
                     let when_quiet = || session.quiet().then(|| parked.pop_front()).flatten();
                     questions.pop_front().map(Parked::Ask).or_else(when_quiet)
                 })
                 .flatten()
             {
                 match next {
+                    // No one waits for the answer any more.
+                    Parked::Ask(ask) if ask.reply.is_closed() => continue,
                     Parked::Ask(ask) => {
                         if let Some(shown) = ask.shown {
                             self.notify(shown);
@@ -392,7 +439,7 @@ impl Runner {
                         Input::EndRequested
                     }
                     Some(Command::Ask(ask)) if ask.quiet => {
-                        parked.push_back(Parked::Ask(ask));
+                        self.parked.push_back(Parked::Ask(ask));
                         continue;
                     }
                     Some(Command::Ask(ask)) => {
@@ -401,7 +448,7 @@ impl Runner {
                     }
                     Some(Command::Say(text)) => Input::Say(text),
                     Some(Command::Turn(text)) => {
-                        parked.push_back(Parked::Turn(text));
+                        self.parked.push_back(Parked::Turn(text));
                         continue;
                     }
                     Some(Command::VoicePreview(preview)) => {
@@ -553,6 +600,7 @@ impl Runner {
                         }
                     }
                     Output::StopSpeaking => speaker.stop(),
+                    Output::CancelBuild => self.authoring.cancel(),
                     Output::Interrupt => {
                         model.interrupt();
                         plugin_tools.barge_in();
@@ -577,6 +625,18 @@ impl Runner {
         self.publish(State::Idle, None);
     }
 
+    /// Keeps `ask` for the next Session, showing that it waits.
+    fn keep(&mut self, mut ask: Ask) {
+        if ask.reply.is_closed() {
+            return;
+        }
+        if let Some(kept) = ask.keep.take() {
+            self.notify(kept.clone());
+            ask.keep = Some(kept);
+        }
+        self.parked.push_back(Parked::Ask(ask));
+    }
+
     /// Shows a notification that offers no action.
     fn notify(&self, notification: Notification) {
         let (actions, _) = mpsc::unbounded_channel();
@@ -587,6 +647,7 @@ impl Runner {
         self.buses.status.publish(Status {
             state,
             session_id: session_id.map(|id| id.to_string()),
+            building: *self.building.borrow(),
         });
     }
 }

@@ -244,6 +244,9 @@ pub enum NotificationKind {
     /// What a Confirmation or Approval is about, too long to say: a call's
     /// full arguments, or the diff of a Plugin update. It replaces nothing.
     Details,
+    /// About an Authoring build: its progress, or that it is ready or has
+    /// a question for the next Session. It replaces nothing.
+    Build,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
