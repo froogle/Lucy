@@ -435,6 +435,30 @@ impl Harness {
         speech.send(SpeechSegment { samples: vec![] }).unwrap();
     }
 
+    /// As `mumble`, but returns once lucyd has handled the transcript. lucyd
+    /// takes no other utterance before then, so the user mumbles again
+    /// until it takes one. The fake STT holds that one until it is seen, so
+    /// lucyd takes no more of them.
+    pub fn mumble_handled(&self) {
+        let given = self.stt.segments().len();
+        let heard = self.stt.heard().len();
+        self.mumble();
+        wait_until("the mumble transcribed", || {
+            (self.stt.heard().len() > heard).then_some(())
+        });
+        self.stt.hold(true);
+        self.stt.script("");
+        let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
+        wait_until("lucyd to take another utterance", || {
+            if self.stt.segments().len() > given + 1 {
+                return Some(());
+            }
+            speech.send(SpeechSegment { samples: vec![] }).unwrap();
+            None
+        });
+        self.stt.hold(false);
+    }
+
     /// The user says something and the fake STT fails on it.
     pub fn say_but_stt_fails(&self) {
         self.stt.script_failure();
@@ -685,12 +709,21 @@ pub struct FakeStt {
     segments: Arc<Mutex<Vec<Duration>>>,
     /// How long each transcription takes.
     delay: Arc<Mutex<Duration>>,
+    /// While true, each transcription waits.
+    held: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl FakeStt {
     /// Makes each transcription take `delay`.
     pub fn take(&self, delay: Duration) {
         *self.delay.lock().unwrap() = delay;
+    }
+
+    /// While `held`, each utterance it is given waits to be transcribed.
+    pub fn hold(&self, held: bool) {
+        let (lock, released) = &*self.held;
+        *lock.lock().unwrap() = held;
+        released.notify_all();
     }
 
     /// The next utterance will be heard as `transcript`.
@@ -722,6 +755,12 @@ impl Stt for FakeStt {
     fn transcribe(&self, segment: SpeechSegment) -> Result<String, SttError> {
         let length = Duration::from_secs_f64(segment.samples.len() as f64 / 16_000.0);
         self.segments.lock().unwrap().push(length);
+        let (lock, released) = &*self.held;
+        drop(
+            released
+                .wait_while(lock.lock().unwrap(), |held| *held)
+                .unwrap(),
+        );
         // sleep-ok: the fake's scripted transcription time
         std::thread::sleep(*self.delay.lock().unwrap());
         let transcript = self

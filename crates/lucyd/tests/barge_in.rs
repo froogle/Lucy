@@ -59,11 +59,7 @@ fn nothing_said_after_a_barge_in_returns_silently_to_listening() {
     lucyd.wake();
     assert_eq!(next_state(&mut events).state, State::Listening);
 
-    let heard = lucyd.stt.heard().len();
-    lucyd.mumble();
-    wait_until("the mumble transcribed", || {
-        (lucyd.stt.heard().len() > heard).then_some(())
-    });
+    lucyd.mumble_handled();
 
     // Nothing more is said, and the Session goes on to its silence timeout.
     lucyd.clock.advance(ms(30_000));

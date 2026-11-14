@@ -121,10 +121,7 @@ fn no_speech_recognised_keeps_listening_without_resetting_the_timer() {
     next_state(&mut events);
 
     lucyd.clock.advance(ms(20_000));
-    lucyd.mumble();
-    wait_until("the mumble transcribed", || {
-        (!lucyd.stt.heard().is_empty()).then_some(())
-    });
+    lucyd.mumble_handled();
 
     // Straight from Listening to Idle, at the original deadline.
     lucyd.clock.advance_once_set(ms(10_000));
