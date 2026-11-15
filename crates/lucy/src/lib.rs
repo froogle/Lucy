@@ -10,7 +10,7 @@ pub mod panel;
 mod piper;
 mod sections;
 pub mod settings;
-mod systemd;
+pub mod systemd;
 pub mod ui;
 
 use std::ffi::OsString;

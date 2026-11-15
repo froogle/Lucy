@@ -47,7 +47,9 @@ fn systemd_says(home: &Home, active: &str, for_: Duration) {
     home.fake(
         "systemctl",
         &format!(
-            "[ \"$2\" = show ] && printf 'ActiveState={active}\\nActiveEnterTimestamp=@{}\\n'",
+            "case \"$2\" in \
+             show) printf 'ActiveState={active}\\nActiveEnterTimestamp=@{}\\n';; \
+             esac",
             since.as_secs()
         ),
     );
@@ -316,5 +318,59 @@ fn with_lucyd_stopped_the_snapshot_says_so_and_still_lists_every_choice() {
                 "options": ["default", "alsa_output.hdmi"],
             },
         })
+    );
+}
+
+#[test]
+fn lucy_service_starts_stops_and_restarts_lucyd_through_systemd() {
+    let home = home("inactive");
+
+    for verb in ["start", "stop", "restart"] {
+        let output = home.lucy(&["service", verb], &[]);
+        assert!(output.status.success(), "{verb}: {}", stderr(&output));
+    }
+
+    let calls = home.calls("systemctl");
+    for call in [
+        "--user start lucyd.service",
+        "--user stop lucyd.service",
+        "--user restart lucyd.service",
+    ] {
+        assert!(
+            calls.contains(&call.to_owned()),
+            "{call} not run: {calls:?}"
+        );
+    }
+}
+
+#[test]
+fn lucy_service_start_clears_a_crashed_lucyds_start_limit_first() {
+    let home = home("failed");
+
+    assert!(home.lucy(&["service", "start"], &[]).status.success());
+
+    let calls = home.calls("systemctl");
+    let reset = calls
+        .iter()
+        .position(|c| c == "--user reset-failed lucyd.service");
+    let start = calls.iter().position(|c| c == "--user start lucyd.service");
+    assert!(reset.is_some() && reset < start, "{calls:?}");
+}
+
+#[test]
+fn lucy_service_fails_plainly_when_systemd_refuses() {
+    let home = home("inactive");
+    home.fake(
+        "systemctl",
+        "[ \"$2\" != start ] || { echo 'no such unit' >&2; exit 5; }",
+    );
+
+    let output = home.lucy(&["service", "start"], &[]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("no such unit"),
+        "{}",
+        stderr(&output)
     );
 }

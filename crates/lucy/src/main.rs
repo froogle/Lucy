@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 use lucy::menu::{self, Open};
 use lucy::panel::{self, Devices, Snapshot};
 use lucy::settings::{self, Change};
+use lucy::systemd::{self, Verb};
 use lucy::ui::{Console, Ui};
 use lucy::Env;
 use lucy_ipc::{Client, State, Topic};
@@ -65,6 +66,12 @@ enum Command {
         /// Its dotted path, such as whisper.model.
         key: String,
     },
+    /// Start, stop or restart lucyd.service, as the bar panel's switch and
+    /// Restart button do.
+    Service {
+        #[arg(value_enum)]
+        verb: Verb,
+    },
     /// Print lucyd's raw event stream as NDJSON, for client authors.
     Events,
     /// Open a Session, as if the Wake word had been heard.
@@ -102,6 +109,7 @@ fn main() -> ExitCode {
         Some(Command::Status { json: true, follow }) => return snapshot(follow),
         Some(Command::Set { key, value }) => return write(settings::parse_set(&key, value)),
         Some(Command::Unset { key }) => return write(settings::parse_unset(&key)),
+        Some(Command::Service { verb }) => return service(verb),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
         Some(Command::End) => connect().and_then(|mut client| client.end_session()),
@@ -196,6 +204,16 @@ fn snapshot(follow: bool) -> ExitCode {
     let snapshot = Snapshot::of(&env, status.as_ref(), &Devices::list(&env));
     let _ = writeln!(stdout, "{}", snapshot.to_json());
     ExitCode::SUCCESS
+}
+
+fn service(verb: Verb) -> ExitCode {
+    match systemd::run(&Env::of_process(Path::new(OS_RELEASE)), verb) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("lucy: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn write(changes: Result<Vec<Change>, String>) -> ExitCode {

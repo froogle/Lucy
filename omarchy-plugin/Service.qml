@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Io
 
 // Everything the panel knows comes from `lucy status --follow --json`, and
-// everything it changes goes through `lucy` or systemctl. It never reads
+// everything it changes goes through `lucy`. It never reads
 // config.toml or lucyd's socket itself.
 Item {
   id: root
@@ -43,41 +43,33 @@ Item {
     return Object.prototype.hasOwnProperty.call(chosen, choice.key) ? chosen[choice.key] : choice.current
   }
 
-  // ---- Power --------------------------------------------------------------
-  // What was asked for is held until a snapshot agrees (-1: follow lucyd),
-  // so the knob moves at once and a snapshot on its way can't throw it back.
-  property int _desiredRunning: -1
-  readonly property bool powerOn: _desiredRunning === -1 ? serviceRunning : _desiredRunning === 1
-  readonly property bool powerBusy: _desiredRunning !== -1
+  property bool powerBusy: false
+  property bool _wantOn: false
+  readonly property bool powerOn: powerBusy ? _wantOn : serviceRunning
 
   function setPower(on) {
     if (powerBusy || powerProcess.running) return
-    _desiredRunning = on ? 1 : 0
-    // A crashed lucyd hits systemd's start limit; clear it first.
-    powerProcess.command = on
-      ? ["sh", "-c", '"$0" --user reset-failed "$1" 2>/dev/null; exec "$0" --user start "$1"',
-         "systemctl", "lucyd.service"]
-      : ["systemctl", "--user", "stop", "lucyd.service"]
+    _wantOn = on
+    powerBusy = true
+    powerProcess.command = ["lucy", "service", on ? "start" : "stop"]
     powerProcess.running = true
     powerDeadline.restart()
   }
   function togglePower() { setPower(!powerOn) }
 
   function _settlePower() {
-    if (_desiredRunning === -1 || serviceRunning !== (_desiredRunning === 1)) return
-    _desiredRunning = -1
-    powerDeadline.stop()
+    if (powerBusy && serviceRunning === _wantOn) _releasePower()
   }
 
   function _releasePower() {
-    _desiredRunning = -1
+    powerBusy = false
     powerDeadline.stop()
   }
 
   function restart() {
     restartOffered = false
     flashText = ""
-    Quickshell.execDetached(["systemctl", "--user", "restart", "lucyd.service"])
+    Quickshell.execDetached(["lucy", "service", "restart"])
   }
 
   function endSession() {

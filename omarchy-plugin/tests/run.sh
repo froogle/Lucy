@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs the panel offscreen in Quickshell against a fake lucy, systemctl and
-# omarchy-launch-tui (tests/qml/shell.qml), then checks the commands it ran.
+# omarchy-launch-tui (tests/qml/shell.qml), then checks the commands it ran:
+# every one through lucy, none through systemctl.
 # Needs quickshell and Omarchy's shell modules; OMARCHY_SHELL points at them.
 set -euo pipefail
 plugin="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,12 +29,13 @@ fake() {
 }
 fake lucy 'case "$1 $2" in
   "status --follow") echo '"'"'{"state":"waiting","wake_word":"Hey Lucy","fast":{"key":"tiers.fast","current":"claude-fast","options":["claude-fast"]},"advanced":{"key":"tiers.advanced","current":"claude-fast","options":["claude-fast"]},"stt":{"key":"stt","current":null,"options":[null]},"mic":{"key":"audio.mic","current":"default","options":["default"]},"speaker":{"key":"audio.speaker","current":"default","options":["default"]}}'"'"'; exec sleep 15;;
+  "service start") exit 1;;
   "set nope") echo "lucy: nope is not a setting" >&2; exit 2;;
   "set stt") [ "$3" = superwhisper ] && echo '"'"'{"applies":"next_session","message":"Applies at the next Session."}'"'"' || echo '"'"'{"applies":"restart","message":"Applies after restarting lucyd."}'"'"';;
   "unset stt") echo '"'"'{"applies":"restart","message":"Applies after restarting lucyd."}'"'"';;
   set*) echo '"'"'{"applies":"next_session","message":"Applies at the next Session."}'"'"';;
 esac'
-fake systemctl '[ "$2" != start ]'
+fake systemctl ''
 fake omarchy-launch-tui ''
 
 out="$dir/out"
@@ -61,13 +63,13 @@ fi
 for call in \
     'lucy status --follow --json' \
     'lucy end' \
-    'systemctl --user start lucyd.service' \
-    'systemctl --user stop lucyd.service' \
+    'lucy service start' \
+    'lucy service stop' \
     'lucy set tiers.fast codex-fast' \
     'lucy set stt superwhisper' \
     'lucy set stt base.en' \
     'lucy unset stt' \
-    'systemctl --user restart lucyd.service' \
+    'lucy service restart' \
     'lucy set audio.mic alsa_input.usb-Yeti' \
     'omarchy-launch-tui --app-id=TUI.float lucy'; do
     if grep -qxF "$call" "$calls"; then
@@ -77,4 +79,8 @@ for call in \
         status=1
     fi
 done
+if grep '^systemctl' "$calls" >&2; then
+    echo "the panel ran systemctl itself, not through lucy" >&2
+    status=1
+fi
 exit $status

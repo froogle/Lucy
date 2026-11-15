@@ -24,7 +24,7 @@ const UNITS: [(&str, &str, &str); 2] = [
 /// written to the user's unit dir first, running the programs in
 /// `env.bin`. systemctl's output is kept off the full screen. On Omarchy,
 /// the bar panel is linked into its plugins, ready to add to the bar.
-pub fn enable(env: &Env) -> Result<(), String> {
+pub(crate) fn enable(env: &Env) -> Result<(), String> {
     make_known(env)?;
     systemctl(
         env,
@@ -61,7 +61,7 @@ fn link_panel(omarchy: &Path) -> Result<(), String> {
 }
 
 /// Stops both services starting at login; they keep running until stopped.
-pub fn disable(env: &Env) -> Result<(), String> {
+pub(crate) fn disable(env: &Env) -> Result<(), String> {
     systemctl(
         env,
         &[
@@ -74,7 +74,7 @@ pub fn disable(env: &Env) -> Result<(), String> {
 }
 
 /// Whether `lucyd.service` starts at login.
-pub fn is_enabled(env: &Env) -> bool {
+pub(crate) fn is_enabled(env: &Env) -> bool {
     quietly(env, &["--user", "is-enabled", "lucyd.service"])
 }
 
@@ -116,22 +116,36 @@ fn up_since(timestamp: Option<&str>) -> Duration {
 }
 
 /// Starts, stops or restarts `lucyd.service`, writing the units first if
-/// systemd doesn't know them.
+/// systemd doesn't know them. A start or restart first clears the start
+/// limit a crashing lucyd runs into.
+///
+/// # Errors
+///
+/// If systemctl can't be run or fails, with what it said.
 pub fn run(env: &Env, verb: Verb) -> Result<(), String> {
     make_known(env)?;
-    let verb = match verb {
-        Verb::Start => "start",
-        Verb::Stop => "stop",
-        Verb::Restart => "restart",
-    };
-    systemctl(env, &["--user", verb, "lucyd.service"])
+    if verb != Verb::Stop {
+        quietly(env, &["--user", "reset-failed", "lucyd.service"]);
+    }
+    systemctl(env, &["--user", verb.as_arg(), "lucyd.service"])
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// What [`run`] does to `lucyd.service`.
+#[derive(Debug, Clone, Copy, PartialEq, clap::ValueEnum)]
 pub enum Verb {
     Start,
     Stop,
     Restart,
+}
+
+impl Verb {
+    fn as_arg(self) -> &'static str {
+        match self {
+            Verb::Start => "start",
+            Verb::Stop => "stop",
+            Verb::Restart => "restart",
+        }
+    }
 }
 
 /// Writes the units if systemd doesn't know them.
