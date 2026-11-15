@@ -8,7 +8,7 @@ use lucy_ipc::Client;
 use ratatui::backend::Backend;
 
 use super::{Context, Page};
-use crate::settings::Key;
+use crate::settings::{Change, Key};
 use crate::ui::{Stop, Ui};
 use crate::Env;
 
@@ -66,7 +66,7 @@ fn pick_device<B: Backend>(
 fn mic<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
         let mic = pick_device(ui, context, "Microphone:", "sources")?;
-        context.save(ui, &[(Key::Mic, Some(&mic))])?;
+        context.save(ui, &[Change::Set(Key::Mic, mic)])?;
         let Some(mut client) = context.client() else {
             return ui.say("lucyd isn't running, and the level meter needs it. s starts it.");
         };
@@ -113,7 +113,7 @@ fn meter<B: Backend>(ui: &mut Ui<B>, client: &mut Client) -> Result<bool, Stop> 
 fn speaker<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
         let speaker = pick_device(ui, context, "Speaker:", "sinks")?;
-        context.save(ui, &[(Key::Speaker, Some(&speaker))])?;
+        context.save(ui, &[Change::Set(Key::Speaker, speaker)])?;
         let Some(mut client) = context.client() else {
             return ui.say("lucyd isn't running, so Lucy can't speak on it. s starts it.");
         };

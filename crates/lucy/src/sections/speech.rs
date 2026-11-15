@@ -5,7 +5,7 @@ use lucy_config::SttKind;
 use ratatui::backend::Backend;
 
 use super::{Context, Page};
-use crate::settings::Key;
+use crate::settings::{Change, Key};
 use crate::ui::{Stop, Ui};
 
 /// Whisper's models; None leaves it to lucyd.
@@ -64,11 +64,14 @@ fn kind<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
             kind = SttKind::Whisper;
         }
     }
-    context.save(ui, &[(Key::Stt, Some(&kind.config_name()))])
+    context.save(ui, &[Change::Set(Key::Stt, kind.config_name())])
 }
 
 fn model<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     let labels = MODELS.map(|(_, label)| label.to_owned());
-    let (model, _) = MODELS[ui.choose("Whisper's model:", &labels)?];
-    context.save(ui, &[(Key::WhisperModel, model)])
+    let change = match MODELS[ui.choose("Whisper's model:", &labels)?] {
+        (Some(model), _) => Change::Set(Key::WhisperModel, model.to_owned()),
+        (None, _) => Change::Unset(Key::WhisperModel),
+    };
+    context.save(ui, &[change])
 }

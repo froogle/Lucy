@@ -5,7 +5,7 @@ use ratatui::backend::Backend;
 
 use super::{Context, Page};
 use crate::piper;
-use crate::settings::{Applies, Key};
+use crate::settings::{Applies, Change, Key};
 use crate::ui::{Stop, Ui};
 
 /// A Piper voice offered, with what its licence allows.
@@ -116,14 +116,14 @@ fn voice<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
         }
         let Some(mut client) = context.client() else {
             ui.say("lucyd isn't running, so Lucy can't speak in it for you to hear first.")?;
-            return context.save(ui, &[(Key::Voice, Some(voice.name))]);
+            return context.save(ui, &[Change::Set(Key::Voice, voice.name.to_owned())]);
         };
         ui.say("Fetching the voice if need be, then Lucy speaks in it...")?;
         if let Err(e) = client.voice_preview_in(VOICE_SAMPLE, Some(voice.name)) {
             ui.say(format!("Lucy couldn't speak in it: {e}"))?;
         }
         if ui.yes("Keep this voice?", true)? {
-            return context.save(ui, &[(Key::Voice, Some(voice.name))]);
+            return context.save(ui, &[Change::Set(Key::Voice, voice.name.to_owned())]);
         }
     }
 }

@@ -21,7 +21,7 @@ use lucy_config::credentials::CredentialStore;
 use lucy_ipc::Client;
 use ratatui::backend::Backend;
 
-use crate::settings::{self, Applies, Key};
+use crate::settings::{self, Applies, Change};
 use crate::systemd::{self, Verb};
 use crate::ui::{Pick, Rows, Stop, Ui};
 use crate::Env;
@@ -235,25 +235,11 @@ impl Context<'_> {
         lucy_config::load(&self.env.config).unwrap_or_default()
     }
 
-    /// Writes each change to `config.toml` at once, says when it applies,
-    /// and offers a restart when one is needed. None unsets a key.
-    fn save<B: Backend>(
-        &self,
-        ui: &mut Ui<B>,
-        changes: &[(Key, Option<&str>)],
-    ) -> Result<(), Stop> {
-        let mut applies = Applies::NextSession;
-        for (key, value) in changes {
-            let written = match value {
-                Some(value) => settings::set(&self.env.config, key, value),
-                None => settings::unset(&self.env.config, key),
-            };
-            match written {
-                Ok(when) => applies = applies.max(when),
-                Err(e) => return ui.say(format!("Not saved: {e}")),
-            }
+    fn save<B: Backend>(&self, ui: &mut Ui<B>, changes: &[Change]) -> Result<(), Stop> {
+        match settings::write(&self.env.config, changes) {
+            Ok(applies) => self.applied(ui, applies),
+            Err(e) => ui.say(format!("Not saved: {e}")),
         }
-        self.applied(ui, applies)
     }
 
     /// Says when a change applies, offering to restart lucyd if it must.

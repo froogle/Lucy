@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use lucy::menu::{self, Open};
 use lucy::panel::{self, Devices, Snapshot};
-use lucy::settings::{self, Key};
+use lucy::settings::{self, Change, Key};
 use lucy::ui::{Console, Ui};
 use lucy::Env;
 use lucy_ipc::{Client, State, Topic};
@@ -99,8 +99,8 @@ fn main() -> ExitCode {
             follow: _,
         }) => status(),
         Some(Command::Status { json: true, follow }) => return snapshot(follow),
-        Some(Command::Set { key, value }) => return set(&key, Some(&value)),
-        Some(Command::Unset { key }) => return set(&key, None),
+        Some(Command::Set { key, value }) => return write(Change::Set(key, value)),
+        Some(Command::Unset { key }) => return write(Change::Unset(key)),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
         Some(Command::End) => connect().and_then(|mut client| client.end_session()),
@@ -197,14 +197,8 @@ fn snapshot(follow: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Sets `key` to `value`, or unsets it if None.
-fn set(key: &Key, value: Option<&str>) -> ExitCode {
-    let config = lucy_config::default_path();
-    let written = match value {
-        Some(value) => settings::set(&config, key, value),
-        None => settings::unset(&config, key),
-    };
-    match written {
+fn write(change: Change) -> ExitCode {
+    match settings::write(&lucy_config::default_path(), &[change]) {
         Ok(applies) => {
             let answer = serde_json::json!({"applies": applies, "message": applies.to_string()});
             println!("{answer}");

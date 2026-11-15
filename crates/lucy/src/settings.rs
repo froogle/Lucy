@@ -50,7 +50,6 @@ impl Key {
     /// When lucyd takes up a change to this setting.
     pub fn applies(&self) -> Applies {
         match self {
-            // The model stays loaded from lucyd's start.
             Key::WhisperModel => Applies::Restart,
             Key::ProviderKind(_)
             | Key::ProviderModel(_)
@@ -106,28 +105,39 @@ impl FromStr for Key {
     }
 }
 
-/// Sets `key` to `value` in the config file at `config`, keeping its
-/// comments; when lucyd takes it up.
-///
-/// # Errors
-///
-/// If the file can't be read, parsed or written.
-pub fn set(config: &Path, key: &Key, value: &str) -> Result<Applies, lucy_config::Error> {
-    let path = key.path();
-    let path: Vec<&str> = path.iter().map(String::as_str).collect();
-    lucy_config::set(config, &path, value)?;
-    Ok(key.applies())
+/// One change `lucy` makes to `config.toml`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    Set(Key, String),
+    /// Removes the setting, so its default applies.
+    Unset(Key),
 }
 
-/// Removes `key` from the config file at `config`, so its default applies;
-/// when lucyd takes that up.
+impl Change {
+    fn key(&self) -> &Key {
+        match self {
+            Change::Set(key, _) | Change::Unset(key) => key,
+        }
+    }
+}
+
+/// Makes `changes` in the config file at `config`, in order, keeping its
+/// comments; when lucyd takes them all up.
 ///
 /// # Errors
 ///
-/// If the file can't be read, parsed or written.
-pub fn unset(config: &Path, key: &Key) -> Result<Applies, lucy_config::Error> {
-    let path = key.path();
-    let path: Vec<&str> = path.iter().map(String::as_str).collect();
-    lucy_config::unset(config, &path)?;
-    Ok(key.applies())
+/// If the file can't be read, parsed or written. The changes before the
+/// one that failed stay written.
+pub fn write(config: &Path, changes: &[Change]) -> Result<Applies, lucy_config::Error> {
+    let mut applies = Applies::NextSession;
+    for change in changes {
+        let path = change.key().path();
+        let path: Vec<&str> = path.iter().map(String::as_str).collect();
+        match change {
+            Change::Set(_, value) => lucy_config::set(config, &path, value.as_str())?,
+            Change::Unset(_) => lucy_config::unset(config, &path)?,
+        }
+        applies = applies.max(change.key().applies());
+    }
+    Ok(applies)
 }

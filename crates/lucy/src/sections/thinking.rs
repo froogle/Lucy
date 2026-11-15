@@ -6,7 +6,7 @@ use ratatui::backend::Backend;
 
 use super::{Context, Page};
 use crate::piper::on_path;
-use crate::settings::Key;
+use crate::settings::{Change, Key};
 use crate::ui::{Stop, Ui};
 
 const TIERS: [Tier; 2] = [Tier::Fast, Tier::Advanced];
@@ -79,9 +79,9 @@ pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) ->
     context.save(
         ui,
         &[
-            (Key::ProviderKind(name.clone()), Some(&kind)),
-            (Key::ProviderModel(name.clone()), Some(&model)),
-            (Key::Tier(tier), Some(&name)),
+            Change::Set(Key::ProviderKind(name.clone()), kind),
+            Change::Set(Key::ProviderModel(name.clone()), model),
+            Change::Set(Key::Tier(tier), name),
         ],
     )
 }
