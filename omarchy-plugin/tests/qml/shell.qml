@@ -34,18 +34,28 @@ ShellRoot {
     }
 
     function feed(state, changes) {
-      barPanel.service.apply(JSON.stringify(snapshot(state, changes)))
+      lucy.apply(JSON.stringify(snapshot(state, changes)))
+    }
+
+    function findAll(item, name, out) {
+      if (!item) return out
+      if (item.objectName === name) out.push(item)
+      var children = item.children || []
+      for (var i = 0; i < children.length; i++) findAll(children[i], name, out)
+      return out
     }
 
     function find(item, name) {
-      if (!item) return null
-      if (item.objectName === name) return item
-      var children = item.children || []
-      for (var i = 0; i < children.length; i++) {
-        var found = find(children[i], name)
-        if (found) return found
+      return findAll(item, name, [])[0] || null
+    }
+
+    function tooltips(button) {
+      var data = button.data || []
+      var out = []
+      for (var i = 0; i < data.length; i++) {
+        if (data[i] && data[i].contentItem && data[i].delay !== undefined) out.push(data[i].contentItem)
       }
-      return null
+      return out
     }
 
     function texts(item, out) {
@@ -56,7 +66,7 @@ ShellRoot {
       return out
     }
 
-    readonly property var lucy: barPanel.service
+    readonly property var lucy: find(barPanel, "service")
     readonly property color dimmed: Qt.darker(barPanel.barForeground, 1.55)
 
     property var steps: [
@@ -96,6 +106,12 @@ ShellRoot {
         var shown = texts(barPanel, []).filter(function (t) { return t.text.indexOf("<") >= 0 })
         check("markup-shaped names reach the panel", shown.length >= 3, true)
         check("each is plain text", shown.filter(function (t) { return t.textFormat !== Text.PlainText }).length, 0)
+        var chips = findAll(barPanel, "chip", []).filter(function (c) { return c.text === "<b>bold</b>" })
+        var tips = [].concat.apply([], chips.map(tooltips))
+        check("a markup-shaped Provider name reaches its chip", chips.length, 1)
+        check("each chip's tooltip holds it as it came", tips.map(function (t) { return t.text }),
+              chips.map(function () { return "<b>bold</b>" }))
+        check("and shows it as plain text", tips.filter(function (t) { return t.textFormat !== Text.PlainText }).length, 0)
         barPanel.openList = ""
 
         console.log("power: a start that fails settles to the real state")
@@ -128,7 +144,7 @@ ShellRoot {
         check("the flash says when it applies", barPanel.flashLine, "Applies at the next Session.")
         check("no restart for it", lucy.restartOffered, false)
         feed("stopped", { fast: { key: "tiers.fast", current: "codex-fast", options: ["claude-fast", "codex-fast"] } })
-        check("a snapshot that agrees takes over", lucy.chosen, {})
+        check("a snapshot that agrees takes over", lucy.pending, {})
 
         console.log("speech-to-text: Whisper's models and Superwhisper in one row")
         var labels = texts(barPanel, []).map(function (t) { return t.text })
@@ -154,7 +170,7 @@ ShellRoot {
       },
       function () {
         check("a refused change says it wasn't saved", barPanel.flashLine, "Not saved: lucy: nope is not a setting")
-        check("and drops what was drawn", lucy.chosen.hasOwnProperty("nope"), false)
+        check("and drops what was drawn", lucy.pending.hasOwnProperty("nope"), false)
 
         console.log("devices")
         feed("session")

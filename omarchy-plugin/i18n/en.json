@@ -19,5 +19,6 @@
   "audio.speaker": "Speaker",
   "restart": "Restart",
   "notSaved": "Not saved",
+  "notSavedBecause": "Not saved: %1",
   "more": "More settings…"
 }

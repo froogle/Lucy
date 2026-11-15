@@ -22,15 +22,14 @@ Panel {
   readonly property string state: lucy.state
   readonly property var snapshot: lucy.snapshot
   readonly property string glyph: state === "session" ? String.fromCodePoint(0xF05CB) : String.fromCodePoint(0xF036C)
-  // Stopped is the same glyph dimmed, as Omarchy's Tailscale icon is.
   readonly property color iconColor: state === "failed" ? urgent
     : (state === "stopped" || state === "starting") ? Qt.darker(barForeground, 1.55)
     : barForeground
-  readonly property string stateLine: strings.t("state." + state).arg(snapshot ? String(snapshot.wake_word) : "")
-  // An empty `lucy set` error still says nothing was saved.
+  readonly property string stateLine: state === "waiting"
+    ? strings.t("state.waiting").arg(String(snapshot.wake_word))
+    : strings.t("state." + state)
   readonly property string flashLine: !lucy.flashIsError ? lucy.flashText
-    : lucy.flashText !== "" ? strings.t("notSaved") + ": " + lucy.flashText : strings.t("notSaved")
-  // Which device row has its list open: "", "mic" or "speaker".
+    : lucy.flashText !== "" ? strings.t("notSavedBecause").arg(lucy.flashText) : strings.t("notSaved")
   property string openList: ""
 
   function label(value) {
@@ -50,8 +49,6 @@ Panel {
   Commons.Translations { id: strings; directory: Qt.resolvedUrl("i18n") }
 
   Service { id: lucy }
-  // For the QML harness.
-  property alias service: lucy
 
   BarIconButton {
     id: button
@@ -233,7 +230,6 @@ Panel {
     wrapMode: Text.WordWrap
   }
 
-  // One chip per option, the current one filled.
   component Chips: Row {
     id: chips
     property var choice: null
@@ -253,6 +249,7 @@ Panel {
 
         Button {
           id: chip
+          objectName: "chip"
           width: parent.width
           text: root.label(modelData)
           tooltipText: text
@@ -269,7 +266,6 @@ Panel {
     }
   }
 
-  // "Microphone   alsa_input.usb-Yeti  ›", opening the list of devices.
   component DeviceRow: Column {
     id: device
     property string name: ""

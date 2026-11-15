@@ -3,29 +3,28 @@ import Quickshell
 import Quickshell.Io
 
 // Everything the panel knows comes from `lucy status --follow --json`, and
-// everything it changes goes through `lucy`. It never reads
-// config.toml or lucyd's socket itself.
+// everything it changes goes through `lucy`. It never reads config.toml or
+// lucyd's socket itself.
 Item {
   id: root
+  objectName: "service"
 
-  // The latest snapshot, or null before the first and after `lucy` exits.
   property var snapshot: null
   readonly property string state: snapshot ? String(snapshot.state) : "stopped"
   readonly property bool serviceRunning: state === "starting" || state === "waiting" || state === "session"
 
-  // What was just chosen, by key, shown until a snapshot agrees.
-  property var chosen: ({})
+  property var pending: ({})
 
   function apply(line) {
     var parsed
     try { parsed = JSON.parse(String(line)) } catch (e) { return }
     if (!parsed || typeof parsed !== "object") return
     snapshot = parsed
-    var kept = ({})
-    for (var key in chosen) {
-      if (!agrees(key, chosen[key])) kept[key] = chosen[key]
+    var stillPending = ({})
+    for (var key in pending) {
+      if (!agrees(key, pending[key])) stillPending[key] = pending[key]
     }
-    chosen = kept
+    pending = stillPending
     _settlePower()
   }
 
@@ -37,10 +36,9 @@ Item {
     return true
   }
 
-  // What `choice` is, counting a change still on its way.
   function current(choice) {
     if (!choice) return null
-    return Object.prototype.hasOwnProperty.call(chosen, choice.key) ? chosen[choice.key] : choice.current
+    return Object.prototype.hasOwnProperty.call(pending, choice.key) ? pending[choice.key] : choice.current
   }
 
   property bool powerBusy: false
@@ -76,24 +74,22 @@ Item {
     Quickshell.execDetached(["lucy", "end"])
   }
 
+  readonly property string floatingAppId: "TUI.float"
+
   function openLucy() {
-    // TUI.float is a floating window under Omarchy's window rules.
-    Quickshell.execDetached(["omarchy-launch-tui", "--app-id=TUI.float", "lucy"])
+    Quickshell.execDetached(["omarchy-launch-tui", "--app-id=" + floatingAppId, "lucy"])
   }
 
-  // ---- Changes ------------------------------------------------------------
-  // One `lucy set` at a time, in order; a newer value for a key replaces one
-  // still waiting.
   property var _queue: []
 
   function choose(choice, value) {
     if (!choice) return
-    var next = Object.assign({}, chosen)
+    var next = Object.assign({}, pending)
     next[choice.key] = value
-    chosen = next
+    pending = next
     var argv = value === null ? ["unset", choice.key] : ["set", choice.key, String(value)]
-    _queue = _queue.filter(function (entry) { return entry.key !== choice.key })
-      .concat([{ key: choice.key, argv: argv }])
+    var others = _queue.filter(function (entry) { return entry.key !== choice.key })
+    _queue = others.concat([{ key: choice.key, argv: argv }])
     _next()
   }
 
@@ -106,7 +102,6 @@ Item {
     changeProcess.running = true
   }
 
-  // The flash line: when a change applies, or why it wasn't saved.
   property string flashText: ""
   property bool flashIsError: false
   property bool restartOffered: false
@@ -119,16 +114,15 @@ Item {
 
   function _written(exitCode, stdout, stderr) {
     if (exitCode !== 0) {
-      var next = Object.assign({}, chosen)
+      var next = Object.assign({}, pending)
       delete next[changeProcess.key]
-      chosen = next
+      pending = next
       var why = String(stderr || "").trim().split("\n").pop()
       flash(why, true)
       return
     }
     var answer
     try { answer = JSON.parse(String(stdout)) } catch (e) { return }
-    // Once a change needs a restart, the offer stays until it is taken.
     restartOffered = restartOffered || answer.applies === "restart"
     flash(String(answer.message || ""), false)
   }
@@ -136,7 +130,6 @@ Item {
   Timer {
     id: flashTimer
     interval: 4000
-    // A Restart button stays until it is pressed.
     onTriggered: if (!root.restartOffered) root.flashText = ""
   }
 
