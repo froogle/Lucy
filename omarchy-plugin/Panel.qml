@@ -26,7 +26,7 @@ Panel {
   readonly property color iconColor: state === "failed" ? urgent
     : (state === "stopped" || state === "starting") ? Qt.darker(barForeground, 1.55)
     : barForeground
-  readonly property string stateLine: strings.t("state." + state)
+  readonly property string stateLine: strings.t("state." + state).arg(snapshot ? String(snapshot.wake_word) : "")
   // An empty `lucy set` error still says nothing was saved.
   readonly property string flashLine: !lucy.flashIsError ? lucy.flashText
     : lucy.flashText !== "" ? strings.t("notSaved") + ": " + lucy.flashText : strings.t("notSaved")

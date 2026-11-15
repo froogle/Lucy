@@ -1,21 +1,6 @@
 //! The Wake word inside a Session: ordinary speech, with a leading Wake
 //! word taken off what the model hears.
 
-use std::path::Path;
-
-use crate::audio::BUNDLED_WAKE_MODEL;
-
-/// The Wake word the configured model listens for, from its file name:
-/// `hey_lucy.onnx` listens for "hey lucy".
-pub fn word(config: &lucy_config::WakeWord) -> String {
-    let model = config
-        .model
-        .as_deref()
-        .unwrap_or(Path::new(BUNDLED_WAKE_MODEL));
-    let stem = model.file_stem().unwrap_or_default().to_string_lossy();
-    stem.replace(['_', '-'], " ")
-}
-
 /// `transcript` without a leading Wake word `word`, however STT punctuated
 /// or spaced it ("Hey, Lucy." or "hey lucy"), and without the punctuation
 /// after it.

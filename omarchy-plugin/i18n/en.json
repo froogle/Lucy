@@ -2,7 +2,7 @@
   "title": "Lucy",
   "state.stopped": "Stopped",
   "state.starting": "Starting",
-  "state.waiting": "Listening for 'Hey Lucy'",
+  "state.waiting": "Listening for '%1'",
   "state.session": "In a Session",
   "state.failed": "lucyd failed",
   "power.on": "Start lucyd",

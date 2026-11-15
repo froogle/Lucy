@@ -22,6 +22,7 @@ ShellRoot {
     function snapshot(state, changes) {
       var s = {
         state: state,
+        wake_word: "Hey Lucy",
         fast: { key: "tiers.fast", current: "claude-fast", options: ["claude-fast", "codex-fast"] },
         advanced: { key: "tiers.advanced", current: "claude-advanced", options: ["claude-advanced", "claude-fast"] },
         stt: { key: "stt", current: null, options: [null, "small.en", "base.en", "superwhisper"] },
@@ -66,6 +67,8 @@ ShellRoot {
         check("waiting: in the bar's colour", String(barPanel.iconColor), String(barPanel.barForeground))
         check("waiting: the header says so", barPanel.stateLine, "Listening for 'Hey Lucy'")
         check("waiting: no End Session", find(barPanel, "endSession").visible, false)
+        feed("waiting", { wake_word: "Ok Computer" })
+        check("waiting: the header names the Wake word lucy reports", barPanel.stateLine, "Listening for 'Ok Computer'")
 
         feed("session")
         check("session: another glyph", barPanel.glyph, String.fromCodePoint(0xF05CB))

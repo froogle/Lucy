@@ -451,6 +451,22 @@ impl Default for WakeWord {
     }
 }
 
+/// The file name of the Wake word model bundled with lucyd.
+pub const BUNDLED_WAKE_MODEL: &str = "hey_lucy.onnx";
+
+impl WakeWord {
+    /// The phrase the model listens for, from its file name: `hey_lucy.onnx`
+    /// listens for "hey lucy".
+    pub fn word(&self) -> String {
+        let model = self
+            .model
+            .as_deref()
+            .unwrap_or(Path::new(BUNDLED_WAKE_MODEL));
+        let stem = model.file_stem().unwrap_or_default().to_string_lossy();
+        stem.replace(['_', '-'], " ")
+    }
+}
+
 /// `[session]`
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]

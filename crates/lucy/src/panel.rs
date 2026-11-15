@@ -31,6 +31,7 @@ enum State {
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Snapshot {
     state: State,
+    wake_word: String,
     fast: Choice<String>,
     advanced: Choice<String>,
     stt: Choice<Option<String>>,
@@ -83,6 +84,7 @@ impl Snapshot {
         };
         Snapshot {
             state: state(env, status),
+            wake_word: titled(&config.wake_word.word()),
             fast: Choice::new(
                 Key::Tier(lucy_config::Tier::Fast),
                 config.tiers.fast.clone(),
@@ -107,6 +109,21 @@ impl Snapshot {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("a snapshot is plain data")
     }
+}
+
+fn titled(phrase: &str) -> String {
+    let word = |word: &str| {
+        let mut letters = word.chars();
+        letters
+            .next()
+            .map(|first| first.to_uppercase().chain(letters).collect::<String>())
+            .unwrap_or_default()
+    };
+    phrase
+        .split_whitespace()
+        .map(word)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn stt(env: &Env, config: &lucy_config::Config) -> Choice<Option<String>> {

@@ -191,6 +191,20 @@ fn set_refuses_a_setting_it_doesnt_know_and_leaves_the_file_alone() {
 }
 
 #[test]
+fn the_snapshot_names_the_wake_word_its_model_listens_for() {
+    let home = home("inactive");
+    assert_eq!(snapshot(&home)["wake_word"], "Hey Lucy");
+
+    std::fs::write(
+        home.config_path(),
+        "[wake_word]\nmodel = \"/models/ok_computer.onnx\"\n",
+    )
+    .unwrap();
+
+    assert_eq!(snapshot(&home)["wake_word"], "Ok Computer");
+}
+
+#[test]
 fn with_superwhisper_installed_speech_to_text_offers_it_beside_whispers_models() {
     let home = home("inactive");
     home.fake("superwhisper", "exit 0");
@@ -261,6 +275,7 @@ fn with_lucyd_stopped_the_snapshot_says_so_and_still_lists_every_choice() {
         snapshot(&home),
         json!({
             "state": "stopped",
+            "wake_word": "Hey Lucy",
             "fast": {
                 "key": "tiers.fast",
                 "current": "claude-fast",
