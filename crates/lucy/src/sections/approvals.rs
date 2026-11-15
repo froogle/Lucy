@@ -3,13 +3,14 @@
 
 use ratatui::backend::Backend;
 
-use super::{Context, Page};
+use lucy_ipc::Client;
+
+use super::{Context, Page, REVOKE};
 use crate::ui::{Stop, Ui};
 
 fn approvals(context: &Context) -> Vec<lucy_ipc::ApprovalInfo> {
     context
-        .client()
-        .and_then(|mut client| client.approvals().ok())
+        .query(Client::approvals)
         .map(|list| list.approvals)
         .unwrap_or_default()
 }
@@ -29,13 +30,12 @@ pub(super) fn page(context: &Context) -> Page {
         .collect();
     Page {
         note,
-        actions: vec![('r', "revokes")],
+        actions: vec![REVOKE],
         ..Page::new(rows)
     }
     .needing_lucyd()
 }
 
-/// Revokes the Approval on `row` once the user says yes.
 pub(super) fn revoke<B: Backend>(
     ui: &mut Ui<B>,
     context: &Context,

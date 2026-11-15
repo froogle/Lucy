@@ -1,6 +1,6 @@
 //! Plugins: each one's state, and entering the credentials it declares.
 
-use lucy_ipc::{PluginInfo, PluginStatus};
+use lucy_ipc::{Client, PluginInfo, PluginStatus};
 use ratatui::backend::Backend;
 
 use super::{Context, Page};
@@ -9,13 +9,11 @@ use crate::ui::{Stop, Ui};
 
 fn plugins(context: &Context) -> Vec<PluginInfo> {
     context
-        .client()
-        .and_then(|mut client| client.plugins().ok())
+        .query(Client::plugins)
         .map(|list| list.plugins)
         .unwrap_or_default()
 }
 
-/// The row of the Plugin called `name`, if lucyd lists one.
 pub fn row(context: &Context, name: &str) -> Option<usize> {
     plugins(context).iter().position(|p| p.name == name)
 }
@@ -43,7 +41,6 @@ pub(super) fn page(context: &Context) -> Page {
     Page::new(rows).needing_lucyd()
 }
 
-/// Each credential `plugin` declares, and whether it has been entered.
 fn entered(context: &Context, plugin: &PluginInfo) -> String {
     plugin
         .credentials
@@ -56,7 +53,6 @@ fn entered(context: &Context, plugin: &PluginInfo) -> String {
         .join(", ")
 }
 
-/// Enters the credentials of the Plugin on `row`.
 pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) -> Result<(), Stop> {
     let Some(plugin) = plugins(context).into_iter().nth(row) else {
         return Ok(());

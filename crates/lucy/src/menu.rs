@@ -6,7 +6,7 @@ use lucy_config::credentials::CredentialStore;
 use ratatui::backend::Backend;
 
 use crate::sections::{self, Context, Opening, Section};
-use crate::ui::{Pick, Rows, Stop, Ui};
+use crate::ui::{back_is_fine, Pick, Rows, Stop, Ui};
 use crate::Env;
 
 /// What `lucy` opens at.
@@ -51,7 +51,7 @@ fn show<B: Backend>(ui: &mut Ui<B>, context: &Context, open: Open) -> Result<(),
             if row.is_none() {
                 ui.say(format!("There's no Plugin called {plugin}."))?;
             }
-            leave(sections::open(
+            back_is_fine(sections::open(
                 ui,
                 context,
                 Section::Plugins,
@@ -75,7 +75,7 @@ fn show<B: Backend>(ui: &mut Ui<B>, context: &Context, open: Open) -> Result<(),
         };
         selected = row;
         ui.screen.lines.clear();
-        leave(sections::open(
+        back_is_fine(sections::open(
             ui,
             context,
             Section::ALL[row],
@@ -113,14 +113,6 @@ fn write_header(config: &std::path::Path) -> std::io::Result<()> {
         config,
         "# Lucy's settings. Each is optional; `lucy` writes the ones you pick there.\n",
     )
-}
-
-/// Esc on a section's page comes back to the list.
-fn leave(result: Result<(), Stop>) -> Result<(), Stop> {
-    match result {
-        Err(Stop::Back) => Ok(()),
-        result => result,
-    }
 }
 
 fn position(section: Section) -> usize {

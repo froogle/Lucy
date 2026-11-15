@@ -21,10 +21,9 @@ use ratatui::backend::Backend;
 
 use crate::settings::{self, Applies, Change};
 use crate::systemd::{self, Verb};
-use crate::ui::{Pick, Rows, Stop, Ui};
+use crate::ui::{back_is_fine, Pick, Rows, Stop, Ui};
 use crate::Env;
 
-/// The sections, in the order the walk visits them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Section {
     Thinking,
@@ -87,29 +86,52 @@ impl Section {
             Section::Service => service::pick(ui, context),
         }
     }
-
-    fn act<B: Backend>(
-        self,
-        ui: &mut Ui<B>,
-        context: &Context,
-        letter: char,
-        row: Option<usize>,
-    ) -> Result<(), Stop> {
-        match (self, row) {
-            (Section::Thinking, Some(row)) => thinking::check(ui, context, row),
-            (Section::Approvals, Some(row)) => approvals::revoke(ui, context, row),
-            (Section::Service, _) => service::act(ui, context, letter),
-            _ => Ok(()),
-        }
-    }
 }
 
-/// What a section's page shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Action {
+    letter: char,
+    does: &'static str,
+    runs: Runs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Runs {
+    Check,
+    Revoke,
+    Service(Verb),
+}
+
+const CHECK: Action = Action {
+    letter: 'c',
+    does: "runs a real check",
+    runs: Runs::Check,
+};
+const REVOKE: Action = Action {
+    letter: 'r',
+    does: "revokes",
+    runs: Runs::Revoke,
+};
+const START: Action = Action {
+    letter: 's',
+    does: "starts lucyd",
+    runs: Runs::Service(Verb::Start),
+};
+const STOP: Action = Action {
+    letter: 'x',
+    does: "stops it",
+    runs: Runs::Service(Verb::Stop),
+};
+const RESTART: Action = Action {
+    letter: 'r',
+    does: "restarts it",
+    runs: Runs::Service(Verb::Restart),
+};
+
 struct Page {
     note: Vec<String>,
     rows: Vec<String>,
-    actions: Vec<(char, &'static str)>,
-    /// Part of it works only while lucyd runs.
+    actions: Vec<Action>,
     needs_lucyd: bool,
 }
 
@@ -131,17 +153,12 @@ impl Page {
     }
 }
 
-/// How a section is opened.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Opening {
-    /// From the list; Esc goes back to it.
     Alone,
-    /// In the walk: a last row moves on to the next section, or ends it.
     Walk(Option<Section>),
 }
 
-/// Shows `section` until the user goes back or, in the walk, moves on.
-/// `first` is a row picked as it opens.
 pub fn open<B: Backend>(
     ui: &mut Ui<B>,
     context: &Context,
@@ -156,16 +173,14 @@ pub fn open<B: Backend>(
     }
     loop {
         ui.screen.status = context.status();
-        let page = section.page(context);
-        let running = context.client().is_some();
-        let mut rows = page.rows;
-        let mut note = page.note;
-        let mut actions = page.actions;
-        if page.needs_lucyd && !running {
-            note.push("lucyd isn't running. s starts it.".to_owned());
-            actions.push(('s', "starts lucyd"));
+        let mut page = section.page(context);
+        if page.needs_lucyd && context.client().is_none() {
+            page.note
+                .push(format!("lucyd isn't running. {} starts it.", START.letter));
+            page.actions.push(START);
         }
-        let picked = rows.len();
+        let picked = page.rows.len();
+        let mut rows = page.rows;
         if let Opening::Walk(next) = opening {
             rows.push(match next {
                 Some(next) => format!("Next: {}", next.name()),
@@ -174,9 +189,9 @@ pub fn open<B: Backend>(
         }
         let list = Rows {
             title: section.name().to_owned(),
-            note,
+            note: page.note,
             rows,
-            actions,
+            actions: page.actions.iter().map(|a| (a.letter, a.does)).collect(),
             selected,
         };
         match ui.rows(list)? {
@@ -185,42 +200,60 @@ pub fn open<B: Backend>(
                 selected = row + 1;
                 back_is_fine(section.pick(ui, context, row))?;
             }
-            Pick::Action('s', _) if page.needs_lucyd && !running => {
-                context.service(ui, Verb::Start)?;
-            }
             Pick::Action(letter, row) => {
                 selected = row;
-                let row = (row < picked).then_some(row);
-                back_is_fine(section.act(ui, context, letter, row))?;
+                let action = page
+                    .actions
+                    .iter()
+                    .find(|action| action.letter == letter)
+                    .expect("the list offers only the page's letters");
+                back_is_fine(act(ui, context, action.runs, (row < picked).then_some(row)))?;
             }
         }
     }
 }
 
-/// Esc in the middle of a row's questions leaves that row, not the page.
-fn back_is_fine(result: Result<(), Stop>) -> Result<(), Stop> {
-    match result {
-        Err(Stop::Back) => Ok(()),
-        result => result,
+fn act<B: Backend>(
+    ui: &mut Ui<B>,
+    context: &Context,
+    runs: Runs,
+    row: Option<usize>,
+) -> Result<(), Stop> {
+    match (runs, row) {
+        (Runs::Check, Some(row)) => thinking::check(ui, context, row),
+        (Runs::Revoke, Some(row)) => approvals::revoke(ui, context, row),
+        (Runs::Service(verb), _) => context.service(ui, verb),
+        (Runs::Check | Runs::Revoke, None) => Ok(()),
     }
 }
 
-/// What the sections work with.
 pub struct Context<'a> {
     pub env: &'a Env,
     pub store: &'a dyn CredentialStore,
 }
 
 impl Context<'_> {
-    /// A client of lucyd, if it is running.
     fn client(&self) -> Option<Client> {
         self.env.connect().ok()
     }
 
-    /// The status line: whether lucyd is running and a Session is open.
+    fn query<T>(&self, call: impl FnOnce(&mut Client) -> Result<T, lucy_ipc::Error>) -> Option<T> {
+        self.client().and_then(|mut client| call(&mut client).ok())
+    }
+
+    fn lucyd<B: Backend>(&self, ui: &mut Ui<B>, needed_by: &str) -> Result<Option<Client>, Stop> {
+        let client = self.client();
+        if client.is_none() {
+            ui.say(format!(
+                "lucyd isn't running, {needed_by}. {} starts it.",
+                START.letter
+            ))?;
+        }
+        Ok(client)
+    }
+
     pub fn status(&self) -> String {
-        let status = self.client().and_then(|mut client| client.status().ok());
-        match status {
+        match self.query(Client::status) {
             None => "lucyd isn't running.".to_owned(),
             Some(status) if status.session_id.is_some() => {
                 "lucyd is running. A Session is open.".to_owned()
@@ -235,13 +268,12 @@ impl Context<'_> {
 
     fn save<B: Backend>(&self, ui: &mut Ui<B>, changes: &[Change]) -> Result<(), Stop> {
         match settings::write(&self.env.config, changes) {
-            Ok(applies) => self.applied(ui, applies),
+            Ok(applies) => self.say_when(ui, applies),
             Err(e) => ui.say(format!("Not saved: {e}")),
         }
     }
 
-    /// Says when a change applies, offering to restart lucyd if it must.
-    fn applied<B: Backend>(&self, ui: &mut Ui<B>, applies: Applies) -> Result<(), Stop> {
+    fn say_when<B: Backend>(&self, ui: &mut Ui<B>, applies: Applies) -> Result<(), Stop> {
         ui.say(applies.to_string())?;
         let offer = applies == Applies::Restart && self.client().is_some();
         if offer && ui.yes("Restart lucyd now?", true)? {
@@ -250,7 +282,6 @@ impl Context<'_> {
         Ok(())
     }
 
-    /// Starts, stops or restarts `lucyd.service`, then says how lucyd is.
     fn service<B: Backend>(&self, ui: &mut Ui<B>, verb: Verb) -> Result<(), Stop> {
         let doing = match verb {
             Verb::Start => "Starting lucyd...",
@@ -270,7 +301,6 @@ impl Context<'_> {
         }
     }
 
-    /// Whether lucyd is listening, once it has had a few seconds to start.
     fn wait_for_lucyd(&self) -> bool {
         for _ in 0..50 {
             if self.client().is_some() {

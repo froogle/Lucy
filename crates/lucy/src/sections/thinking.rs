@@ -2,9 +2,10 @@
 //! real check of it on request.
 
 use lucy_config::{Tier, RECOMMENDATIONS};
+use lucy_ipc::Client;
 use ratatui::backend::Backend;
 
-use super::{Context, Page};
+use super::{Context, Page, CHECK};
 use crate::piper::on_path;
 use crate::settings::{Change, Key};
 use crate::ui::{Stop, Ui};
@@ -14,8 +15,7 @@ const TIERS: [Tier; 2] = [Tier::Fast, Tier::Advanced];
 pub(super) fn page(context: &Context) -> Page {
     let config = context.config();
     let statuses = context
-        .client()
-        .and_then(|mut client| client.providers_status().ok())
+        .query(Client::providers_status)
         .map(|status| status.providers)
         .unwrap_or_default();
     let rows = TIERS
@@ -40,7 +40,7 @@ pub(super) fn page(context: &Context) -> Page {
         })
         .collect();
     Page {
-        actions: vec![('c', "runs a real check")],
+        actions: vec![CHECK],
         ..Page::new(rows)
     }
     .needing_lucyd()
@@ -53,7 +53,6 @@ fn capital(tier: Tier) -> &'static str {
     }
 }
 
-/// Picks the Provider and model the tier on `row` thinks with.
 pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) -> Result<(), Stop> {
     let tier = TIERS[row];
     let (options, missing): (Vec<_>, Vec<_>) = RECOMMENDATIONS
@@ -86,10 +85,9 @@ pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) ->
     )
 }
 
-/// A real check of the Provider the tier on `row` thinks with.
 pub(super) fn check<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) -> Result<(), Stop> {
-    let Some(mut client) = context.client() else {
-        return ui.say("lucyd isn't running, and the real check needs it. s starts it.");
+    let Some(mut client) = context.lucyd(ui, "and the real check needs it")? else {
+        return Ok(());
     };
     let name = context.config().tiers.name(TIERS[row]).to_owned();
     ui.say(format!("Real check of {name}: asking it to reply OK..."))?;

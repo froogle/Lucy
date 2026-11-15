@@ -3,9 +3,9 @@
 
 use ratatui::backend::Backend;
 
-use super::{Context, Page};
+use super::{Context, Page, RESTART, START, STOP};
 use crate::panel;
-use crate::systemd::{self, Verb};
+use crate::systemd;
 use crate::ui::{Stop, Ui};
 
 pub(super) fn page(context: &Context) -> Page {
@@ -14,11 +14,7 @@ pub(super) fn page(context: &Context) -> Page {
         false => "no",
     };
     Page {
-        actions: vec![
-            ('s', "starts lucyd"),
-            ('x', "stops it"),
-            ('r', "restarts it"),
-        ],
+        actions: vec![START, STOP, RESTART],
         ..Page::new(vec![format!("Start Lucy whenever you log in: {enabled}")])
     }
 }
@@ -39,14 +35,5 @@ pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), 
     match panel::link(context.env) {
         Ok(()) => Ok(()),
         Err(e) => ui.say(format!("Couldn't link the bar panel into Omarchy: {e}")),
-    }
-}
-
-pub(super) fn act<B: Backend>(ui: &mut Ui<B>, context: &Context, letter: char) -> Result<(), Stop> {
-    match letter {
-        's' => context.service(ui, Verb::Start),
-        'x' => context.service(ui, Verb::Stop),
-        'r' => context.service(ui, Verb::Restart),
-        _ => Ok(()),
     }
 }

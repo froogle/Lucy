@@ -8,17 +8,12 @@ use crate::piper;
 use crate::settings::{Applies, Change, Key};
 use crate::ui::{Stop, Ui};
 
-/// A Piper voice offered, with what its licence allows.
 struct Voice {
     name: &'static str,
     licence: &'static str,
-    /// False if its licence, or that of a voice it was trained from, rules
-    /// out commercial use.
     commercial: bool,
 }
 
-/// Recommended voices have a permissive training chain only; the others are
-/// offered with their terms shown.
 const VOICES: &[Voice] = &[
     Voice {
         name: "en_GB-cori-medium",
@@ -73,7 +68,6 @@ fn install<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     for command in plan {
         let running = format!("Running: {}", command.join(" "));
         ui.say(&running)?;
-        // Outside the full screen: an installer may ask for a password.
         let ran = ui.outside(|| {
             println!("{running}");
             std::process::Command::new(&command[0])
@@ -83,8 +77,7 @@ fn install<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
         })?;
         if ran.is_ok_and(|status| status.success()) && piper::installed(&env.path) {
             ui.say("Piper is installed.")?;
-            // lucyd looks for Piper once, when it starts.
-            return context.applied(ui, Applies::Restart);
+            return context.say_when(ui, Applies::Restart);
         }
         ui.say("That didn't install Piper.")?;
     }

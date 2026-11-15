@@ -12,7 +12,6 @@ use crate::devices::{self, Kind};
 use crate::settings::{Change, Key};
 use crate::ui::{Stop, Ui};
 
-/// How long the level meter runs.
 const METER: Duration = Duration::from_secs(3);
 const METER_EVERY: Duration = Duration::from_millis(100);
 
@@ -49,8 +48,8 @@ fn mic<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
         let mic = pick_device(ui, context, "Microphone:", Kind::Mic)?;
         context.save(ui, &[Change::Set(Key::Mic, mic)])?;
-        let Some(mut client) = context.client() else {
-            return ui.say("lucyd isn't running, and the level meter needs it. s starts it.");
+        let Some(mut client) = context.lucyd(ui, "and the level meter needs it")? else {
+            return Ok(());
         };
         let quiet = meter(ui, &mut client)?;
         if quiet {
@@ -65,11 +64,9 @@ fn mic<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     }
 }
 
-/// Shows how loud the microphone is for a few seconds. True if every
-/// reading was too quiet for Lucy to hear well.
 fn meter<B: Backend>(ui: &mut Ui<B>, client: &mut Client) -> Result<bool, Stop> {
-    // The first asks lucyd to switch to it.
-    if let Err(e) = client.mic_level() {
+    let switched_to_it = client.mic_level();
+    if let Err(e) = switched_to_it {
         ui.say(format!("Can't test it: {e}"))?;
         return Ok(false);
     }
@@ -84,20 +81,25 @@ fn meter<B: Backend>(ui: &mut Ui<B>, client: &mut Client) -> Result<bool, Stop> 
         };
         readings += 1;
         all_quiet &= level.quiet;
-        // Speech is around 0.05 to 0.3 RMS; show it on a log scale.
-        let db = 20.0 * level.rms.max(1e-5).log10();
-        ui.meter(Some(f64::from((db + 60.0) / 60.0)))?;
+        ui.meter(Some(on_log_scale(level.rms)))?;
     }
     ui.meter(None)?;
     Ok(readings > 0 && all_quiet)
+}
+
+const METER_FLOOR_DB: f32 = -60.0;
+
+fn on_log_scale(rms: f32) -> f64 {
+    let db = 20.0 * rms.max(1e-5).log10();
+    f64::from((db - METER_FLOOR_DB) / -METER_FLOOR_DB)
 }
 
 fn speaker<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
         let speaker = pick_device(ui, context, "Speaker:", Kind::Speaker)?;
         context.save(ui, &[Change::Set(Key::Speaker, speaker)])?;
-        let Some(mut client) = context.client() else {
-            return ui.say("lucyd isn't running, so Lucy can't speak on it. s starts it.");
+        let Some(mut client) = context.lucyd(ui, "so Lucy can't speak on it")? else {
+            return Ok(());
         };
         ui.say("Lucy is speaking on it...")?;
         match client.voice_preview("This is Lucy, on this speaker.") {

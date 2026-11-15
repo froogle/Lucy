@@ -37,6 +37,13 @@ impl std::fmt::Display for Stop {
     }
 }
 
+pub(crate) fn back_is_fine(result: Result<(), Stop>) -> Result<(), Stop> {
+    match result {
+        Err(Stop::Back) => Ok(()),
+        result => result,
+    }
+}
+
 impl From<io::Error> for Stop {
     fn from(e: io::Error) -> Stop {
         Stop::Io(e)
@@ -216,13 +223,11 @@ pub enum Answer {
     Index(usize),
     Yes(bool),
     Text(String),
-    /// Enter on a row of a [`Rows`].
-    Row(usize),
-    /// An action's letter, on the selected row of a [`Rows`].
-    Action(char, usize),
+    Pick(Pick),
 }
 
-/// What was picked on a [`Rows`].
+/// What was picked on a [`Rows`]: Enter on a row, or an action's letter on
+/// the selected row.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Pick {
     Row(usize),
@@ -326,9 +331,11 @@ impl Prompt {
                     list.selected = (list.selected + 1).min(list.rows.len().saturating_sub(1));
                     None
                 }
-                KeyCode::Enter if !list.rows.is_empty() => Some(Answer::Row(list.selected)),
+                KeyCode::Enter if !list.rows.is_empty() => {
+                    Some(Answer::Pick(Pick::Row(list.selected)))
+                }
                 KeyCode::Char(c) if list.actions.iter().any(|(letter, _)| *letter == c) => {
-                    Some(Answer::Action(c, list.selected))
+                    Some(Answer::Pick(Pick::Action(c, list.selected)))
                 }
                 _ => None,
             },
@@ -670,8 +677,7 @@ impl<'k, B: Backend> Ui<'k, B> {
     pub fn rows(&mut self, mut rows: Rows) -> Result<Pick, Stop> {
         rows.selected = rows.selected.min(rows.rows.len().saturating_sub(1));
         match self.answer(Prompt::Rows(rows))? {
-            Answer::Row(i) => Ok(Pick::Row(i)),
-            Answer::Action(c, i) => Ok(Pick::Action(c, i)),
+            Answer::Pick(pick) => Ok(pick),
             _ => unreachable!(),
         }
     }
@@ -718,7 +724,8 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// Runs `run` outside the full screen, then comes back to it.
+    /// Runs `run` outside the full screen, then comes back to it: for a
+    /// program that may ask for input, such as an installer's password.
     pub fn outside<T>(&mut self, run: impl FnOnce() -> T) -> Result<T, Stop> {
         let mut run = Some(run);
         let mut result = None;

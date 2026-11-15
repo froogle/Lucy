@@ -5,7 +5,6 @@ use ratatui::backend::Backend;
 use super::{Context, Page};
 use crate::ui::{Stop, Ui};
 
-/// How long the test listens.
 const TEST_SECS: f64 = 10.0;
 
 pub(super) fn page() -> Page {
@@ -16,8 +15,8 @@ pub(super) fn page() -> Page {
 }
 
 pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
-    let Some(mut client) = context.client() else {
-        return ui.say("lucyd isn't running, and the test needs it. s starts it.");
+    let Some(mut client) = context.lucyd(ui, "and the test needs it")? else {
+        return Ok(());
     };
     ui.say(format!(
         "Say the Wake word in the next {TEST_SECS} seconds..."
