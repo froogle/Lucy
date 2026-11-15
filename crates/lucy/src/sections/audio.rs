@@ -8,9 +8,9 @@ use lucy_ipc::Client;
 use ratatui::backend::Backend;
 
 use super::{Context, Page};
+use crate::devices::{self, Kind};
 use crate::settings::{Change, Key};
 use crate::ui::{Stop, Ui};
-use crate::Env;
 
 /// How long the level meter runs.
 const METER: Duration = Duration::from_secs(3);
@@ -32,32 +32,14 @@ pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) ->
     }
 }
 
-/// The node names `pactl` lists of `kind` (`sources` or `sinks`), leaving
-/// out monitors of speakers.
-pub(crate) fn devices(env: &Env, kind: &str) -> Vec<String> {
-    let Ok(output) = std::process::Command::new("pactl")
-        .args(["list", "short", kind])
-        .env("PATH", &env.path)
-        .output()
-    else {
-        return vec![];
-    };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| line.split('\t').nth(1))
-        .filter(|name| !name.ends_with(".monitor"))
-        .map(str::to_owned)
-        .collect()
-}
-
 fn pick_device<B: Backend>(
     ui: &mut Ui<B>,
     context: &Context,
     title: &str,
-    kind: &str,
+    kind: Kind,
 ) -> Result<String, Stop> {
     let mut names = vec!["default".to_owned()];
-    names.extend(devices(context.env, kind));
+    names.extend(devices::names(context.env, kind));
     let mut labels = names.clone();
     labels[0] = "default: whatever the system uses".to_owned();
     Ok(names.swap_remove(ui.choose(title, &labels)?))
@@ -65,7 +47,7 @@ fn pick_device<B: Backend>(
 
 fn mic<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
-        let mic = pick_device(ui, context, "Microphone:", "sources")?;
+        let mic = pick_device(ui, context, "Microphone:", Kind::Mic)?;
         context.save(ui, &[Change::Set(Key::Mic, mic)])?;
         let Some(mut client) = context.client() else {
             return ui.say("lucyd isn't running, and the level meter needs it. s starts it.");
@@ -112,7 +94,7 @@ fn meter<B: Backend>(ui: &mut Ui<B>, client: &mut Client) -> Result<bool, Stop> 
 
 fn speaker<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
-        let speaker = pick_device(ui, context, "Speaker:", "sinks")?;
+        let speaker = pick_device(ui, context, "Speaker:", Kind::Speaker)?;
         context.save(ui, &[Change::Set(Key::Speaker, speaker)])?;
         let Some(mut client) = context.client() else {
             return ui.say("lucyd isn't running, so Lucy can't speak on it. s starts it.");

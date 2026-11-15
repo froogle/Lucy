@@ -5,18 +5,8 @@ use lucy_config::SttKind;
 use ratatui::backend::Backend;
 
 use super::{Context, Page};
-use crate::settings::{Change, Key};
+use crate::settings::{Change, Key, WHISPER_MODELS as MODELS};
 use crate::ui::{Stop, Ui};
-
-/// Whisper's models; None leaves it to lucyd.
-pub(crate) const MODELS: [(Option<&str>, &str); 3] = [
-    (
-        None,
-        "Sized to this computer: small.en on a GPU, base.en on the CPU",
-    ),
-    (Some("small.en"), "small.en: more accurate, best on a GPU"),
-    (Some("base.en"), "base.en: faster on the CPU"),
-];
 
 fn label(kind: SttKind) -> &'static str {
     match kind {

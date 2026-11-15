@@ -10,8 +10,8 @@ use lucy_config::SttKind;
 use lucy_ipc::{Event, Status, Topic};
 use serde::Serialize;
 
-use crate::sections::{devices, WHISPER_MODELS};
-use crate::settings::{self, Key};
+use crate::devices::{self, Kind};
+use crate::settings::{self, Key, WHISPER_MODELS};
 use crate::systemd::{self, Activity};
 use crate::Env;
 
@@ -66,8 +66,8 @@ impl Devices {
     /// The devices `pactl` lists now.
     pub fn list(env: &Env) -> Devices {
         Devices {
-            mics: devices(env, "sources"),
-            speakers: devices(env, "sinks"),
+            mics: devices::names(env, Kind::Mic),
+            speakers: devices::names(env, Kind::Speaker),
         }
     }
 }

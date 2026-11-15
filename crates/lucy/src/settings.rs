@@ -105,6 +105,15 @@ impl FromStr for Key {
     }
 }
 
+pub(crate) const WHISPER_MODELS: [(Option<&str>, &str); 3] = [
+    (
+        None,
+        "Sized to this computer: small.en on a GPU, base.en on the CPU",
+    ),
+    (Some("small.en"), "small.en: more accurate, best on a GPU"),
+    (Some("base.en"), "base.en: faster on the CPU"),
+];
+
 /// One change `lucy` makes to `config.toml`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {

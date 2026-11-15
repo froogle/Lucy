@@ -5,6 +5,7 @@
 //! Omarchy bar panel reads, through `lucy status --follow --json`.
 
 mod credentials;
+mod devices;
 pub mod menu;
 pub mod panel;
 mod piper;
