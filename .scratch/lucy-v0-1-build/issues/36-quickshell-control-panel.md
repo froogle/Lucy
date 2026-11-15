@@ -4,7 +4,7 @@
 
 **Blocked by:** 31
 
-**Status:** ready-for-human
+**Status:** resolved
 
 ## The icon
 
@@ -49,7 +49,7 @@ English only, with strings read through `Commons.Translations` from `i18n/en.jso
 - [x] Settings can be changed while lucyd is stopped
 - [x] "More settings…" opens `lucy` in a floating terminal
 - [x] `lucy status --follow --json` and `lucy set` have harness tests: snapshot shape, the stopped state, applies-when wording, unknown keys rejected
-- [ ] The panel is checked by hand on the desktop, noted in Comments
+- [x] The panel is checked by hand on the desktop, noted in Comments
 
 ## Comments
 
@@ -64,3 +64,19 @@ Review fixes (2026-11-15, branch `slice-7-review-fixes`). The Speech-to-text row
 Updated hand check: once this is on the main checkout's branch, run `lucy` > Service > Enter > `y`; until then, run `ln -sfn "$PWD/omarchy-plugin" ~/.config/omarchy/plugins/lucy-panel` from this checkout. Then run `omarchy-shell shell rescanPlugins` and `omarchy plugin enable lucy.panel`. Check that the header says "Listening for 'Hey Lucy'". Check that the switch stops lucyd (dimmed icon) and starts it again. Run `pkill -SEGV lucyd` and check the icon turns red, then that the switch brings lucyd back. Check End Session. Pick a Thinking chip. In Speech-to-text, pick Superwhisper if it's installed (flash: next Session), then base.en (flash: after restart, with Restart), checking that `config.toml` keeps its comments. Pick a device, then check that "More settings…" floats `lucy`.
 
 Built on `lucy-v0-1-slice-7` with the review fixes (2026-11-15). Set to ready-for-human: the only open acceptance item is the desktop hand check above. Resolve it once that's done and noted here.
+
+Hand check on the desktop (2026-11-15), with slice 7 deployed to `~/.cargo/bin` and the panel linked by hand. Claude checked:
+- the panel's layout;
+- all four icon states: listening, stopped, in a Session (via `lucy listen`, with End Session shown and `lucy end`), and a crash, which reads "lucyd failed" and recovers after systemd's restart;
+- `lucy service start`;
+- `lucy set` and `lucy unset` with lucyd stopped, unknown keys refused, and comments kept on a commented copy;
+- "More settings…", which floats `lucy` at 875x600 on the section list.
+
+The user clicked through the switch, the chips (with the flash line and the Restart offer), a device list and "More settings…": all fine.
+
+Notes:
+- `pkill -SEGV lucyd` doesn't crash lucyd. Rust's stack-overflow handler swallows the first SIGSEGV that's sent by hand. Use `kill -KILL` on the MainPID to test a crash.
+- "Red" is the theme's urgent colour. This machine's theme sets `red = "#50f872"`, so the failed icon draws green here, as Omarchy's own widgets do.
+- With `lucy` installed in `~/.cargo/bin`, neither link target exists beside it, so the Service row's yes warns. The link made by hand stands.
+
+Follow-up: ticket 40, readable device names.
