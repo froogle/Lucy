@@ -46,7 +46,7 @@ Sections that need lucyd (real check, meter, wake-word test, voice preview, Appr
 ## Out of scope
 
 - Turning Plugins on or off.
-- Ticket 36 (Waybar icon), including any command-line option to open `lucy` at a given section.
+- Ticket 36 (Quickshell bar panel), including any command-line option to open `lucy` at a given section.
 - Bringing file-only settings into the TUI.
 
 ## Acceptance
