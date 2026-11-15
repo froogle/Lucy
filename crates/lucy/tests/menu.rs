@@ -127,8 +127,6 @@ fn lucy_needs_a_terminal_rather_than_writing_escape_codes_to_a_pipe() {
     }
 }
 
-/// The tools of a user with `claude`, Piper and Superwhisper, whose
-/// systemd doesn't know Lucy's units yet.
 fn tools(home: &Home) {
     home.fake("claude", "exit 0");
     // Imports piper.http_server.
@@ -146,8 +144,6 @@ fn tools(home: &Home) {
     );
 }
 
-/// The keys that take every suggestion through the walk, section by
-/// section, for a home with `tools`.
 fn every_suggestion() -> Script {
     Script::new()
         .enters(7) // Thinking: each tier, its CLI and model, then Next

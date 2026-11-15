@@ -118,7 +118,6 @@ pub(crate) const WHISPER_MODELS: [(Option<&str>, &str); 3] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Set(Key, String),
-    /// Removes the setting, so its default applies.
     Unset(Key),
 }
 

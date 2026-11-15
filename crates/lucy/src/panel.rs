@@ -15,7 +15,6 @@ use crate::settings::{self, Key, WHISPER_MODELS};
 use crate::systemd::{self, Activity};
 use crate::Env;
 
-/// How lucyd is, as the bar icon shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum State {
@@ -142,12 +141,9 @@ fn stt(env: &Env, config: &lucy_config::Config) -> Choice<Option<String>> {
     Choice::new(settings::SPEECH, current, options)
 }
 
-/// How often `config.toml` and systemd are read again, and a stopped lucyd
-/// is looked for.
 const POLL: Duration = Duration::from_secs(1);
 
 enum Change {
-    /// lucyd's status, or None when it went away.
     Lucyd(Option<Status>),
     Devices,
 }
@@ -160,7 +156,6 @@ enum Change {
 /// When writing to `out` fails, such as when its reader has gone.
 pub fn follow(env: &Env, out: &mut impl Write) -> io::Result<()> {
     let (send, changes) = mpsc::channel();
-    // Not scoped: each blocks reading, so neither could be joined.
     let (lucyd, watched) = (send.clone(), env.clone());
     std::thread::spawn(move || watch_lucyd(&watched, &lucyd));
     let watched = env.clone();
@@ -183,7 +178,6 @@ pub fn follow(env: &Env, out: &mut impl Write) -> io::Result<()> {
     }
 }
 
-/// Sends each status lucyd reports, and None each time it goes away.
 fn watch_lucyd(env: &Env, changes: &Sender<Change>) {
     loop {
         if let Ok(mut client) = env.connect() {
@@ -202,7 +196,6 @@ fn watch_lucyd(env: &Env, changes: &Sender<Change>) {
     }
 }
 
-/// Sends a change each time PipeWire gains or loses a device.
 fn watch_devices(env: &Env, changes: &Sender<Change>) {
     let Ok(mut pactl) = Command::new("pactl")
         .arg("subscribe")

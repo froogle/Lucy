@@ -61,7 +61,6 @@ fn snapshot(home: &Home) -> Value {
     serde_json::from_str(&stdout(&output)).unwrap()
 }
 
-/// A running `lucy status --follow --json`, read a snapshot at a time.
 struct Follow {
     child: Child,
     lines: Receiver<String>,

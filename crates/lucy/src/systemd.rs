@@ -45,7 +45,6 @@ pub(crate) fn disable(env: &Env) -> Result<(), String> {
     )
 }
 
-/// Whether `lucyd.service` starts at login.
 pub(crate) fn is_enabled(env: &Env) -> bool {
     quietly(env, &["--user", "is-enabled", "lucyd.service"])
 }
@@ -120,7 +119,6 @@ impl Verb {
     }
 }
 
-/// Writes the units if systemd doesn't know them.
 fn make_known(env: &Env) -> Result<(), String> {
     if !quietly(env, &["--user", "cat", "lucyd.service"]) {
         install(&env.units, &env.bin)?;
@@ -129,7 +127,6 @@ fn make_known(env: &Env) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `systemctl args` succeeds, its output kept off the screen.
 fn quietly(env: &Env, args: &[&str]) -> bool {
     command(env, args)
         .stdout(Stdio::null())
@@ -138,7 +135,6 @@ fn quietly(env: &Env, args: &[&str]) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Writes the units into `dir`, running the programs in `bin`.
 fn install(dir: &Path, bin: &Path) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
     for (name, program, text) in UNITS {

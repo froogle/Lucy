@@ -205,14 +205,13 @@ pub enum Prompt {
     Rows(Rows),
 }
 
-/// A list a page shows, with the letters that act on its rows.
+/// A list a page shows: a note above its rows, never picked, and the
+/// letters that act on its rows, each with what it does, for the footer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
     pub title: String,
-    /// Lines shown above the rows, never picked.
     pub note: Vec<String>,
     pub rows: Vec<String>,
-    /// Each letter and what it does, for the footer.
     pub actions: Vec<(char, &'static str)>,
     pub selected: usize,
 }
@@ -342,13 +341,10 @@ impl Prompt {
         }
     }
 
-    /// Whether keys type text into it, so `q` is a letter, not a quit.
     fn is_typed(&self) -> bool {
         matches!(self, Prompt::Ask { .. } | Prompt::Secret { .. })
     }
 
-    /// The question, and the answer as the transcript keeps it; None for
-    /// a page's list, which the transcript doesn't keep.
     fn answered(&self, answer: &Answer) -> Option<String> {
         let line = match (self, answer) {
             (Prompt::Choose { title, options, .. }, Answer::Index(i)) => {
@@ -392,7 +388,6 @@ impl Prompt {
 #[derive(Debug, Default)]
 pub struct Screen {
     pub title: String,
-    /// Whether lucyd is running and a Session is open.
     pub status: String,
     pub lines: Vec<String>,
     pub prompt: Option<Prompt>,
@@ -468,26 +463,18 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         .map(Line::raw)
         .collect();
     let height = (rows.len() as u16).min(body.height - bottom);
-    // A page's list comes first and what happened follows it; a question
-    // follows what led to it.
-    let list_first = matches!(screen.prompt, Some(Prompt::Rows(_)));
-    let (above, under) = match list_first {
-        true => (bottom, height),
-        false => (height, bottom),
+    let (transcript, below) = match screen.prompt {
+        Some(Prompt::Rows(_)) => {
+            let [list, what_happened_after] = stacked(body, bottom, height);
+            (what_happened_after, list)
+        }
+        _ => {
+            let [what_led_to_it, question] = stacked(body, height, bottom);
+            (what_led_to_it, question)
+        }
     };
-    let [first, second, _] = Layout::vertical([
-        Constraint::Length(above),
-        Constraint::Length(under),
-        Constraint::Fill(1),
-    ])
-    .areas(body);
-    let (transcript, below) = match list_first {
-        true => (second, first),
-        false => (first, second),
-    };
-    // The newest lines stay in view.
-    let first = rows.len() - height as usize;
-    frame.render_widget(Paragraph::new(rows[first..].to_vec()), transcript);
+    let newest = &rows[rows.len() - height as usize..];
+    frame.render_widget(Paragraph::new(newest.to_vec()), transcript);
     let keys = match &screen.prompt {
         Some(prompt) => draw_prompt(frame, prompt, below),
         None => match screen.meter {
@@ -513,6 +500,16 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         Paragraph::new(format!("{keys}   {quit}")).style(Style::new().add_modifier(Modifier::DIM)),
         hint,
     );
+}
+
+fn stacked(area: Rect, top: u16, next: u16) -> [Rect; 2] {
+    let [top, next, _] = Layout::vertical([
+        Constraint::Length(top),
+        Constraint::Length(next),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    [top, next]
 }
 
 /// `line` broken into rows of at most `width` characters, between words

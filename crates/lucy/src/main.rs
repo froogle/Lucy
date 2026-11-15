@@ -196,8 +196,7 @@ fn snapshot(follow: bool) -> ExitCode {
     let env = Env::of_process(Path::new(OS_RELEASE));
     let mut stdout = std::io::stdout().lock();
     if follow {
-        // Ends when the reader goes away.
-        let _ = panel::follow(&env, &mut stdout);
+        let _reader_gone = panel::follow(&env, &mut stdout);
         return ExitCode::SUCCESS;
     }
     let status = env.connect().and_then(|mut client| client.status()).ok();

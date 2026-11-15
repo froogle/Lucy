@@ -23,12 +23,10 @@ const WAKE_WORD: usize = 4;
 const APPROVALS: usize = 6;
 const SERVICE: usize = 7;
 
-/// Opens the section at `index` on the list.
 fn open(index: usize) -> Script {
     Script::new().down(index).enter()
 }
 
-/// Esc back to the list, then quit.
 fn leave(script: Script) -> Script {
     script.press(KeyCode::Esc).typed("q")
 }

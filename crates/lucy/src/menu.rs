@@ -85,8 +85,6 @@ fn show<B: Backend>(ui: &mut Ui<B>, context: &Context, open: Open) -> Result<(),
     }
 }
 
-/// Visits each section in order until the last moves on or Esc leaves.
-/// Either way `config.toml` exists after, so `lucy` opens at the list.
 fn walk<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     for (i, &section) in Section::ALL.iter().enumerate() {
         ui.screen.lines.clear();

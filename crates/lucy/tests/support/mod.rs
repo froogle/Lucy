@@ -38,8 +38,6 @@ impl Home {
         }
     }
 
-    /// Starts a lucyd with inert adapters in this home, as `systemctl
-    /// start` would; it runs until dropped.
     pub fn spawn_lucyd(&self) -> lucyd::Daemon {
         self.spawn_lucyd_with(lucyd::adapters::Adapters::inert())
     }
@@ -157,14 +155,10 @@ impl Home {
         }
     }
 
-    /// Runs `lucy` full-screen on a test terminal, opened at `open`,
-    /// pressing `keys`, with an empty keyring. Panics if a key is left over.
     pub fn tui(&self, open: Open, keys: Script) -> Tui {
         self.tui_with(&self.env(), &FakeStore::default(), open, keys)
     }
 
-    /// As [`Home::tui`], finding things through `env` and keeping
-    /// credentials in `store`.
     pub fn tui_with(
         &self,
         env: &lucy::Env,

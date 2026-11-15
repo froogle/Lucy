@@ -566,15 +566,19 @@ pub fn load(path: &Path) -> Result<Config, Error> {
 /// Sets the value at `key` (the names of the tables it is in, then its own)
 /// in the config file at `path`, keeping every comment and all other
 /// formatting. A missing file or table is created.
+///
+/// # Errors
+///
+/// If the file can't be read, parsed or written, or a name on the way is
+/// not a table.
+///
+/// # Panics
+///
+/// If `key` is empty.
 pub fn set(path: &Path, key: &[&str], value: impl Into<toml_edit::Value>) -> Result<(), Error> {
     edit(path, key, |table, last| {
         match table.get_mut(last).and_then(|item| item.as_value_mut()) {
-            // Keep the comment and spacing around the old value.
-            Some(old) => {
-                let decor = old.decor().clone();
-                *old = value.into();
-                *old.decor_mut() = decor;
-            }
+            Some(old) => replace_keeping_decor(old, value.into()),
             None => {
                 table.insert(last, toml_edit::value(value));
             }
@@ -582,16 +586,29 @@ pub fn set(path: &Path, key: &[&str], value: impl Into<toml_edit::Value>) -> Res
     })
 }
 
+fn replace_keeping_decor(old: &mut toml_edit::Value, new: toml_edit::Value) {
+    let decor = old.decor().clone();
+    *old = new;
+    *old.decor_mut() = decor;
+}
+
 /// Removes `key` from the config file at `path`, so its default applies,
 /// keeping every comment and all other formatting.
+///
+/// # Errors
+///
+/// If the file can't be read, parsed or written, or a name on the way is
+/// not a table.
+///
+/// # Panics
+///
+/// If `key` is empty.
 pub fn unset(path: &Path, key: &[&str]) -> Result<(), Error> {
     edit(path, key, |table, last| {
         table.remove(last);
     })
 }
 
-/// Runs `change` on the table holding `key`'s last name, creating the
-/// tables on the way, and writes the file back.
 fn edit(
     path: &Path,
     key: &[&str],

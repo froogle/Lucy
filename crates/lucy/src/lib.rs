@@ -32,8 +32,6 @@ pub struct Env {
     /// The systemd user unit dir, where units go if systemd doesn't know
     /// them.
     pub units: PathBuf,
-    /// Omarchy's config dir; where it exists, the bar panel is linked into
-    /// its `plugins/`.
     pub omarchy: PathBuf,
     /// The dir holding `lucyd` and `lucy-indicator`.
     pub bin: PathBuf,
