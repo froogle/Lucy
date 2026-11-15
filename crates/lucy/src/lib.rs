@@ -1,11 +1,13 @@
-//! `lucy`'s full-screen pages: `lucy` with no arguments ([`home`]) and
-//! `lucy setup` ([`setup`]). Each is a model driven by key presses and
-//! drawn with ratatui, so tests drive them with scripted keys.
+//! `lucy`'s full screen ([`menu`]): a list of sections, each a page that
+//! changes a few settings through [`settings`] or tests something inside
+//! lucyd. The screen is a model driven by key presses and drawn with
+//! ratatui, so tests drive it with scripted keys.
 
-pub mod credentials;
-pub mod home;
+mod credentials;
+pub mod menu;
 mod piper;
-pub mod setup;
+mod sections;
+pub mod settings;
 mod systemd;
 pub mod ui;
 
@@ -14,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use lucy_ipc::Client;
 
-/// Where setup finds and puts things. [`Env::of_process`] reads them from
+/// Where `lucy` finds and puts things. [`Env::of_process`] reads them from
 /// the environment; tests give their own.
 pub struct Env {
     /// `config.toml`.

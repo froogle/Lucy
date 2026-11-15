@@ -23,18 +23,7 @@ const UNITS: [(&str, &str, &str); 2] = [
 /// written to the user's unit dir first, running the programs in
 /// `env.bin`. systemctl's output is kept off the full screen.
 pub fn enable(env: &Env) -> Result<(), String> {
-    let known = Command::new("systemctl")
-        .args(["--user", "cat", "lucyd.service"])
-        .env("PATH", &env.path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !known {
-        install(&env.units, &env.bin)?;
-        systemctl(env, &["--user", "daemon-reload"])?;
-    }
+    make_known(env)?;
     systemctl(
         env,
         &[
@@ -45,6 +34,64 @@ pub fn enable(env: &Env) -> Result<(), String> {
             "lucy-indicator.service",
         ],
     )
+}
+
+/// Stops both services starting at login; they keep running until stopped.
+pub fn disable(env: &Env) -> Result<(), String> {
+    systemctl(
+        env,
+        &[
+            "--user",
+            "disable",
+            "lucyd.service",
+            "lucy-indicator.service",
+        ],
+    )
+}
+
+/// Whether `lucyd.service` starts at login.
+pub fn is_enabled(env: &Env) -> bool {
+    quietly(env, &["--user", "is-enabled", "lucyd.service"])
+}
+
+/// Starts, stops or restarts `lucyd.service`, writing the units first if
+/// systemd doesn't know them.
+pub fn run(env: &Env, verb: Verb) -> Result<(), String> {
+    make_known(env)?;
+    let verb = match verb {
+        Verb::Start => "start",
+        Verb::Stop => "stop",
+        Verb::Restart => "restart",
+    };
+    systemctl(env, &["--user", verb, "lucyd.service"])
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Verb {
+    Start,
+    Stop,
+    Restart,
+}
+
+/// Writes the units if systemd doesn't know them.
+fn make_known(env: &Env) -> Result<(), String> {
+    if !quietly(env, &["--user", "cat", "lucyd.service"]) {
+        install(&env.units, &env.bin)?;
+        systemctl(env, &["--user", "daemon-reload"])?;
+    }
+    Ok(())
+}
+
+/// Whether `systemctl args` succeeds, its output kept off the screen.
+fn quietly(env: &Env, args: &[&str]) -> bool {
+    Command::new("systemctl")
+        .args(args)
+        .env("PATH", &env.path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Writes the units into `dir`, running the programs in `bin`.

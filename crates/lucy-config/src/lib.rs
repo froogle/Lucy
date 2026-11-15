@@ -551,7 +551,37 @@ pub fn load(path: &Path) -> Result<Config, Error> {
 /// in the config file at `path`, keeping every comment and all other
 /// formatting. A missing file or table is created.
 pub fn set(path: &Path, key: &[&str], value: impl Into<toml_edit::Value>) -> Result<(), Error> {
-    let (last, tables) = key.split_last().expect("a key to set");
+    edit(path, key, |table, last| {
+        match table.get_mut(last).and_then(|item| item.as_value_mut()) {
+            // Keep the comment and spacing around the old value.
+            Some(old) => {
+                let decor = old.decor().clone();
+                *old = value.into();
+                *old.decor_mut() = decor;
+            }
+            None => {
+                table.insert(last, toml_edit::value(value));
+            }
+        }
+    })
+}
+
+/// Removes `key` from the config file at `path`, so its default applies,
+/// keeping every comment and all other formatting.
+pub fn unset(path: &Path, key: &[&str]) -> Result<(), Error> {
+    edit(path, key, |table, last| {
+        table.remove(last);
+    })
+}
+
+/// Runs `change` on the table holding `key`'s last name, creating the
+/// tables on the way, and writes the file back.
+fn edit(
+    path: &Path,
+    key: &[&str],
+    change: impl FnOnce(&mut toml_edit::Table, &str),
+) -> Result<(), Error> {
+    let (last, tables) = key.split_last().expect("a key to edit");
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
@@ -567,17 +597,7 @@ pub fn set(path: &Path, key: &[&str], value: impl Into<toml_edit::Value>) -> Res
             .as_table_mut()
             .ok_or_else(|| Error::NotATable(path.to_owned(), (*name).to_owned()))?;
     }
-    match table.get_mut(last).and_then(|item| item.as_value_mut()) {
-        // Keep the comment and spacing around the old value.
-        Some(old) => {
-            let decor = old.decor().clone();
-            *old = value.into();
-            *old.decor_mut() = decor;
-        }
-        None => {
-            table.insert(last, toml_edit::value(value));
-        }
-    }
+    change(table, last);
     write_atomically(path, &doc.to_string()).map_err(|e| Error::Write(path.to_owned(), e))
 }
 

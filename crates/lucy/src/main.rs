@@ -1,6 +1,6 @@
-//! `lucy`: a thin client of lucyd's public socket. With no arguments it
-//! shows Lucy's Providers and Approvals; `lucy setup` sets her up. Both are
-//! full-screen; every other command prints plain lines.
+//! `lucy`: a thin client of lucyd's public socket. With no arguments it is
+//! a full-screen list of sections to set Lucy up with; `lucy setup` walks
+//! them in order. Every other command prints plain lines.
 
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -8,10 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use lucy::menu::{self, Open};
 use lucy::ui::{Console, Ui};
-use lucy::{home, setup, Env};
+use lucy::Env;
 use lucy_ipc::{Client, State, Topic};
 use ratatui::DefaultTerminal;
+
+const OS_RELEASE: &str = "/etc/os-release";
 
 #[derive(Parser)]
 #[command(version, about = "Talk to Lucy's daemon, lucyd")]
@@ -22,15 +25,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// First-run setup: Providers, speech, voice, devices, the Wake word
-    /// and the service.
+    /// Walk every section in order: Providers, speech, voice, devices, the
+    /// Wake word, Plugins, Approvals and the service.
     Setup {
         /// Where to read the distro from, for installing Piper.
-        #[arg(long, hide = true, default_value = "/etc/os-release")]
+        #[arg(long, hide = true, default_value = OS_RELEASE)]
         os_release: PathBuf,
     },
-    /// Enter the credentials a Plugin declares, such as an API key. They
-    /// go into your keyring, never to Lucy's model.
+    /// Enter the credentials a Plugin declares, such as an API key, in the
+    /// Plugins section. They go into your keyring, never to Lucy's model.
     Credentials {
         /// The Plugin's name.
         plugin: String,
@@ -62,9 +65,11 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        None => return home_page(),
-        Some(Command::Setup { os_release }) => return setup_page(&os_release),
-        Some(Command::Credentials { plugin }) => return credentials_page(&plugin),
+        None => return lucy(Open::Lucy, Path::new(OS_RELEASE)),
+        Some(Command::Setup { os_release }) => return lucy(Open::Setup, &os_release),
+        Some(Command::Credentials { plugin }) => {
+            return lucy(Open::Credentials(plugin), Path::new(OS_RELEASE))
+        }
         Some(Command::Status) => status(),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
@@ -105,65 +110,21 @@ fn full_screen(page: &str) -> Result<DefaultTerminal, ExitCode> {
     })
 }
 
-fn home_page() -> ExitCode {
-    let mut client = match connect() {
-        Ok(client) => client,
-        Err(e) => return failed(e),
-    };
-    let mut terminal = match full_screen("lucy") {
-        Ok(terminal) => terminal,
-        Err(code) => return code,
-    };
-    let result = home::run(&mut client, &mut terminal, &mut Console);
-    ratatui::restore();
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => failed(e),
-    }
-}
-
-fn setup_page(os_release: &Path) -> ExitCode {
-    let terminal = match full_screen("lucy setup") {
+fn lucy(open: Open, os_release: &Path) -> ExitCode {
+    let terminal = match full_screen("lucy") {
         Ok(terminal) => terminal,
         Err(code) => return code,
     };
     let env = Env::of_process(os_release);
     let mut keys = Console;
-    let mut ui = Ui::new(terminal, &mut keys, "Lucy setup");
-    let result = setup::run(&mut ui, &env);
-    ratatui::restore();
-    // What was said and chosen stays in the terminal's scrollback.
-    for line in &ui.screen.lines {
-        println!("{line}");
-    }
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("lucy: setup: {e}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn credentials_page(plugin: &str) -> ExitCode {
-    let terminal = match full_screen("lucy credentials") {
-        Ok(terminal) => terminal,
-        Err(code) => return code,
-    };
-    let env = Env::of_process(Path::new("/etc/os-release"));
-    let mut keys = Console;
-    let mut ui = Ui::new(terminal, &mut keys, "Lucy credentials");
+    let mut ui = Ui::new(terminal, &mut keys, "Lucy");
     let store = lucy_config::credentials::SecretService;
-    let result = lucy::credentials::run(&mut ui, &env, plugin, &store);
+    let result = menu::run(&mut ui, &env, &store, open);
     ratatui::restore();
-    // The transcript holds names only, never what was typed.
-    for line in &ui.screen.lines {
-        println!("{line}");
-    }
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("lucy: credentials: {e}");
+            eprintln!("lucy: {e}");
             ExitCode::FAILURE
         }
     }
