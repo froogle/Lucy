@@ -3,11 +3,14 @@
 
 use std::fmt;
 use std::path::Path;
+use std::str::FromStr;
 
 use lucy_config::Tier;
+use serde::Serialize;
 
 /// When lucyd takes up a change to `config.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Applies {
     /// lucyd reads it again at each Session start.
     NextSession,
@@ -70,6 +73,36 @@ impl Key {
             Key::Mic => vec!["audio".into(), "mic".into()],
             Key::Speaker => vec!["audio".into(), "speaker".into()],
         }
+    }
+}
+
+/// Its dotted path in `config.toml`, such as `tiers.fast`.
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.path().join("."))
+    }
+}
+
+impl FromStr for Key {
+    type Err = String;
+
+    /// The setting at a dotted path, such as `audio.mic`; any other is
+    /// file-only.
+    fn from_str(name: &str) -> Result<Key, String> {
+        let path: Vec<&str> = name.split('.').collect();
+        let key = match path[..] {
+            ["providers", provider, "kind"] => Key::ProviderKind(provider.to_owned()),
+            ["providers", provider, "model"] => Key::ProviderModel(provider.to_owned()),
+            ["tiers", "fast"] => Key::Tier(Tier::Fast),
+            ["tiers", "advanced"] => Key::Tier(Tier::Advanced),
+            ["stt", "kind"] => Key::Stt,
+            ["whisper", "model"] => Key::WhisperModel,
+            ["piper", "voice"] => Key::Voice,
+            ["audio", "mic"] => Key::Mic,
+            ["audio", "speaker"] => Key::Speaker,
+            _ => return Err(format!("lucy doesn't set {name}; edit config.toml for it")),
+        };
+        Ok(key)
     }
 }
 

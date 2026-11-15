@@ -1,0 +1,239 @@
+//! What the bar panel runs: `lucy status --json`, which prints lucyd's
+//! state and each choice the panel offers, and `lucy set`, which writes one.
+
+mod support;
+
+use std::io::{BufRead, BufReader};
+use std::process::Child;
+use std::sync::mpsc::{self, Receiver};
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use support::{read, stderr, stdout, Home};
+
+const CONFIGURED: &str = "# My Lucy, tuned by hand.\n\n\
+[providers.claude-fast]\n\
+kind = \"claude\"\n\n\
+[providers.codex-fast]\n\
+kind = \"codex\" # trying it out\n\n\
+[tiers]\n\
+fast = \"claude-fast\" # everyday talk\n\
+advanced = \"codex-fast\"\n\n\
+[audio]\n\
+mic = \"alsa_input.usb-Yeti\"\n";
+
+const SOURCES: &str = "60\talsa_input.usb-Yeti\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n\
+77\talsa_output.hdmi.monitor\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n";
+const SINKS: &str = "61\talsa_output.hdmi\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n";
+
+/// A home with `config.toml`, one microphone and one speaker, where
+/// systemd says lucyd is `active`.
+fn home(active: &str) -> Home {
+    let home = Home::without_lucyd();
+    std::fs::write(home.config_path(), CONFIGURED).unwrap();
+    home.fake(
+        "pactl",
+        &format!(
+            "case \"$1 $3\" in \
+             'list sources') printf '{SOURCES}';; \
+             'list sinks') printf '{SINKS}';; \
+             esac"
+        ),
+    );
+    home.fake(
+        "systemctl",
+        &format!("[ \"$2\" = is-active ] && echo {active}; [ {active} = active ]"),
+    );
+    home
+}
+
+fn snapshot(home: &Home) -> Value {
+    let output = home.lucy(&["status", "--json"], &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    serde_json::from_str(&stdout(&output)).unwrap()
+}
+
+/// A running `lucy status --follow --json`, read a snapshot at a time.
+struct Follow {
+    child: Child,
+    lines: Receiver<String>,
+}
+
+impl Follow {
+    fn start(home: &Home) -> Follow {
+        let mut child = home
+            .command(&["status", "--follow", "--json"])
+            .spawn()
+            .unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let (send, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines().map_while(Result::ok) {
+                let _ = send.send(line);
+            }
+        });
+        Follow { child, lines }
+    }
+
+    fn next(&self) -> Value {
+        let line = self
+            .lines
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a snapshot within 10 s");
+        serde_json::from_str(&line).unwrap()
+    }
+}
+
+impl Drop for Follow {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn following_prints_a_snapshot_each_time_lucyd_or_a_setting_changes() {
+    let home = home("inactive");
+    let follow = Follow::start(&home);
+    assert_eq!(follow.next()["state"], "stopped");
+
+    let lucyd = home.spawn_lucyd();
+    assert_eq!(follow.next()["state"], "waiting");
+
+    assert!(home.lucy(&["listen"], &[]).status.success());
+    assert_eq!(follow.next()["state"], "session");
+    assert!(home.lucy(&["end"], &[]).status.success());
+    assert_eq!(follow.next()["state"], "waiting");
+
+    assert!(home
+        .lucy(&["set", "tiers.fast", "codex-fast"], &[])
+        .status
+        .success());
+    let snapshot = follow.next();
+    assert_eq!(snapshot["state"], "waiting");
+    assert_eq!(snapshot["fast"]["current"], "codex-fast");
+
+    drop(lucyd);
+    assert_eq!(follow.next()["state"], "stopped");
+}
+
+#[test]
+fn lucyd_dying_shows_as_failed_while_systemd_restarts_it() {
+    let home = home("activating");
+    let lucyd = home.spawn_lucyd();
+    let follow = Follow::start(&home);
+    assert_eq!(follow.next()["state"], "waiting");
+
+    drop(lucyd);
+
+    assert_eq!(follow.next()["state"], "failed");
+}
+
+#[test]
+fn started_but_not_yet_listening_is_starting() {
+    let home = home("active");
+
+    assert_eq!(snapshot(&home)["state"], "starting");
+}
+
+#[test]
+fn set_writes_with_comments_kept_and_says_it_applies_at_the_next_session() {
+    let home = home("inactive");
+
+    let output = home.lucy(&["set", "tiers.fast", "codex-fast"], &[]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&output)).unwrap(),
+        json!({"applies": "next_session", "message": "Applies at the next Session."})
+    );
+    let text = read(&home.config_path());
+    assert!(text.starts_with("# My Lucy, tuned by hand."), "{text}");
+    assert!(text.contains("kind = \"codex\" # trying it out"), "{text}");
+    assert!(
+        text.contains("fast = \"codex-fast\" # everyday talk"),
+        "{text}"
+    );
+}
+
+#[test]
+fn whispers_model_set_or_unset_applies_after_a_restart() {
+    let home = home("inactive");
+
+    let set = home.lucy(&["set", "whisper.model", "base.en"], &[]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&set)).unwrap(),
+        json!({"applies": "restart", "message": "Applies after restarting lucyd."})
+    );
+    assert_eq!(snapshot(&home)["whisper_model"]["current"], "base.en");
+
+    let unset = home.lucy(&["unset", "whisper.model"], &[]);
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&unset)).unwrap()["applies"],
+        "restart"
+    );
+    assert_eq!(snapshot(&home)["whisper_model"]["current"], Value::Null);
+}
+
+#[test]
+fn set_refuses_a_setting_it_doesnt_know_and_leaves_the_file_alone() {
+    let home = home("inactive");
+
+    let output = home.lucy(&["set", "session.silence_timeout_secs", "5"], &[]);
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("lucy doesn't set session.silence_timeout_secs"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(read(&home.config_path()), CONFIGURED);
+}
+
+#[test]
+fn while_superwhisper_hears_there_is_no_whisper_model_to_choose() {
+    let home = home("inactive");
+    assert!(home
+        .lucy(&["set", "stt.kind", "superwhisper"], &[])
+        .status
+        .success());
+
+    assert_eq!(snapshot(&home)["whisper_model"], Value::Null);
+}
+
+#[test]
+fn with_lucyd_stopped_the_snapshot_says_so_and_still_lists_every_choice() {
+    let home = home("inactive");
+
+    assert_eq!(
+        snapshot(&home),
+        json!({
+            "state": "stopped",
+            "fast": {
+                "key": "tiers.fast",
+                "current": "claude-fast",
+                "options": ["claude-fast", "codex-fast"],
+            },
+            "advanced": {
+                "key": "tiers.advanced",
+                "current": "codex-fast",
+                "options": ["claude-fast", "codex-fast"],
+            },
+            "whisper_model": {
+                "key": "whisper.model",
+                "current": null,
+                "options": [null, "small.en", "base.en"],
+            },
+            "mic": {
+                "key": "audio.mic",
+                "current": "alsa_input.usb-Yeti",
+                "options": ["default", "alsa_input.usb-Yeti"],
+            },
+            "speaker": {
+                "key": "audio.speaker",
+                "current": "default",
+                "options": ["default", "alsa_output.hdmi"],
+            },
+        })
+    );
+}

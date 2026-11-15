@@ -1,0 +1,23 @@
+{
+  "title": "Lucy",
+  "state.stopped": "Stopped",
+  "state.starting": "Starting",
+  "state.waiting": "Listening for 'Hey Lucy'",
+  "state.session": "In a Session",
+  "state.failed": "lucyd failed",
+  "power.on": "Start lucyd",
+  "power.off": "Stop lucyd",
+  "session.end": "End Session",
+  "thinking": "Thinking",
+  "thinking.fast": "Fast tier",
+  "thinking.advanced": "Advanced tier",
+  "stt": "Speech-to-text",
+  "stt.auto": "Sized to this computer",
+  "stt.superwhisper": "Superwhisper hears. Change it in More settings.",
+  "audio": "Audio devices",
+  "audio.mic": "Microphone",
+  "audio.speaker": "Speaker",
+  "restart": "Restart",
+  "notSaved": "Not saved",
+  "more": "More settings…"
+}

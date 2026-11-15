@@ -427,6 +427,69 @@ fn the_service_section_enables_disables_starts_stops_and_restarts_lucyd() {
     );
 }
 
+/// Enables lucyd.service from the Service section, systemd knowing nothing.
+fn enable(home: &Home) -> support::Tui {
+    home.fake("systemctl", "[ \"$2\" != is-enabled ] && [ \"$2\" != cat ]");
+    configured(home);
+    home.tui(Open::Lucy, leave(open(SERVICE).enter()))
+}
+
+#[test]
+fn enabling_lucyd_links_the_bar_panel_into_omarchys_plugins() {
+    let home = Home::with_lucyd();
+    let omarchy = home.dir.path().join("config/omarchy");
+    std::fs::create_dir_all(&omarchy).unwrap();
+
+    let tui = enable(&home);
+
+    assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    assert!(
+        tui.shown.contains("Lucy starts whenever you log in."),
+        "{}",
+        tui.shown
+    );
+    let panel = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../omarchy-plugin");
+    let link = omarchy.join("plugins/lucy-panel");
+    assert_eq!(
+        std::fs::canonicalize(&link).unwrap(),
+        std::fs::canonicalize(panel).unwrap()
+    );
+    assert!(link.join("manifest.json").exists());
+    assert!(home
+        .dir
+        .path()
+        .join("config/systemd/user/lucyd.service")
+        .exists());
+}
+
+#[test]
+fn enabling_lucyd_again_keeps_one_link_to_the_bar_panel() {
+    let home = Home::with_lucyd();
+    let omarchy = home.dir.path().join("config/omarchy");
+    std::fs::create_dir_all(&omarchy).unwrap();
+
+    enable(&home);
+    let tui = enable(&home);
+
+    assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    assert!(
+        tui.shown.contains("Lucy starts whenever you log in."),
+        "{}",
+        tui.shown
+    );
+    assert!(omarchy.join("plugins/lucy-panel/manifest.json").exists());
+}
+
+#[test]
+fn without_omarchy_enabling_lucyd_links_no_bar_panel() {
+    let home = Home::with_lucyd();
+
+    let tui = enable(&home);
+
+    assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    assert!(!home.dir.path().join("config/omarchy").exists());
+}
+
 #[test]
 fn approvals_are_listed_and_one_is_revoked_after_a_yes() {
     let home = Home::with_lucyd();

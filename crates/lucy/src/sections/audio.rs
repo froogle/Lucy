@@ -10,6 +10,7 @@ use ratatui::backend::Backend;
 use super::{Context, Page};
 use crate::settings::Key;
 use crate::ui::{Stop, Ui};
+use crate::Env;
 
 /// How long the level meter runs.
 const METER: Duration = Duration::from_secs(3);
@@ -33,10 +34,10 @@ pub(super) fn pick<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) ->
 
 /// The node names `pactl` lists of `kind` (`sources` or `sinks`), leaving
 /// out monitors of speakers.
-fn devices(context: &Context, kind: &str) -> Vec<String> {
+pub(crate) fn devices(env: &Env, kind: &str) -> Vec<String> {
     let Ok(output) = std::process::Command::new("pactl")
         .args(["list", "short", kind])
-        .env("PATH", &context.env.path)
+        .env("PATH", &env.path)
         .output()
     else {
         return vec![];
@@ -56,7 +57,7 @@ fn pick_device<B: Backend>(
     kind: &str,
 ) -> Result<String, Stop> {
     let mut names = vec!["default".to_owned()];
-    names.extend(devices(context, kind));
+    names.extend(devices(context.env, kind));
     let mut labels = names.clone();
     labels[0] = "default: whatever the system uses".to_owned();
     Ok(names.swap_remove(ui.choose(title, &labels)?))

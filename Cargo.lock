@@ -1620,6 +1620,7 @@ dependencies = [
  "lucyd",
  "ratatui",
  "rtrb",
+ "serde",
  "serde_json",
  "tempfile",
  "toml_edit",

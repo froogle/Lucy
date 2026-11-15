@@ -11,7 +11,9 @@ mod thinking;
 mod voice;
 mod wake;
 
+pub(crate) use audio::devices;
 pub use plugins::row as plugin_row;
+pub(crate) use speech::MODELS as WHISPER_MODELS;
 
 use std::time::Duration;
 

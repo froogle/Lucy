@@ -9,7 +9,7 @@ use crate::settings::Key;
 use crate::ui::{Stop, Ui};
 
 /// Whisper's models; None leaves it to lucyd.
-const MODELS: [(Option<&str>, &str); 3] = [
+pub(crate) const MODELS: [(Option<&str>, &str); 3] = [
     (
         None,
         "Sized to this computer: small.en on a GPU, base.en on the CPU",

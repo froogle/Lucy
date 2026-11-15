@@ -148,6 +148,7 @@ impl Home {
             path: self.bin().into(),
             socket: Some(self.runtime().join("lucy").join("lucyd.sock")),
             units: self.dir.path().join("config/systemd/user"),
+            omarchy: self.dir.path().join("config/omarchy"),
             bin: Path::new(env!("CARGO_BIN_EXE_lucy"))
                 .parent()
                 .unwrap()
@@ -186,7 +187,18 @@ impl Home {
 
     /// Runs `lucy args`, answering its questions with `answers`, one a line.
     pub fn lucy(&self, args: &[&str], answers: &[&str]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_lucy"))
+        let mut child = self.command(args).spawn().unwrap();
+        let mut input = answers.join("\n");
+        input.push('\n');
+        // It may finish without reading everything.
+        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+        child.wait_with_output().unwrap()
+    }
+
+    /// `lucy args` in this home, its stdio piped, not yet started.
+    pub fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_lucy"));
+        command
             .args(args)
             .env_clear()
             .env("PATH", self.bin())
@@ -196,14 +208,8 @@ impl Home {
             .env("XDG_STATE_HOME", self.dir.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut input = answers.join("\n");
-        input.push('\n');
-        // It may finish without reading everything.
-        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
-        child.wait_with_output().unwrap()
+            .stderr(Stdio::piped());
+        command
     }
 }
 

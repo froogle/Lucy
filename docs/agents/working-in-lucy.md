@@ -71,6 +71,12 @@ lucyd runs `python -m piper.http_server`, which needs the `http` extra: install 
 - **Tests inside lucyd:** `test.mic_level` and `test.wake_word` run in the Session runner (`runner/setup.rs`), refused while a Session is open. Under `Harness::hearing`, the fake wake word's score is each frame's first sample.
 - **systemd:** the units are `dist/systemd/*.service`. When systemd doesn't know `lucyd.service`, the Service section and starting lucyd write them to `$XDG_CONFIG_HOME/systemd/user/` running the binaries beside `lucy`. Tests use a fake `systemctl`; never enable the units in your own session.
 
+## Bar panel
+
+- **Shape:** `omarchy-plugin/` is an Omarchy (Quickshell) bar-widget plugin. Its QML holds no product knowledge: it reads `lucy status --follow --json` (`lucy::panel`) and writes through `lucy set`/`lucy unset` (`settings::Key`, by dotted path), and runs `systemctl` and `lucy end` itself. A new choice goes in `panel::Snapshot` with its `Key`, so the QML needs no new knowledge.
+- **Install:** `systemd::enable` links it to `$XDG_CONFIG_HOME/omarchy/plugins/lucy-panel` (`Env.omarchy`) when that dir exists; the user adds it to the bar. Lucy never edits `shell.json`.
+- **Checks:** `omarchy-plugin/tests/run.sh` runs `Panel.qml` offscreen in Quickshell against a fake `lucy`, `systemctl` and `omarchy-launch-tui`, then checks the commands it ran; `omarchy plugin validate omarchy-plugin` checks the manifest. Neither is in `scripts/check.sh`, since CI has no Quickshell: run both after changing the plugin.
+
 ## Unix sockets
 
 Socket paths are limited to about 108 bytes. The session scratchpad path is too long for a smoke run, so put the socket under `/tmp` or a short tempdir.

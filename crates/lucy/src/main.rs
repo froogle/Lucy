@@ -1,6 +1,7 @@
 //! `lucy`: a thin client of lucyd's public socket. With no arguments it is
 //! a full-screen list of sections to set Lucy up with; `lucy setup` walks
-//! them in order. Every other command prints plain lines.
+//! them in order. Every other command prints plain lines, but for the JSON
+//! the bar panel reads: `status --json`, `set` and `unset`.
 
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -9,6 +10,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use lucy::menu::{self, Open};
+use lucy::panel::{self, Devices, Snapshot};
+use lucy::settings::{self, Key};
 use lucy::ui::{Console, Ui};
 use lucy::Env;
 use lucy_ipc::{Client, State, Topic};
@@ -39,7 +42,28 @@ enum Command {
         plugin: String,
     },
     /// Print a snapshot of lucyd's state.
-    Status,
+    Status {
+        /// As one line of JSON, with the settings the bar panel offers and
+        /// their options. lucyd needn't be running.
+        #[arg(long)]
+        json: bool,
+        /// Keep running, printing a snapshot each time one changes.
+        #[arg(long, requires = "json")]
+        follow: bool,
+    },
+    /// Set one setting in config.toml, keeping its comments, and print as
+    /// JSON when lucyd takes it up. lucyd needn't be running.
+    Set {
+        /// Its dotted path, such as tiers.fast or audio.mic.
+        key: Key,
+        value: String,
+    },
+    /// Remove one setting from config.toml, so its default applies, and
+    /// print as JSON when lucyd takes that up.
+    Unset {
+        /// Its dotted path, such as whisper.model.
+        key: Key,
+    },
     /// Print lucyd's raw event stream as NDJSON, for client authors.
     Events,
     /// Open a Session, as if the Wake word had been heard.
@@ -70,7 +94,13 @@ fn main() -> ExitCode {
         Some(Command::Credentials { plugin }) => {
             return lucy(Open::Credentials(plugin), Path::new(OS_RELEASE))
         }
-        Some(Command::Status) => status(),
+        Some(Command::Status {
+            json: false,
+            follow: _,
+        }) => status(),
+        Some(Command::Status { json: true, follow }) => return snapshot(follow),
+        Some(Command::Set { key, value }) => return set(&key, Some(&value)),
+        Some(Command::Unset { key }) => return set(&key, None),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
         Some(Command::End) => connect().and_then(|mut client| client.end_session()),
@@ -151,6 +181,40 @@ fn status() -> Result<(), lucy_ipc::Error> {
         println!("Session: {session_id}");
     }
     Ok(())
+}
+
+fn snapshot(follow: bool) -> ExitCode {
+    let env = Env::of_process(Path::new(OS_RELEASE));
+    let mut stdout = std::io::stdout().lock();
+    if follow {
+        // Ends when the reader goes away.
+        let _ = panel::follow(&env, &mut stdout);
+        return ExitCode::SUCCESS;
+    }
+    let status = env.connect().and_then(|mut client| client.status()).ok();
+    let snapshot = Snapshot::of(&env, status.as_ref(), &Devices::list(&env));
+    let _ = writeln!(stdout, "{}", snapshot.to_json());
+    ExitCode::SUCCESS
+}
+
+/// Sets `key` to `value`, or unsets it if None.
+fn set(key: &Key, value: Option<&str>) -> ExitCode {
+    let config = lucy_config::default_path();
+    let written = match value {
+        Some(value) => settings::set(&config, key, value),
+        None => settings::unset(&config, key),
+    };
+    match written {
+        Ok(applies) => {
+            let answer = serde_json::json!({"applies": applies, "message": applies.to_string()});
+            println!("{answer}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("lucy: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn events() -> Result<(), lucy_ipc::Error> {
