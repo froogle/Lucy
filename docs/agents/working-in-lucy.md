@@ -6,7 +6,7 @@ Facts about the codebase that aren't obvious from reading it.
 
 `scripts/check.sh` runs every gate: fmt, clippy, tests, the client-deps check, the glossary-term check, the lint-allow check and `cargo deny`. The pre-commit hook runs it once you've run `git config core.hooksPath .githooks`; a commit that only touches markdown, `docs/` or `.scratch/` runs just the glossary check. Commit with the hook on; `--no-verify` leaves the gates to CI.
 
-`target/` only grows (108 GB by slice 6). Between slices, with no agents running, `cargo clean` frees it; the next build is cold.
+`target/` only grows (108 GB by slice 6). When a ticket is done and merged, with no agents running, run `scripts/clean.sh`: it clears the shared `target/` and the prototypes' own `target/` folders, prunes stale worktrees and says how much it freed. It refuses while another worktree exists. The next build is cold. Run it after removing a worktree too: its test binaries stay in the shared `target/` and still look for fixtures and the schema under the removed worktree's path.
 
 ## lucyd test harness
 

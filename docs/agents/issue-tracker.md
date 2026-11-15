@@ -12,7 +12,7 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 
 ## Slices
 
-A **slice** is the build tickets that are ready to start when the slice begins; tickets they unblock wait for the next slice. Slice N is built on `lucy-v0-1-slice-N`, branched from `main`. Once its review fixes are merged and its tickets resolved, the slice is merged into `main` locally (no push).
+A **slice** is the build tickets that are ready to start when the slice begins; tickets they unblock wait for the next slice. Slice N is built on `lucy-v0-1-slice-N`, branched from `main`. Once its review fixes are merged and its tickets resolved, the slice is merged into `main` locally (no push). After any ticket is done and merged, run `scripts/clean.sh` (see `working-in-lucy.md`).
 
 ## When a skill says "publish to the issue tracker"
 
