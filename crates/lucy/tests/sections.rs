@@ -3,6 +3,8 @@
 
 mod support;
 
+use std::path::{Path, PathBuf};
+
 use lucy::menu::Open;
 use ratatui::crossterm::event::KeyCode;
 use support::{read, Home, Script};
@@ -398,7 +400,12 @@ fn the_service_section_enables_disables_starts_stops_and_restarts_lucyd() {
     );
     configured(&home);
 
-    let keys = open(SERVICE).enter().enter().typed("sxr");
+    let keys = open(SERVICE)
+        .enter()
+        .typed("y")
+        .enter()
+        .typed("n")
+        .typed("sxr");
     let tui = home.tui(Open::Lucy, leave(keys));
 
     assert_eq!(tui.result, Ok(()), "{}", tui.shown);
@@ -427,20 +434,44 @@ fn the_service_section_enables_disables_starts_stops_and_restarts_lucyd() {
     );
 }
 
-/// Enables lucyd.service from the Service section, systemd knowing nothing.
-fn enable(home: &Home) -> support::Tui {
-    home.fake("systemctl", "[ \"$2\" != is-enabled ] && [ \"$2\" != cat ]");
+fn enable(home: &Home, bin: &Path, systemctl: &str) -> support::Tui {
+    home.fake("systemctl", systemctl);
     configured(home);
-    home.tui(Open::Lucy, leave(open(SERVICE).enter()))
+    let env = lucy::Env {
+        bin: bin.to_owned(),
+        ..home.env()
+    };
+    let keys = leave(open(SERVICE).enter().enter());
+    home.tui_with(&env, &support::FakeStore::default(), Open::Lucy, keys)
+}
+
+const UNKNOWN_TO_SYSTEMD: &str = "[ \"$2\" != is-enabled ] && [ \"$2\" != cat ]";
+const ALREADY_ENABLED: &str = "exit 0";
+
+fn omarchy(home: &Home) -> PathBuf {
+    let omarchy = home.dir.path().join("config/omarchy");
+    std::fs::create_dir_all(&omarchy).unwrap();
+    omarchy
+}
+
+fn bar_panel(dir: &Path) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join("manifest.json"), "{}").unwrap();
+    dir.to_owned()
+}
+
+fn linked(omarchy: &Path) -> PathBuf {
+    std::fs::canonicalize(omarchy.join("plugins/lucy-panel")).unwrap()
 }
 
 #[test]
-fn enabling_lucyd_links_the_bar_panel_into_omarchys_plugins() {
+fn enabling_lucyd_links_the_bar_panel_shipped_beside_lucy() {
     let home = Home::with_lucyd();
-    let omarchy = home.dir.path().join("config/omarchy");
-    std::fs::create_dir_all(&omarchy).unwrap();
+    let omarchy = omarchy(&home);
+    let bin = home.dir.path().join("usr/bin");
+    let panel = bar_panel(&bin.join("omarchy-plugin"));
 
-    let tui = enable(&home);
+    let tui = enable(&home, &bin, UNKNOWN_TO_SYSTEMD);
 
     assert_eq!(tui.result, Ok(()), "{}", tui.shown);
     assert!(
@@ -448,13 +479,7 @@ fn enabling_lucyd_links_the_bar_panel_into_omarchys_plugins() {
         "{}",
         tui.shown
     );
-    let panel = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../omarchy-plugin");
-    let link = omarchy.join("plugins/lucy-panel");
-    assert_eq!(
-        std::fs::canonicalize(&link).unwrap(),
-        std::fs::canonicalize(panel).unwrap()
-    );
-    assert!(link.join("manifest.json").exists());
+    assert_eq!(linked(&omarchy), std::fs::canonicalize(panel).unwrap());
     assert!(home
         .dir
         .path()
@@ -463,13 +488,57 @@ fn enabling_lucyd_links_the_bar_panel_into_omarchys_plugins() {
 }
 
 #[test]
-fn enabling_lucyd_again_keeps_one_link_to_the_bar_panel() {
+fn enabling_a_lucyd_built_from_a_checkout_links_the_checkouts_bar_panel() {
     let home = Home::with_lucyd();
-    let omarchy = home.dir.path().join("config/omarchy");
-    std::fs::create_dir_all(&omarchy).unwrap();
+    let omarchy = omarchy(&home);
+    let checkout = home.dir.path().join("lucy");
+    let panel = bar_panel(&checkout.join("omarchy-plugin"));
+    let bin = checkout.join("target/debug");
+    std::fs::create_dir_all(&bin).unwrap();
 
-    enable(&home);
-    let tui = enable(&home);
+    let tui = enable(&home, &bin, UNKNOWN_TO_SYSTEMD);
+
+    assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    assert_eq!(linked(&omarchy), std::fs::canonicalize(panel).unwrap());
+}
+
+#[test]
+fn enabling_lucyd_while_it_is_enabled_refreshes_the_link() {
+    let home = Home::with_lucyd();
+    let omarchy = omarchy(&home);
+    std::fs::create_dir_all(omarchy.join("plugins")).unwrap();
+    std::os::unix::fs::symlink(
+        home.dir.path().join("a-worktree-since-removed"),
+        omarchy.join("plugins/lucy-panel"),
+    )
+    .unwrap();
+    let bin = home.dir.path().join("usr/bin");
+    let panel = bar_panel(&bin.join("omarchy-plugin"));
+
+    let tui = enable(&home, &bin, ALREADY_ENABLED);
+
+    assert!(
+        tui.shown.contains("Start Lucy whenever you log in: yes"),
+        "{}",
+        tui.shown
+    );
+    assert!(
+        home.calls("systemctl")
+            .contains(&"--user enable --now lucyd.service lucy-indicator.service".to_owned()),
+        "{:?}",
+        home.calls("systemctl")
+    );
+    assert_eq!(linked(&omarchy), std::fs::canonicalize(panel).unwrap());
+}
+
+#[test]
+fn with_no_bar_panel_to_find_enabling_lucyd_still_works_and_says_so() {
+    let home = Home::with_lucyd();
+    let omarchy = omarchy(&home);
+    let bin = home.dir.path().join("usr/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+
+    let tui = enable(&home, &bin, UNKNOWN_TO_SYSTEMD);
 
     assert_eq!(tui.result, Ok(()), "{}", tui.shown);
     assert!(
@@ -477,16 +546,24 @@ fn enabling_lucyd_again_keeps_one_link_to_the_bar_panel() {
         "{}",
         tui.shown
     );
-    assert!(omarchy.join("plugins/lucy-panel/manifest.json").exists());
+    assert!(
+        tui.shown.contains("Couldn't link the bar panel"),
+        "{}",
+        tui.shown
+    );
+    assert!(!omarchy.join("plugins/lucy-panel").exists());
 }
 
 #[test]
 fn without_omarchy_enabling_lucyd_links_no_bar_panel() {
     let home = Home::with_lucyd();
+    let bin = home.dir.path().join("usr/bin");
+    bar_panel(&bin.join("omarchy-plugin"));
 
-    let tui = enable(&home);
+    let tui = enable(&home, &bin, UNKNOWN_TO_SYSTEMD);
 
     assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    assert!(!tui.shown.contains("bar panel"), "{}", tui.shown);
     assert!(!home.dir.path().join("config/omarchy").exists());
 }
 

@@ -157,7 +157,7 @@ fn every_suggestion() -> Script {
         .enters(2) // Wake word: the test; Next
         .enter() // Plugins: Next
         .enter() // Approvals: Next
-        .enters(2) // Service: start at login; Done
+        .enters(3) // Service: start at login, yes; Done
 }
 
 #[test]

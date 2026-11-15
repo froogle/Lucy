@@ -19,11 +19,6 @@ const UNITS: [(&str, &str, &str); 2] = [
     ),
 ];
 
-/// Enables and starts `lucyd.service` and `lucy-indicator.service`. If
-/// systemd doesn't know them (Lucy wasn't installed as a package), they are
-/// written to the user's unit dir first, running the programs in
-/// `env.bin`. systemctl's output is kept off the full screen. On Omarchy,
-/// the bar panel is linked into its plugins, ready to add to the bar.
 pub(crate) fn enable(env: &Env) -> Result<(), String> {
     make_known(env)?;
     systemctl(
@@ -35,32 +30,9 @@ pub(crate) fn enable(env: &Env) -> Result<(), String> {
             "lucyd.service",
             "lucy-indicator.service",
         ],
-    )?;
-    link_panel(&env.omarchy)
+    )
 }
 
-/// Links `plugins/lucy-panel` in Omarchy's config dir `omarchy` to the bar
-/// panel in this checkout, if `omarchy` exists.
-fn link_panel(omarchy: &Path) -> Result<(), String> {
-    if !omarchy.is_dir() {
-        return Ok(());
-    }
-    let panel = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../omarchy-plugin");
-    let panel = std::fs::canonicalize(&panel)
-        .map_err(|e| format!("can't find the bar panel at {}: {e}", panel.display()))?;
-    let plugins = omarchy.join("plugins");
-    std::fs::create_dir_all(&plugins)
-        .map_err(|e| format!("can't create {}: {e}", plugins.display()))?;
-    let link = plugins.join("lucy-panel");
-    if link.is_symlink() {
-        std::fs::remove_file(&link)
-            .map_err(|e| format!("can't replace {}: {e}", link.display()))?;
-    }
-    std::os::unix::fs::symlink(&panel, &link)
-        .map_err(|e| format!("can't link {}: {e}", link.display()))
-}
-
-/// Stops both services starting at login; they keep running until stopped.
 pub(crate) fn disable(env: &Env) -> Result<(), String> {
     systemctl(
         env,

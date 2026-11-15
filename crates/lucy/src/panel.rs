@@ -224,6 +224,37 @@ fn watch_devices(env: &Env, changes: &Sender<Change>) {
     }
 }
 
+const PLUGIN: &str = "omarchy-plugin";
+
+pub(crate) fn link(env: &Env) -> Result<(), String> {
+    if !env.omarchy.is_dir() {
+        return Ok(());
+    }
+    let shipped = env.bin.join(PLUGIN);
+    let checkout = env.bin.join("../..").join(PLUGIN);
+    let panel = [shipped, checkout]
+        .into_iter()
+        .find(|dir| dir.join("manifest.json").is_file())
+        .ok_or_else(|| {
+            format!(
+                "there's no {PLUGIN} beside {} or in the checkout it was built in",
+                env.bin.display()
+            )
+        })?;
+    let panel = std::fs::canonicalize(&panel)
+        .map_err(|e| format!("can't follow {}: {e}", panel.display()))?;
+    let plugins = env.omarchy.join("plugins");
+    std::fs::create_dir_all(&plugins)
+        .map_err(|e| format!("can't create {}: {e}", plugins.display()))?;
+    let link = plugins.join("lucy-panel");
+    if link.is_symlink() {
+        std::fs::remove_file(&link)
+            .map_err(|e| format!("can't replace {}: {e}", link.display()))?;
+    }
+    std::os::unix::fs::symlink(&panel, &link)
+        .map_err(|e| format!("can't link {}: {e}", link.display()))
+}
+
 const STARTUP: Duration = Duration::from_secs(60);
 
 fn state(env: &Env, status: Option<&Status>) -> State {
