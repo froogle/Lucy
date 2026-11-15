@@ -27,9 +27,10 @@ fake() {
     chmod +x "$dir/bin/$1"
 }
 fake lucy 'case "$1 $2" in
-  "status --follow") echo '"'"'{"state":"waiting","fast":{"key":"tiers.fast","current":"claude-fast","options":["claude-fast"]},"advanced":{"key":"tiers.advanced","current":"claude-fast","options":["claude-fast"]},"whisper_model":null,"mic":{"key":"audio.mic","current":"default","options":["default"]},"speaker":{"key":"audio.speaker","current":"default","options":["default"]}}'"'"'; exec sleep 15;;
+  "status --follow") echo '"'"'{"state":"waiting","fast":{"key":"tiers.fast","current":"claude-fast","options":["claude-fast"]},"advanced":{"key":"tiers.advanced","current":"claude-fast","options":["claude-fast"]},"stt":{"key":"stt","current":null,"options":[null]},"mic":{"key":"audio.mic","current":"default","options":["default"]},"speaker":{"key":"audio.speaker","current":"default","options":["default"]}}'"'"'; exec sleep 15;;
   "set nope") echo "lucy: nope is not a setting" >&2; exit 2;;
-  "set whisper.model"|"unset whisper.model") echo '"'"'{"applies":"restart","message":"Applies after restarting lucyd."}'"'"';;
+  "set stt") [ "$3" = superwhisper ] && echo '"'"'{"applies":"next_session","message":"Applies at the next Session."}'"'"' || echo '"'"'{"applies":"restart","message":"Applies after restarting lucyd."}'"'"';;
+  "unset stt") echo '"'"'{"applies":"restart","message":"Applies after restarting lucyd."}'"'"';;
   set*) echo '"'"'{"applies":"next_session","message":"Applies at the next Session."}'"'"';;
 esac'
 fake systemctl '[ "$2" != start ]'
@@ -63,8 +64,9 @@ for call in \
     'systemctl --user start lucyd.service' \
     'systemctl --user stop lucyd.service' \
     'lucy set tiers.fast codex-fast' \
-    'lucy set whisper.model base.en' \
-    'lucy unset whisper.model' \
+    'lucy set stt superwhisper' \
+    'lucy set stt base.en' \
+    'lucy unset stt' \
     'systemctl --user restart lucyd.service' \
     'lucy set audio.mic alsa_input.usb-Yeti' \
     'omarchy-launch-tui --app-id=TUI.float lucy'; do

@@ -24,7 +24,7 @@ ShellRoot {
         state: state,
         fast: { key: "tiers.fast", current: "claude-fast", options: ["claude-fast", "codex-fast"] },
         advanced: { key: "tiers.advanced", current: "claude-advanced", options: ["claude-advanced", "claude-fast"] },
-        whisper_model: { key: "whisper.model", current: null, options: [null, "small.en", "base.en"] },
+        stt: { key: "stt", current: null, options: [null, "small.en", "base.en", "superwhisper"] },
         mic: { key: "audio.mic", current: "default", options: ["default", "alsa_input.usb-Yeti"] },
         speaker: { key: "audio.speaker", current: "default", options: ["default", "alsa_output.hdmi"] }
       }
@@ -127,12 +127,22 @@ ShellRoot {
         feed("stopped", { fast: { key: "tiers.fast", current: "codex-fast", options: ["claude-fast", "codex-fast"] } })
         check("a snapshot that agrees takes over", lucy.chosen, {})
 
-        lucy.choose(lucy.snapshot.whisper_model, "base.en")
+        console.log("speech-to-text: Whisper's models and Superwhisper in one row")
+        var labels = texts(barPanel, []).map(function (t) { return t.text })
+        check("Whisper sized to this computer", labels.indexOf("Sized to this computer") >= 0, true)
+        check("one of Whisper's models", labels.indexOf("base.en") >= 0, true)
+        check("Superwhisper, by its name", labels.indexOf("Superwhisper") >= 0, true)
+        lucy.choose(lucy.snapshot.stt, "superwhisper")
+      },
+      function () {
+        check("Superwhisper applies at the next Session", barPanel.flashLine, "Applies at the next Session.")
+        check("with no restart", lucy.restartOffered, false)
+        lucy.choose(lucy.snapshot.stt, "base.en")
       },
       function () {
         check("Whisper's model applies after a restart", barPanel.flashLine, "Applies after restarting lucyd.")
         check("which is offered", find(barPanel, "restart").visible, true)
-        lucy.choose(lucy.snapshot.whisper_model, null)
+        lucy.choose(lucy.snapshot.stt, null)
       },
       function () {
         find(barPanel, "restart").clicked()

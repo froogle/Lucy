@@ -165,14 +165,14 @@ fn whispers_model_set_or_unset_applies_after_a_restart() {
         serde_json::from_str::<Value>(&stdout(&set)).unwrap(),
         json!({"applies": "restart", "message": "Applies after restarting lucyd."})
     );
-    assert_eq!(snapshot(&home)["whisper_model"]["current"], "base.en");
+    assert_eq!(snapshot(&home)["stt"]["current"], "base.en");
 
     let unset = home.lucy(&["unset", "whisper.model"], &[]);
     assert_eq!(
         serde_json::from_str::<Value>(&stdout(&unset)).unwrap()["applies"],
         "restart"
     );
-    assert_eq!(snapshot(&home)["whisper_model"]["current"], Value::Null);
+    assert_eq!(snapshot(&home)["stt"]["current"], Value::Null);
 }
 
 #[test]
@@ -191,14 +191,66 @@ fn set_refuses_a_setting_it_doesnt_know_and_leaves_the_file_alone() {
 }
 
 #[test]
-fn while_superwhisper_hears_there_is_no_whisper_model_to_choose() {
+fn with_superwhisper_installed_speech_to_text_offers_it_beside_whispers_models() {
     let home = home("inactive");
+    home.fake("superwhisper", "exit 0");
+
+    assert_eq!(
+        snapshot(&home)["stt"],
+        json!({
+            "key": "stt",
+            "current": null,
+            "options": [null, "small.en", "base.en", "superwhisper"],
+        })
+    );
+}
+
+#[test]
+fn choosing_superwhisper_from_speech_to_text_applies_at_the_next_session() {
+    let home = home("inactive");
+    home.fake("superwhisper", "exit 0");
+
+    let output = home.lucy(&["set", "stt", "superwhisper"], &[]);
+
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&output)).unwrap()["applies"],
+        "next_session",
+        "{}",
+        stderr(&output)
+    );
+    let parsed = lucy_config::load(&home.config_path()).unwrap();
+    assert_eq!(parsed.stt.kind, lucy_config::SttKind::Superwhisper);
+    assert_eq!(snapshot(&home)["stt"]["current"], "superwhisper");
+}
+
+#[test]
+fn choosing_one_of_whispers_models_while_superwhisper_hears_brings_whisper_back() {
+    let home = home("inactive");
+    home.fake("superwhisper", "exit 0");
     assert!(home
-        .lucy(&["set", "stt.kind", "superwhisper"], &[])
+        .lucy(&["set", "stt", "superwhisper"], &[])
         .status
         .success());
 
-    assert_eq!(snapshot(&home)["whisper_model"], Value::Null);
+    let output = home.lucy(&["set", "stt", "base.en"], &[]);
+
+    assert_eq!(
+        serde_json::from_str::<Value>(&stdout(&output)).unwrap()["applies"],
+        "restart",
+        "{}",
+        stderr(&output)
+    );
+    let parsed = lucy_config::load(&home.config_path()).unwrap();
+    assert_eq!(parsed.stt.kind, lucy_config::SttKind::Whisper);
+    assert_eq!(parsed.whisper.model.as_deref(), Some("base.en"));
+    let text = read(&home.config_path());
+    assert!(text.starts_with("# My Lucy, tuned by hand."), "{text}");
+
+    assert!(home.lucy(&["unset", "stt"], &[]).status.success());
+    let parsed = lucy_config::load(&home.config_path()).unwrap();
+    assert_eq!(parsed.stt.kind, lucy_config::SttKind::Whisper);
+    assert_eq!(parsed.whisper.model, None);
+    assert_eq!(snapshot(&home)["stt"]["current"], Value::Null);
 }
 
 #[test]
@@ -219,8 +271,8 @@ fn with_lucyd_stopped_the_snapshot_says_so_and_still_lists_every_choice() {
                 "current": "codex-fast",
                 "options": ["claude-fast", "codex-fast"],
             },
-            "whisper_model": {
-                "key": "whisper.model",
+            "stt": {
+                "key": "stt",
                 "current": null,
                 "options": [null, "small.en", "base.en"],
             },

@@ -6,11 +6,12 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Sender};
 use std::time::Duration;
 
+use lucy_config::SttKind;
 use lucy_ipc::{Event, Status, Topic};
 use serde::Serialize;
 
 use crate::sections::{devices, WHISPER_MODELS};
-use crate::settings::Key;
+use crate::settings::{self, Key};
 use crate::systemd;
 use crate::Env;
 
@@ -19,28 +20,24 @@ use crate::Env;
 #[serde(rename_all = "snake_case")]
 enum State {
     Stopped,
-    /// systemd has started it, but it isn't listening on its socket yet.
     Starting,
-    /// Listening for the Wake word.
     Waiting,
     Session,
-    /// It died, and systemd is restarting it or has given up.
     Failed,
 }
 
-/// One snapshot, printed as a line of JSON.
+/// One snapshot, printed as a line of JSON. A choice's None option unsets
+/// its key.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct Snapshot {
     state: State,
     fast: Choice<String>,
     advanced: Choice<String>,
-    /// None while Superwhisper hears.
-    whisper_model: Option<Choice<Option<String>>>,
+    stt: Choice<Option<String>>,
     mic: Choice<String>,
     speaker: Choice<String>,
 }
 
-/// A setting, what it is now, and what it can be. A None option unsets it.
 #[derive(Debug, PartialEq, Serialize)]
 struct Choice<T> {
     key: String,
@@ -49,7 +46,7 @@ struct Choice<T> {
 }
 
 impl<T> Choice<T> {
-    fn new(key: Key, current: T, options: Vec<T>) -> Choice<T> {
+    fn new(key: impl ToString, current: T, options: Vec<T>) -> Choice<T> {
         Choice {
             key: key.to_string(),
             current,
@@ -84,13 +81,6 @@ impl Snapshot {
             options.extend_from_slice(names);
             Choice::new(key, current, options)
         };
-        let whisper_model = (config.stt.kind == lucy_config::SttKind::Whisper).then(|| {
-            let options = WHISPER_MODELS
-                .iter()
-                .map(|(name, _)| name.map(str::to_owned))
-                .collect();
-            Choice::new(Key::WhisperModel, config.whisper.model.clone(), options)
-        });
         Snapshot {
             state: state(env, status),
             fast: Choice::new(
@@ -103,7 +93,7 @@ impl Snapshot {
                 config.tiers.advanced.clone(),
                 providers,
             ),
-            whisper_model,
+            stt: stt(env, &config),
             mic: device(Key::Mic, config.audio.mic.clone(), &devices.mics),
             speaker: device(
                 Key::Speaker,
@@ -117,6 +107,22 @@ impl Snapshot {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("a snapshot is plain data")
     }
+}
+
+fn stt(env: &Env, config: &lucy_config::Config) -> Choice<Option<String>> {
+    let superwhisper = SttKind::Superwhisper.config_name();
+    let mut options: Vec<Option<String>> = WHISPER_MODELS
+        .iter()
+        .map(|(name, _)| name.map(str::to_owned))
+        .collect();
+    if SttKind::options(Some(&env.path)).contains(&SttKind::Superwhisper) {
+        options.push(Some(superwhisper.clone()));
+    }
+    let current = match config.stt.kind {
+        SttKind::Whisper => config.whisper.model.clone(),
+        SttKind::Superwhisper => Some(superwhisper),
+    };
+    Choice::new(settings::SPEECH, current, options)
 }
 
 /// How often `config.toml` and systemd are read again, and a stopped lucyd

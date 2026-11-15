@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use lucy_config::Tier;
+use lucy_config::{SttKind, Tier};
 use serde::Serialize;
 
 /// When lucyd takes up a change to `config.toml`.
@@ -118,6 +118,58 @@ impl Change {
         match self {
             Change::Set(key, _) | Change::Unset(key) => key,
         }
+    }
+}
+
+/// The name `lucy set` and `unset` know Speech-to-text by: the STT Provider
+/// and Whisper's model in one, as the bar panel offers them.
+pub const SPEECH: &str = "stt";
+
+enum Speech {
+    Superwhisper,
+    Whisper(Option<String>),
+}
+
+impl Speech {
+    fn changes(self) -> Vec<Change> {
+        let kind = |kind: SttKind| Change::Set(Key::Stt, kind.config_name());
+        match self {
+            Speech::Superwhisper => vec![kind(SttKind::Superwhisper)],
+            Speech::Whisper(Some(model)) => vec![
+                kind(SttKind::Whisper),
+                Change::Set(Key::WhisperModel, model),
+            ],
+            Speech::Whisper(None) => vec![kind(SttKind::Whisper), Change::Unset(Key::WhisperModel)],
+        }
+    }
+}
+
+/// What `lucy set <name> <value>` changes: `name` is a [`Key`]'s dotted
+/// path or [`SPEECH`], whose value is `superwhisper` or one of Whisper's
+/// models.
+///
+/// # Errors
+///
+/// If `lucy` doesn't set `name`.
+pub fn parse_set(name: &str, value: String) -> Result<Vec<Change>, String> {
+    let superwhisper = SttKind::Superwhisper.config_name();
+    match name {
+        SPEECH if value == superwhisper => Ok(Speech::Superwhisper.changes()),
+        SPEECH => Ok(Speech::Whisper(Some(value)).changes()),
+        name => Ok(vec![Change::Set(name.parse()?, value)]),
+    }
+}
+
+/// What `lucy unset <name>` changes: unsetting [`SPEECH`] leaves Whisper
+/// hearing, with its model sized to the computer.
+///
+/// # Errors
+///
+/// If `lucy` doesn't set `name`.
+pub fn parse_unset(name: &str) -> Result<Vec<Change>, String> {
+    match name {
+        SPEECH => Ok(Speech::Whisper(None).changes()),
+        name => Ok(vec![Change::Unset(name.parse()?)]),
     }
 }
 

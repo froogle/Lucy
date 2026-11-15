@@ -30,9 +30,8 @@ Item {
   }
 
   function agrees(key, value) {
-    var names = ["fast", "advanced", "whisper_model", "mic", "speaker"]
-    for (var i = 0; i < names.length; i++) {
-      var choice = snapshot ? snapshot[names[i]] : null
+    for (var name in snapshot) {
+      var choice = snapshot[name]
       if (choice && choice.key === key) return JSON.stringify(choice.current) === JSON.stringify(value)
     }
     return true

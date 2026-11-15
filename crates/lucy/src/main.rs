@@ -11,7 +11,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use lucy::menu::{self, Open};
 use lucy::panel::{self, Devices, Snapshot};
-use lucy::settings::{self, Change, Key};
+use lucy::settings::{self, Change};
 use lucy::ui::{Console, Ui};
 use lucy::Env;
 use lucy_ipc::{Client, State, Topic};
@@ -54,15 +54,16 @@ enum Command {
     /// Set one setting in config.toml, keeping its comments, and print as
     /// JSON when lucyd takes it up. lucyd needn't be running.
     Set {
-        /// Its dotted path, such as tiers.fast or audio.mic.
-        key: Key,
+        /// Its dotted path, such as tiers.fast or audio.mic; or stt, for
+        /// superwhisper or one of Whisper's models.
+        key: String,
         value: String,
     },
     /// Remove one setting from config.toml, so its default applies, and
     /// print as JSON when lucyd takes that up.
     Unset {
         /// Its dotted path, such as whisper.model.
-        key: Key,
+        key: String,
     },
     /// Print lucyd's raw event stream as NDJSON, for client authors.
     Events,
@@ -99,8 +100,8 @@ fn main() -> ExitCode {
             follow: _,
         }) => status(),
         Some(Command::Status { json: true, follow }) => return snapshot(follow),
-        Some(Command::Set { key, value }) => return write(Change::Set(key, value)),
-        Some(Command::Unset { key }) => return write(Change::Unset(key)),
+        Some(Command::Set { key, value }) => return write(settings::parse_set(&key, value)),
+        Some(Command::Unset { key }) => return write(settings::parse_unset(&key)),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
         Some(Command::End) => connect().and_then(|mut client| client.end_session()),
@@ -197,8 +198,11 @@ fn snapshot(follow: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn write(change: Change) -> ExitCode {
-    match settings::write(&lucy_config::default_path(), &[change]) {
+fn write(changes: Result<Vec<Change>, String>) -> ExitCode {
+    let written = changes.and_then(|changes| {
+        settings::write(&lucy_config::default_path(), &changes).map_err(|e| e.to_string())
+    });
+    match written {
         Ok(applies) => {
             let answer = serde_json::json!({"applies": applies, "message": applies.to_string()});
             println!("{answer}");

@@ -33,9 +33,8 @@ Panel {
   // Which device row has its list open: "", "mic" or "speaker".
   property string openList: ""
 
-  // Chip and device labels: a None option leaves it to lucyd.
   function label(value) {
-    return value === null ? strings.t("stt.auto") : String(value)
+    return value === null ? strings.t("stt.auto") : strings.t("option." + value, String(value))
   }
 
   function moreSettings() {
@@ -190,14 +189,7 @@ Panel {
             spacing: Style.space(6)
 
             Header { text: strings.t("stt") }
-            Chips {
-              visible: choice !== null
-              choice: root.snapshot ? root.snapshot.whisper_model : null
-            }
-            Caption {
-              visible: !!root.snapshot && !root.snapshot.whisper_model
-              text: strings.t("stt.superwhisper")
-            }
+            Chips { choice: root.snapshot ? root.snapshot.stt : null }
           }
 
           PanelSeparator { foreground: root.foreground }

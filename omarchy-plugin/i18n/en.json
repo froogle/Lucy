@@ -13,7 +13,7 @@
   "thinking.advanced": "Advanced tier",
   "stt": "Speech-to-text",
   "stt.auto": "Sized to this computer",
-  "stt.superwhisper": "Superwhisper hears. Change it in More settings.",
+  "option.superwhisper": "Superwhisper",
   "audio": "Audio devices",
   "audio.mic": "Microphone",
   "audio.speaker": "Speaker",
