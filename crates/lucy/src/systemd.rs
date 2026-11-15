@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::Env;
 
@@ -77,16 +78,40 @@ pub fn is_enabled(env: &Env) -> bool {
     quietly(env, &["--user", "is-enabled", "lucyd.service"])
 }
 
-/// What `systemctl is-active` says of `lucyd.service`, such as `active` or
-/// `failed`; empty if systemctl can't say.
-pub(crate) fn activity(env: &Env) -> String {
-    Command::new("systemctl")
-        .args(["--user", "is-active", "lucyd.service"])
-        .env("PATH", &env.path)
-        .stdin(Stdio::null())
+pub(crate) enum Activity {
+    Stopped,
+    Up(Duration),
+    Restarting,
+    Failed,
+}
+
+pub(crate) fn activity(env: &Env) -> Activity {
+    let shown = command(env, &["--user", "show", "lucyd.service"])
+        .args(["-p", "ActiveState", "-p", "ActiveEnterTimestamp"])
+        .arg("--timestamp=unix")
         .stderr(Stdio::null())
         .output()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+        .unwrap_or_default();
+    let property = |name: &str| {
+        shown
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+    };
+    match property("ActiveState") {
+        Some("active" | "reloading") => Activity::Up(up_since(property("ActiveEnterTimestamp"))),
+        Some("activating") => Activity::Restarting,
+        Some("failed") => Activity::Failed,
+        _ => Activity::Stopped,
+    }
+}
+
+fn up_since(timestamp: Option<&str>) -> Duration {
+    let since = timestamp
+        .and_then(|stamp| stamp.strip_prefix('@')?.parse().ok())
+        .map(|secs| UNIX_EPOCH + Duration::from_secs(secs));
+    since
+        .and_then(|since| SystemTime::now().duration_since(since).ok())
         .unwrap_or_default()
 }
 
@@ -120,10 +145,7 @@ fn make_known(env: &Env) -> Result<(), String> {
 
 /// Whether `systemctl args` succeeds, its output kept off the screen.
 fn quietly(env: &Env, args: &[&str]) -> bool {
-    Command::new("systemctl")
-        .args(args)
-        .env("PATH", &env.path)
-        .stdin(Stdio::null())
+    command(env, args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -148,11 +170,17 @@ fn install(dir: &Path, bin: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn systemctl(env: &Env, args: &[&str]) -> Result<(), String> {
-    let output = Command::new("systemctl")
+fn command(env: &Env, args: &[&str]) -> Command {
+    let mut command = Command::new("systemctl");
+    command
         .args(args)
         .env("PATH", &env.path)
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    command
+}
+
+fn systemctl(env: &Env, args: &[&str]) -> Result<(), String> {
+    let output = command(env, args)
         .output()
         .map_err(|e| format!("can't run systemctl: {e}"))?;
     match output.status.success() {

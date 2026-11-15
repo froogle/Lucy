@@ -6,7 +6,7 @@ mod support;
 use std::io::{BufRead, BufReader};
 use std::process::Child;
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use support::{read, stderr, stdout, Home};
@@ -26,10 +26,9 @@ const SOURCES: &str = "60\talsa_input.usb-Yeti\tPipeWire\ts16le 2ch 48000Hz\tRUN
 77\talsa_output.hdmi.monitor\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n";
 const SINKS: &str = "61\talsa_output.hdmi\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n";
 
-/// A home with `config.toml`, one microphone and one speaker, where
-/// systemd says lucyd is `active`.
 fn home(active: &str) -> Home {
     let home = Home::without_lucyd();
+    systemd_says(&home, active, Duration::ZERO);
     std::fs::write(home.config_path(), CONFIGURED).unwrap();
     home.fake(
         "pactl",
@@ -40,11 +39,18 @@ fn home(active: &str) -> Home {
              esac"
         ),
     );
+    home
+}
+
+fn systemd_says(home: &Home, active: &str, for_: Duration) {
+    let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap() - for_;
     home.fake(
         "systemctl",
-        &format!("[ \"$2\" = is-active ] && echo {active}; [ {active} = active ]"),
+        &format!(
+            "[ \"$2\" = show ] && printf 'ActiveState={active}\\nActiveEnterTimestamp=@{}\\n'",
+            since.as_secs()
+        ),
     );
-    home
 }
 
 fn snapshot(home: &Home) -> Value {
@@ -134,6 +140,14 @@ fn started_but_not_yet_listening_is_starting() {
     let home = home("active");
 
     assert_eq!(snapshot(&home)["state"], "starting");
+}
+
+#[test]
+fn active_for_minutes_without_listening_is_failed_not_starting() {
+    let home = home("active");
+    systemd_says(&home, "active", Duration::from_secs(600));
+
+    assert_eq!(snapshot(&home)["state"], "failed");
 }
 
 #[test]

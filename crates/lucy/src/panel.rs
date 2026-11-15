@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::sections::{devices, WHISPER_MODELS};
 use crate::settings::{self, Key};
-use crate::systemd;
+use crate::systemd::{self, Activity};
 use crate::Env;
 
 /// How lucyd is, as the bar icon shows it.
@@ -224,16 +224,16 @@ fn watch_devices(env: &Env, changes: &Sender<Change>) {
     }
 }
 
-/// Only systemd knows whether lucyd died or was stopped.
+const STARTUP: Duration = Duration::from_secs(60);
+
 fn state(env: &Env, status: Option<&Status>) -> State {
     match status {
         Some(status) if status.session_id.is_some() => State::Session,
         Some(_) => State::Waiting,
-        None => match systemd::activity(env).as_str() {
-            // Waiting to restart it after it died.
-            "activating" | "failed" => State::Failed,
-            "active" | "reloading" => State::Starting,
-            _ => State::Stopped,
+        None => match systemd::activity(env) {
+            Activity::Stopped => State::Stopped,
+            Activity::Up(up) if up < STARTUP => State::Starting,
+            Activity::Up(_) | Activity::Restarting | Activity::Failed => State::Failed,
         },
     }
 }
