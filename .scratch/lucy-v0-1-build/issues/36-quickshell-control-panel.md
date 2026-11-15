@@ -4,7 +4,7 @@
 
 **Blocked by:** 31
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 ## The icon
 
@@ -62,3 +62,5 @@ For the user to check by hand: enable lucyd from `lucy` > Service (or run `ln -s
 Review fixes (2026-11-15, branch `slice-7-review-fixes`). The Speech-to-text row is one row of chips: Whisper sized to this computer, each of Whisper's models, and Superwhisper where it is installed. The snapshot's `stt` choice replaces `whisper_model`; `lucy set stt <superwhisper|model>` and `lucy unset stt` write `stt.kind` and `whisper.model` together. Superwhisper's warnings stay in the TUI. The waiting line names the Wake word from the snapshot's `wake_word`. Power and Restart run `lucy service start|stop|restart`, which clears a crashed lucyd's start limit first; the QML never runs `systemctl`. An active lucyd that isn't listening after a minute shows as failed, not starting. Symlink: the Service row now asks "Start Lucy whenever you log in?", and each yes enables and makes or refreshes `~/.config/omarchy/plugins/lucy-panel`, even when lucyd is already enabled. The link points at `omarchy-plugin/` beside `lucy`, or else at the checkout whose `target/` holds `lucy`, which is the main checkout under the shared `target/`. If neither has it, the section warns and the enable stands.
 
 Updated hand check: once this is on the main checkout's branch, run `lucy` > Service > Enter > `y`; until then, run `ln -sfn "$PWD/omarchy-plugin" ~/.config/omarchy/plugins/lucy-panel` from this checkout. Then run `omarchy-shell shell rescanPlugins` and `omarchy plugin enable lucy.panel`. Check that the header says "Listening for 'Hey Lucy'". Check that the switch stops lucyd (dimmed icon) and starts it again. Run `pkill -SEGV lucyd` and check the icon turns red, then that the switch brings lucyd back. Check End Session. Pick a Thinking chip. In Speech-to-text, pick Superwhisper if it's installed (flash: next Session), then base.en (flash: after restart, with Restart), checking that `config.toml` keeps its comments. Pick a device, then check that "More settings…" floats `lucy`.
+
+Built on `lucy-v0-1-slice-7` with the review fixes (2026-11-15). Set to ready-for-human: the only open acceptance item is the desktop hand check above. Resolve it once that's done and noted here.

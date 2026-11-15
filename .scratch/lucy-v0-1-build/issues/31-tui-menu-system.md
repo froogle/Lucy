@@ -2,7 +2,7 @@
 
 **What to build:** Replace today's `lucy` home page and the linear `lucy setup` flow with one menu where the user picks what to configure. This changes the shape of the TUI only: it covers the same settings the TUI touches today (spec, Providers and configuration, TUI scope), and thresholds, timeouts, endpointing and paths stay file-only.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Layout
 
