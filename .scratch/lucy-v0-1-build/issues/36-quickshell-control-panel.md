@@ -42,15 +42,19 @@ English only, with strings read through `Commons.Translations` from `i18n/en.jso
 
 ## Acceptance
 
-- [ ] The bar icon shows the four states and follows lucyd live, including a crash
-- [ ] The power switch starts and stops `lucyd.service`, and settles to the real state if the command fails
-- [ ] End Session works while a Session is open
-- [ ] Tier, STT model and device choices are written to `config.toml` with comments kept, and the flash line says when they apply, offering Restart when needed
-- [ ] Settings can be changed while lucyd is stopped
-- [ ] "More settings…" opens `lucy` in a floating terminal
-- [ ] `lucy status --follow --json` and `lucy set` have harness tests: snapshot shape, the stopped state, applies-when wording, unknown keys rejected
+- [x] The bar icon shows the four states and follows lucyd live, including a crash
+- [x] The power switch starts and stops `lucyd.service`, and settles to the real state if the command fails
+- [x] End Session works while a Session is open
+- [x] Tier, STT model and device choices are written to `config.toml` with comments kept, and the flash line says when they apply, offering Restart when needed
+- [x] Settings can be changed while lucyd is stopped
+- [x] "More settings…" opens `lucy` in a floating terminal
+- [x] `lucy status --follow --json` and `lucy set` have harness tests: snapshot shape, the stopped state, applies-when wording, unknown keys rejected
 - [ ] The panel is checked by hand on the desktop, noted in Comments
 
 ## Comments
 
 Settled in a grilling session with the user (2026-11-15). The ticket first said Waybar; the user meant the Omarchy Quickshell bar, which is what this machine runs. The user's reference was the Omarchy network panel (header with a switch, stats, chip rows, lists).
+
+Built (2026-11-15, branch `ticket-36-quickshell-panel`). `lucy status --json` prints one snapshot and `--follow` one per change: `state` (`stopped`, `starting`, `waiting`, `session`, `failed`) and, for `fast`, `advanced`, `whisper_model` (null while Superwhisper hears) and `mic`/`speaker`, the `key`, `current` and `options`. lucyd's state comes from its socket; while it's away, `systemctl --user is-active` says stopped, starting (active, not yet listening) or failed (`failed`, or `activating` while systemd restarts it after a crash). Devices come from `pactl` and are listed again when `pactl subscribe` reports one added or removed. `lucy set <key> <value>` and `lucy unset <key>` (Whisper's "sized to this computer") take the dotted path and print `{"applies", "message"}` from `Applies`. "Starting" is a fifth snapshot state the ticket didn't name; the icon draws it dimmed, like stopped, and the header says "Starting". The panel's chips and rows are mouse-driven; the keyboard only closes it (Esc) and switches panels (Tab). Tests: `crates/lucy/tests/panel.rs`, plus the link tests in `tests/sections.rs`; the QML runs offscreen through `omarchy-plugin/tests/run.sh` (all checks pass) and `omarchy plugin validate omarchy-plugin` passes.
+
+For the user to check by hand: enable lucyd from `lucy` > Service (or run `ln -sfn "$PWD/omarchy-plugin" ~/.config/omarchy/plugins/lucy-panel` from the checkout), then `omarchy-shell shell rescanPlugins` and add "Lucy" from Omarchy's bar settings or `omarchy plugin enable lucy.panel`. Check the icon dims on `systemctl --user stop lucyd`, changes on "Hey Lucy", turns red on `pkill -SEGV lucyd`; the switch; End Session; a chip and a device (comments kept in `config.toml`, flash line, Restart after Whisper's model); "More settings…" floats `lucy`.
