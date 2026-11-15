@@ -6,7 +6,7 @@ Label: wayfinder:map
 
 A build-ready v0.1 spec for Lucy, plus a sketched roadmap. v0.1 = local wake word, spoken Sessions with barge-in, clickable Indicator, the news briefing, system questions and app launching, pluggable Providers configured through a TUI, and a Plugin system in which Lucy writes her own Plugins. Success: the news briefing as a hand-written reference Plugin, and "find my Mount Rainier photo" as a Plugin Lucy writes herself.
 
-Spec: [spec.md](spec.md) (ready-for-agent, 2026-11-13), synthesised from tickets 01–22; open tickets 24, 25 and 27 may still adjust defaults.
+Spec: [spec.md](spec.md) (ready-for-agent, 2026-11-13), synthesised from tickets 01–22; open tickets 24 and 27 may still adjust defaults.
 
 ## Notes
 
@@ -28,6 +28,7 @@ Spec: [spec.md](spec.md) (ready-for-agent, 2026-11-13), synthesised from tickets
 
 ## Decisions so far
 
+- [Does Lucy's audio stack coexist with the desktop?](issues/25-audio-stack-coexistence.md): yes on the GPU (Superwhisper's resident Vulkan workers cost Whisper nothing; both transcribing at once adds ~10–35 ms to each) and in the graph (capture and playback share one driver via `node.group`, even across two USB devices). But a pinned device's removal arrives from cpal as `StreamInvalidated`, which lucyd doesn't count as lost: a lost mic leaves lucyd deaf until restart, and a lost pinned speaker hangs playback. Fix is build ticket 39. A `"default"` stream follows the new default (`DeviceChanged`), which is fine.
 - [Does Silero run on pure-Rust ort-tract, and does earshot match it?](issues/26-vad-runtime-ab.md): yes, keep Silero on tract (matches native ORT and the standard model); earshot false-fires on steady noise (23% of silence at 10 dB SNR), so rejected. lucyd was spending ~25% of a core idle because the If-less export still branches on the runtime `sr` input; folding `sr` = 16000 into the model and turning on graph optimisation cuts it 45× (7.3 ms → 160 µs per chunk), build ticket 33.
 - [How well does echo cancellation work on real speakers, and does sonora match the C++ library?](issues/23-aec-on-real-speakers.md): yes on desk speakers and headphones (no laptop speakers here): 26–48 dB echo removed once converged (3–6 s), no false Barge-in with default `[barge_in]`, talk-overs caught at ~290 ms on speakers. `sonora` matches the C++ library in kind (each slightly ahead somewhere), so keep it. Follow-ups: on headphones ERLE never reaches 10 dB, so the gate stays strict (~490 ms); a weak voice at the mic is suppressed during double talk (missed talk-overs until +12 dB). Recordings and residuals for 26 kept in the bench.
 - [What exactly is the news briefing: sources, length, tone, greeting?](issues/11-news-briefing.md): on request; official feeds only (front-page scraping breaks most sites' terms), with a vetted Source catalogue flagged for AI-summary permission, defaulting to CNN, NPR and Sky; the fast tier speaks the top 1–2 stories in one or two sentences and opens the Sources' front pages; Sources that can't be read get an honest "their rules" plus an offer to open the page; Plugin-owned preferences via `set_preference`; detailed roundup from feed descriptions only; an editable `persona.md` (default jovial with a little sass) whose name comes from Lucy's first-run self-introduction.
