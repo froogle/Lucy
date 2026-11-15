@@ -338,7 +338,7 @@ impl Runner {
             SttKind::Superwhisper => self.adapters.superwhisper.clone(),
         };
         let silence_timeout = settings.session.silence_timeout_secs;
-        let wake_word = wake::word(&settings.wake_word);
+        let wake_word = settings.wake_word.word();
         let confirmation = settings.confirmation;
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker =

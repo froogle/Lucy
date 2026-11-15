@@ -451,6 +451,22 @@ impl Default for WakeWord {
     }
 }
 
+/// The file name of the Wake word model bundled with lucyd.
+pub const BUNDLED_WAKE_MODEL: &str = "hey_lucy.onnx";
+
+impl WakeWord {
+    /// The phrase the model listens for, from its file name: `hey_lucy.onnx`
+    /// listens for "hey lucy".
+    pub fn word(&self) -> String {
+        let model = self
+            .model
+            .as_deref()
+            .unwrap_or(Path::new(BUNDLED_WAKE_MODEL));
+        let stem = model.file_stem().unwrap_or_default().to_string_lossy();
+        stem.replace(['_', '-'], " ")
+    }
+}
+
 /// `[session]`
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -550,8 +566,55 @@ pub fn load(path: &Path) -> Result<Config, Error> {
 /// Sets the value at `key` (the names of the tables it is in, then its own)
 /// in the config file at `path`, keeping every comment and all other
 /// formatting. A missing file or table is created.
+///
+/// # Errors
+///
+/// If the file can't be read, parsed or written, or a name on the way is
+/// not a table.
+///
+/// # Panics
+///
+/// If `key` is empty.
 pub fn set(path: &Path, key: &[&str], value: impl Into<toml_edit::Value>) -> Result<(), Error> {
-    let (last, tables) = key.split_last().expect("a key to set");
+    edit(path, key, |table, last| {
+        match table.get_mut(last).and_then(|item| item.as_value_mut()) {
+            Some(old) => replace_keeping_decor(old, value.into()),
+            None => {
+                table.insert(last, toml_edit::value(value));
+            }
+        }
+    })
+}
+
+fn replace_keeping_decor(old: &mut toml_edit::Value, new: toml_edit::Value) {
+    let decor = old.decor().clone();
+    *old = new;
+    *old.decor_mut() = decor;
+}
+
+/// Removes `key` from the config file at `path`, so its default applies,
+/// keeping every comment and all other formatting.
+///
+/// # Errors
+///
+/// If the file can't be read, parsed or written, or a name on the way is
+/// not a table.
+///
+/// # Panics
+///
+/// If `key` is empty.
+pub fn unset(path: &Path, key: &[&str]) -> Result<(), Error> {
+    edit(path, key, |table, last| {
+        table.remove(last);
+    })
+}
+
+fn edit(
+    path: &Path,
+    key: &[&str],
+    change: impl FnOnce(&mut toml_edit::Table, &str),
+) -> Result<(), Error> {
+    let (last, tables) = key.split_last().expect("a key to edit");
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
@@ -567,17 +630,7 @@ pub fn set(path: &Path, key: &[&str], value: impl Into<toml_edit::Value>) -> Res
             .as_table_mut()
             .ok_or_else(|| Error::NotATable(path.to_owned(), (*name).to_owned()))?;
     }
-    match table.get_mut(last).and_then(|item| item.as_value_mut()) {
-        // Keep the comment and spacing around the old value.
-        Some(old) => {
-            let decor = old.decor().clone();
-            *old = value.into();
-            *old.decor_mut() = decor;
-        }
-        None => {
-            table.insert(last, toml_edit::value(value));
-        }
-    }
+    change(table, last);
     write_atomically(path, &doc.to_string()).map_err(|e| Error::Write(path.to_owned(), e))
 }
 

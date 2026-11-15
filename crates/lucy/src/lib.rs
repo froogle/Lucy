@@ -1,12 +1,17 @@
-//! `lucy`'s full-screen pages: `lucy` with no arguments ([`home`]) and
-//! `lucy setup` ([`setup`]). Each is a model driven by key presses and
-//! drawn with ratatui, so tests drive them with scripted keys.
+//! `lucy`'s full screen ([`menu`]): a list of sections, each a page that
+//! changes a few settings through [`settings`] or tests something inside
+//! lucyd. The screen is a model driven by key presses and drawn with
+//! ratatui, so tests drive it with scripted keys. [`panel`] is what the
+//! Omarchy bar panel reads, through `lucy status --follow --json`.
 
-pub mod credentials;
-pub mod home;
+mod credentials;
+mod devices;
+pub mod menu;
+pub mod panel;
 mod piper;
-pub mod setup;
-mod systemd;
+mod sections;
+pub mod settings;
+pub mod systemd;
 pub mod ui;
 
 use std::ffi::OsString;
@@ -14,8 +19,9 @@ use std::path::{Path, PathBuf};
 
 use lucy_ipc::Client;
 
-/// Where setup finds and puts things. [`Env::of_process`] reads them from
+/// Where `lucy` finds and puts things. [`Env::of_process`] reads them from
 /// the environment; tests give their own.
+#[derive(Clone)]
 pub struct Env {
     /// `config.toml`.
     pub config: PathBuf,
@@ -26,6 +32,7 @@ pub struct Env {
     /// The systemd user unit dir, where units go if systemd doesn't know
     /// them.
     pub units: PathBuf,
+    pub omarchy: PathBuf,
     /// The dir holding `lucyd` and `lucy-indicator`.
     pub bin: PathBuf,
     /// Where to read the distro from, for installing Piper.
@@ -35,11 +42,13 @@ pub struct Env {
 impl Env {
     pub fn of_process(os_release: &Path) -> Env {
         let here = std::env::current_exe().unwrap_or_default();
+        let config = lucy_config::xdg_dir("XDG_CONFIG_HOME", ".config");
         Env {
             config: lucy_config::default_path(),
             path: std::env::var_os("PATH").unwrap_or_default(),
             socket: lucy_ipc::default_socket_path(),
-            units: lucy_config::xdg_dir("XDG_CONFIG_HOME", ".config").join("systemd/user"),
+            units: config.join("systemd/user"),
+            omarchy: config.join("omarchy"),
             bin: here.parent().unwrap_or(Path::new("/")).to_owned(),
             os_release: os_release.to_owned(),
         }

@@ -1,16 +1,20 @@
 //! A home of its own for `lucy`, with an in-process lucyd: its own XDG
-//! dirs, and a `PATH` holding only the fake tools a test writes. The
-//! full-screen pages run in-process on ratatui's `TestBackend`, pressed by a
-//! [`Script`]; plain commands run the real binary.
+//! dirs, and a `PATH` holding only the fake tools a test writes. The full
+//! screen runs in-process on ratatui's `TestBackend`, pressed by a
+//! [`Script`], with a fake keyring; plain commands run the real binary.
 
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::Mutex;
 
+use lucy::menu::Open;
 pub use lucy::ui::Script;
 use lucy::ui::Ui;
+use lucy_config::credentials::CredentialStore;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
@@ -27,24 +31,32 @@ impl Home {
 
     fn with_adapters(adapters: lucyd::adapters::Adapters) -> Home {
         let home = Home::without_lucyd();
-        std::fs::write(home.config_dir().join("persona.md"), "You are Lucy.").unwrap();
-        let daemon = lucyd::spawn(lucyd::Options {
-            socket_path: home.runtime().join("lucy").join("lucyd.sock"),
-            config_path: home.config_path(),
-            persona_path: home.config_dir().join("persona.md"),
-            lucy_program: env!("CARGO_BIN_EXE_lucy").into(),
-            adapters,
-            plugin_paths: lucyd::plugins::Paths {
-                user: home.dir.path().join("plugins"),
-                shipped: home.dir.path().join("shipped"),
-                state: home.state(),
-            },
-        })
-        .unwrap();
+        let daemon = home.spawn_lucyd_with(adapters);
         Home {
             _lucyd: Some(daemon),
             ..home
         }
+    }
+
+    pub fn spawn_lucyd(&self) -> lucyd::Daemon {
+        self.spawn_lucyd_with(lucyd::adapters::Adapters::inert())
+    }
+
+    fn spawn_lucyd_with(&self, adapters: lucyd::adapters::Adapters) -> lucyd::Daemon {
+        std::fs::write(self.config_dir().join("persona.md"), "You are Lucy.").unwrap();
+        lucyd::spawn(lucyd::Options {
+            socket_path: self.runtime().join("lucy").join("lucyd.sock"),
+            config_path: self.config_path(),
+            persona_path: self.config_dir().join("persona.md"),
+            lucy_program: env!("CARGO_BIN_EXE_lucy").into(),
+            adapters,
+            plugin_paths: lucyd::plugins::Paths {
+                user: self.dir.path().join("plugins"),
+                shipped: self.dir.path().join("shipped"),
+                state: self.state(),
+            },
+        })
+        .unwrap()
     }
 
     /// A home where lucyd hears a microphone that stays at `level` (RMS),
@@ -126,7 +138,7 @@ impl Home {
             .collect()
     }
 
-    /// Where setup finds things in this home: its config, its fakes on
+    /// Where `lucy` finds things in this home: its config, its fakes on
     /// `PATH`, its lucyd, and the `lucyd` cargo builds beside `lucy`.
     pub fn env(&self) -> lucy::Env {
         lucy::Env {
@@ -134,6 +146,7 @@ impl Home {
             path: self.bin().into(),
             socket: Some(self.runtime().join("lucy").join("lucyd.sock")),
             units: self.dir.path().join("config/systemd/user"),
+            omarchy: self.dir.path().join("config/omarchy"),
             bin: Path::new(env!("CARGO_BIN_EXE_lucy"))
                 .parent()
                 .unwrap()
@@ -142,36 +155,44 @@ impl Home {
         }
     }
 
-    /// Runs setup full-screen on a test terminal, pressing `keys`. Panics
-    /// if a key is left over.
-    pub fn setup(&self, env: &lucy::Env, mut keys: Script) -> Setup {
-        let terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        let mut ui = Ui::new(terminal, &mut keys, "Lucy setup");
-        let result = lucy::setup::run(&mut ui, env);
-        let shown = ui.screen.shown();
-        let lines = ui.screen.lines.clone();
-        drop(ui);
-        assert!(keys.is_done(), "keys left over:\n{shown}");
-        Setup {
-            result,
-            shown,
-            lines,
-        }
+    pub fn tui(&self, open: Open, keys: Script) -> Tui {
+        self.tui_with(&self.env(), &FakeStore::default(), open, keys)
     }
 
-    /// Runs the `lucy` page on a test terminal against this home's lucyd,
-    /// pressing `keys`; the last screen it drew.
-    pub fn page(&self, mut keys: Script) -> String {
-        let mut client = self.env().connect().unwrap();
-        let mut terminal = Terminal::new(TestBackend::new(140, 30)).unwrap();
-        lucy::home::run(&mut client, &mut terminal, &mut keys).unwrap();
-        assert!(keys.is_done());
-        terminal.backend().to_string()
+    pub fn tui_with(
+        &self,
+        env: &lucy::Env,
+        store: &dyn CredentialStore,
+        open: Open,
+        mut keys: Script,
+    ) -> Tui {
+        let terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        let mut ui = Ui::new(terminal, &mut keys, "Lucy");
+        let result = lucy::menu::run(&mut ui, env, store, open);
+        let tui = Tui {
+            result,
+            shown: ui.screen.shown(),
+            screen: ui.terminal().backend().to_string(),
+        };
+        drop(ui);
+        assert!(keys.is_done(), "keys left over:\n{}", tui.shown);
+        tui
     }
 
     /// Runs `lucy args`, answering its questions with `answers`, one a line.
     pub fn lucy(&self, args: &[&str], answers: &[&str]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_lucy"))
+        let mut child = self.command(args).spawn().unwrap();
+        let mut input = answers.join("\n");
+        input.push('\n');
+        // It may finish without reading everything.
+        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+        child.wait_with_output().unwrap()
+    }
+
+    /// `lucy args` in this home, its stdio piped, not yet started.
+    pub fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_lucy"));
+        command
             .args(args)
             .env_clear()
             .env("PATH", self.bin())
@@ -181,14 +202,8 @@ impl Home {
             .env("XDG_STATE_HOME", self.dir.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let mut input = answers.join("\n");
-        input.push('\n');
-        // It may finish without reading everything.
-        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
-        child.wait_with_output().unwrap()
+            .stderr(Stdio::piped());
+        command
     }
 }
 
@@ -240,13 +255,37 @@ impl lucyd::audio::Vad for DeafVad {
     }
 }
 
-/// How a setup run went.
-pub struct Setup {
+/// How a run of `lucy` went.
+pub struct Tui {
     pub result: Result<(), String>,
-    /// Everything it showed: what it said, its questions and their options.
+    /// Everything it showed: what it said, its questions, lists and their
+    /// options.
     pub shown: String,
-    /// The transcript, with each answer.
-    pub lines: Vec<String>,
+    /// The last screen it drew.
+    pub screen: String,
+}
+
+/// A keyring in memory, in place of the Secret Service.
+#[derive(Default)]
+pub struct FakeStore(Mutex<HashMap<(String, String), String>>);
+
+impl FakeStore {
+    pub fn value(&self, plugin: &str, name: &str) -> Option<String> {
+        let key = (plugin.to_owned(), name.to_owned());
+        self.0.lock().unwrap().get(&key).cloned()
+    }
+}
+
+impl CredentialStore for FakeStore {
+    fn get(&self, plugin: &str, name: &str) -> Result<Option<String>, String> {
+        Ok(self.value(plugin, name))
+    }
+
+    fn set(&self, plugin: &str, name: &str, value: &str) -> Result<(), String> {
+        let key = (plugin.to_owned(), name.to_owned());
+        self.0.lock().unwrap().insert(key, value.to_owned());
+        Ok(())
+    }
 }
 
 pub fn stdout(output: &Output) -> String {

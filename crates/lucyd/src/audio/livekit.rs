@@ -12,8 +12,7 @@ use livekit_wakeword::WakeWordModel;
 
 use super::{Error, WakeWord, SAMPLE_RATE};
 
-/// The bundled model's file name, which names its phrase.
-pub(crate) const BUNDLED_NAME: &str = "hey_lucy.onnx";
+use lucy_config::BUNDLED_WAKE_MODEL as BUNDLED_NAME;
 const BUNDLED: &[u8] = include_bytes!("../../models/wake/hey_lucy.onnx");
 
 /// Writes the bundled model into `dir`, unless it is already there as it

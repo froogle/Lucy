@@ -1,38 +1,33 @@
-//! `lucy credentials <plugin>`: the user types each credential the Plugin's
-//! Manifest declares, hidden. lucyd says which names it declares; the values
-//! go straight to the Secret Service, never to lucyd, the screen or the
+//! Entering a Plugin's credentials: the user types each one its Manifest
+//! declares, hidden. lucyd says which names it declares; the values go
+//! straight to the Secret Service, never to lucyd, the screen or the
 //! transcript. lucyd hands them to the Plugin when it next starts it.
 
 use lucy_config::credentials::CredentialStore;
 use ratatui::backend::Backend;
 
-use crate::ui::Ui;
-use crate::Env;
+use crate::ui::{Stop, Ui};
 
-pub fn run<B: Backend>(
+/// Asks for each of `names`, the credentials `plugin` declares, and keeps
+/// what is typed in `store`.
+pub(crate) fn enter<B: Backend>(
     ui: &mut Ui<B>,
-    env: &Env,
-    plugin: &str,
     store: &dyn CredentialStore,
-) -> Result<(), String> {
-    let listed = env.connect().map_err(|e| e.to_string())?.plugins();
-    let names = listed
-        .map_err(|e| e.to_string())?
-        .plugins
-        .into_iter()
-        .find(|p| p.name == plugin)
-        .ok_or_else(|| format!("there's no Plugin called {plugin}"))?
-        .credentials;
+    plugin: &str,
+    names: &[String],
+) -> Result<(), Stop> {
     if names.is_empty() {
-        ui.say(format!("The {plugin} Plugin declares no credentials."))?;
-        return Ok(());
+        return ui.say(format!("The {plugin} Plugin declares no credentials."));
     }
     ui.say(format!(
         "The {plugin} Plugin needs {}. Each goes into your keyring; Lucy never sees it.",
         names.join(" and ")
     ))?;
-    for name in &names {
-        let entered = store.get(plugin, name)?.is_some();
+    for name in names {
+        let entered = match store.get(plugin, name) {
+            Ok(value) => value.is_some(),
+            Err(e) => return ui.say(format!("Can't read your keyring: {e}")),
+        };
         let question = match entered {
             true => format!("{name} (entered already; Enter alone keeps it):"),
             false => format!("{name}:"),
@@ -45,8 +40,10 @@ pub fn run<B: Backend>(
             })?;
             continue;
         }
-        store.set(plugin, name, &value)?;
-        ui.say(format!("{name} saved in your keyring."))?;
+        match store.set(plugin, name, &value) {
+            Ok(()) => ui.say(format!("{name} saved in your keyring."))?,
+            Err(e) => ui.say(format!("Can't save {name} in your keyring: {e}"))?,
+        }
     }
     Ok(())
 }

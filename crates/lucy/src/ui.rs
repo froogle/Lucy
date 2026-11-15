@@ -1,9 +1,9 @@
-//! The full-screen terminal: where key presses come from, and the setup
-//! screen. A [`Screen`] is the model: what has been said, and the question
-//! being asked, which answers key presses. [`draw`] renders it. [`Ui`] ties
-//! the two to a terminal and a [`Keys`] source, so setup reads as a series
-//! of questions. Tests drive it with a [`Script`] and ratatui's
-//! `TestBackend`.
+//! The full-screen terminal: where key presses come from, and the screen
+//! `lucy` draws. A [`Screen`] is the model: lucyd's status, what has been
+//! said, and the question or list being shown, which answers key presses.
+//! [`draw`] renders it. [`Ui`] ties the two to a terminal and a [`Keys`]
+//! source, so a section reads as a series of questions. Tests drive it with
+//! a [`Script`] and ratatui's `TestBackend`.
 
 use std::collections::VecDeque;
 use std::io;
@@ -14,14 +14,16 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Gauge, List, ListState, Paragraph};
+use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 
-/// Why the questions stopped before setup finished.
+/// Why a question went unanswered.
 #[derive(Debug)]
 pub enum Stop {
-    /// The user pressed Ctrl-C.
+    /// The user pressed Ctrl-C, or `q` where it isn't typed text.
     Quit,
+    /// The user pressed Esc.
+    Back,
     Io(io::Error),
 }
 
@@ -29,8 +31,16 @@ impl std::fmt::Display for Stop {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Stop::Quit => write!(f, "cancelled"),
+            Stop::Back => write!(f, "went back"),
             Stop::Io(e) => write!(f, "{e}"),
         }
+    }
+}
+
+pub(crate) fn back_is_fine(result: Result<(), Stop>) -> Result<(), Stop> {
+    match result {
+        Err(Stop::Back) => Ok(()),
+        result => result,
     }
 }
 
@@ -133,6 +143,12 @@ impl Script {
             .fold(self, |script, c| script.press(KeyCode::Char(c)))
     }
 
+    /// Then the keys of `then`.
+    pub fn chain(mut self, then: Script) -> Script {
+        self.0.extend(then.0);
+        self
+    }
+
     pub fn ctrl_c(mut self) -> Script {
         self.0
             .push_back(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -185,6 +201,19 @@ pub enum Prompt {
         question: String,
         typed: String,
     },
+    /// A page's list: Enter picks a row, a letter runs an action on it.
+    Rows(Rows),
+}
+
+/// A list a page shows: a note above its rows, never picked, and the
+/// letters that act on its rows, each with what it does, for the footer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rows {
+    pub title: String,
+    pub note: Vec<String>,
+    pub rows: Vec<String>,
+    pub actions: Vec<(char, &'static str)>,
+    pub selected: usize,
 }
 
 /// What a question was answered with.
@@ -193,6 +222,15 @@ pub enum Answer {
     Index(usize),
     Yes(bool),
     Text(String),
+    Pick(Pick),
+}
+
+/// What was picked on a [`Rows`]: Enter on a row, or an action's letter on
+/// the selected row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pick {
+    Row(usize),
+    Action(char, usize),
 }
 
 impl Prompt {
@@ -283,12 +321,32 @@ impl Prompt {
                 KeyCode::Enter => Some(Answer::Text(std::mem::take(typed))),
                 _ => None,
             },
+            Prompt::Rows(list) => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    list.selected = list.selected.saturating_sub(1);
+                    None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    list.selected = (list.selected + 1).min(list.rows.len().saturating_sub(1));
+                    None
+                }
+                KeyCode::Enter if !list.rows.is_empty() => {
+                    Some(Answer::Pick(Pick::Row(list.selected)))
+                }
+                KeyCode::Char(c) if list.actions.iter().any(|(letter, _)| *letter == c) => {
+                    Some(Answer::Pick(Pick::Action(c, list.selected)))
+                }
+                _ => None,
+            },
         }
     }
 
-    /// The question, and the answer as the transcript keeps it.
-    fn answered(&self, answer: &Answer) -> String {
-        match (self, answer) {
+    fn is_typed(&self) -> bool {
+        matches!(self, Prompt::Ask { .. } | Prompt::Secret { .. })
+    }
+
+    fn answered(&self, answer: &Answer) -> Option<String> {
+        let line = match (self, answer) {
             (Prompt::Choose { title, options, .. }, Answer::Index(i)) => {
                 format!("{title} {}", options[*i])
             }
@@ -300,8 +358,10 @@ impl Prompt {
                 true => format!("{question} (nothing typed)"),
                 false => format!("{question} (typed, hidden)"),
             },
+            (Prompt::Rows(_), _) => return None,
             _ => unreachable!("an answer of another kind"),
-        }
+        };
+        Some(line)
     }
 
     /// Every piece of text the question puts on the screen.
@@ -315,15 +375,20 @@ impl Prompt {
                 question, default, ..
             } => vec![question.clone(), default.clone()],
             Prompt::Secret { question, .. } => vec![question.clone()],
+            Prompt::Rows(list) => std::iter::once(list.title.clone())
+                .chain(list.note.clone())
+                .chain(list.rows.clone())
+                .collect(),
         }
     }
 }
 
-/// The setup screen: a transcript of what was said and answered, and the
-/// question or meter at the bottom.
+/// The screen: lucyd's status, a transcript of what was said and answered,
+/// and the question, list or meter below it.
 #[derive(Debug, Default)]
 pub struct Screen {
     pub title: String,
+    pub status: String,
     pub lines: Vec<String>,
     pub prompt: Option<Prompt>,
     /// The microphone's level, 0 to 1, while the meter runs.
@@ -358,7 +423,9 @@ impl Screen {
         let answer = prompt.key(key)?;
         let line = prompt.answered(&answer);
         self.prompt = None;
-        self.lines.push(format!("> {line}"));
+        if let Some(line) = line {
+            self.lines.push(format!("> {line}"));
+        }
         Some(answer)
     }
 
@@ -372,13 +439,14 @@ impl Screen {
 pub fn draw(frame: &mut Frame, screen: &Screen) {
     let bottom = match (&screen.prompt, screen.meter) {
         (Some(Prompt::Choose { options, .. }), _) => options.len() as u16 + 2,
+        (Some(Prompt::Rows(list)), _) => (list.note.len() + list.rows.len()) as u16 + 2,
         (Some(_), _) | (None, Some(_)) => 3,
         (None, None) => 0,
     };
-    let [title, transcript, below, hint] = Layout::vertical([
+    let [title, status, body, hint] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(bottom),
         Constraint::Length(1),
     ])
     .areas(frame.area());
@@ -386,7 +454,27 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         Paragraph::new(screen.title.as_str()).style(Style::new().add_modifier(Modifier::BOLD)),
         title,
     );
-    draw_transcript(frame, transcript, &screen.lines);
+    frame.render_widget(Paragraph::new(screen.status.as_str()), status);
+    let bottom = bottom.min(body.height);
+    let rows: Vec<Line> = screen
+        .lines
+        .iter()
+        .flat_map(|line| wrap(line, body.width.max(1) as usize))
+        .map(Line::raw)
+        .collect();
+    let height = (rows.len() as u16).min(body.height - bottom);
+    let (transcript, below) = match screen.prompt {
+        Some(Prompt::Rows(_)) => {
+            let [list, what_happened_after] = stacked(body, bottom, height);
+            (what_happened_after, list)
+        }
+        _ => {
+            let [what_led_to_it, question] = stacked(body, height, bottom);
+            (what_led_to_it, question)
+        }
+    };
+    let newest = &rows[rows.len() - height as usize..];
+    frame.render_widget(Paragraph::new(newest.to_vec()), transcript);
     let keys = match &screen.prompt {
         Some(prompt) => draw_prompt(frame, prompt, below),
         None => match screen.meter {
@@ -398,27 +486,30 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
                         .label(""),
                     below,
                 );
-                "Say something: the bar should move."
+                "Say something: the bar should move.".to_owned()
             }
-            None => "Working...",
+            None => "Working...".to_owned(),
         },
     };
+    let quit = match &screen.prompt {
+        Some(prompt) if !prompt.is_typed() => "Esc goes back   q quits",
+        Some(_) => "Esc goes back   Ctrl-C quits",
+        None => "Ctrl-C quits",
+    };
     frame.render_widget(
-        Paragraph::new(format!("Ctrl-C quits   {keys}"))
-            .style(Style::new().add_modifier(Modifier::DIM)),
+        Paragraph::new(format!("{keys}   {quit}")).style(Style::new().add_modifier(Modifier::DIM)),
         hint,
     );
 }
 
-/// The transcript, its last lines kept in view.
-fn draw_transcript(frame: &mut Frame, area: Rect, lines: &[String]) {
-    let rows: Vec<Line> = lines
-        .iter()
-        .flat_map(|line| wrap(line, area.width.max(1) as usize))
-        .map(Line::raw)
-        .collect();
-    let first = rows.len().saturating_sub(area.height as usize);
-    frame.render_widget(Paragraph::new(rows[first..].to_vec()), area);
+fn stacked(area: Rect, top: u16, next: u16) -> [Rect; 2] {
+    let [top, next, _] = Layout::vertical([
+        Constraint::Length(top),
+        Constraint::Length(next),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    [top, next]
 }
 
 /// `line` broken into rows of at most `width` characters, between words
@@ -443,8 +534,8 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// Draws the question; the keys that answer it.
-fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> &'static str {
+/// Draws the question or list; the keys that answer it.
+fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> String {
     match prompt {
         Prompt::Choose {
             title,
@@ -457,7 +548,7 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> &'static str {
                 .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
             let mut state = ListState::default().with_selected(Some(*selected));
             frame.render_stateful_widget(list, area, &mut state);
-            "Up/Down picks, Enter chooses (the first is suggested)."
+            "Up/Down picks, Enter chooses".to_owned()
         }
         Prompt::Yes { question, default } => {
             let hint = if *default { "[Y/n]" } else { "[y/N]" };
@@ -465,7 +556,7 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> &'static str {
                 Paragraph::new(format!("{question} {hint}")).block(Block::bordered()),
                 area,
             );
-            "y or n; Enter takes the capital."
+            "y or n; Enter takes the capital.".to_owned()
         }
         Prompt::Ask {
             question,
@@ -485,7 +576,7 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> &'static str {
             );
             let x = area.x + 1 + typed.chars().count() as u16;
             frame.set_cursor_position((x.min(area.right().saturating_sub(2)), area.y + 1));
-            "Type, then Enter; empty takes the suggestion."
+            "Type, then Enter; empty takes the suggestion.".to_owned()
         }
         Prompt::Secret { question, typed } => {
             let stars = "*".repeat(typed.chars().count());
@@ -495,7 +586,27 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> &'static str {
             );
             let x = area.x + 1 + typed.chars().count() as u16;
             frame.set_cursor_position((x.min(area.right().saturating_sub(2)), area.y + 1));
-            "Type or paste it (hidden), then Enter."
+            "Type or paste it (hidden), then Enter.".to_owned()
+        }
+        Prompt::Rows(list) => {
+            let dim = Style::new().add_modifier(Modifier::DIM);
+            let items = list
+                .note
+                .iter()
+                .map(|line| ListItem::new(line.as_str()).style(dim))
+                .chain(list.rows.iter().map(|row| ListItem::new(row.as_str())));
+            let widget = List::new(items)
+                .block(Block::bordered().title(list.title.as_str()))
+                .highlight_symbol("> ")
+                .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+            let selected = (!list.rows.is_empty()).then_some(list.note.len() + list.selected);
+            let mut state = ListState::default().with_selected(selected);
+            frame.render_stateful_widget(widget, area, &mut state);
+            let mut keys = "Up/Down picks   Enter opens".to_owned();
+            for (letter, does) in &list.actions {
+                keys.push_str(&format!("   {letter} {does}"));
+            }
+            keys
         }
     }
 }
@@ -541,13 +652,30 @@ impl<'k, B: Backend> Ui<'k, B> {
             let Some(key) = self.keys.next()? else {
                 continue;
             };
-            if is_ctrl_c(&key) {
-                return Err(Stop::Quit);
+            let typed = self.screen.prompt.as_ref().is_some_and(Prompt::is_typed);
+            let stop = match key.code {
+                _ if is_ctrl_c(&key) => Some(Stop::Quit),
+                KeyCode::Char('q') if !typed => Some(Stop::Quit),
+                KeyCode::Esc => Some(Stop::Back),
+                _ => None,
+            };
+            if let Some(stop) = stop {
+                self.screen.prompt = None;
+                return Err(stop);
             }
             if let Some(answer) = self.screen.key(key) {
                 self.draw()?;
                 return Ok(answer);
             }
+        }
+    }
+
+    /// The row picked on `rows`, or the action run on it.
+    pub fn rows(&mut self, mut rows: Rows) -> Result<Pick, Stop> {
+        rows.selected = rows.selected.min(rows.rows.len().saturating_sub(1));
+        match self.answer(Prompt::Rows(rows))? {
+            Answer::Pick(pick) => Ok(pick),
+            _ => unreachable!(),
         }
     }
 
@@ -593,7 +721,8 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// Runs `run` outside the full screen, then comes back to it.
+    /// Runs `run` outside the full screen, then comes back to it: for a
+    /// program that may ask for input, such as an installer's password.
     pub fn outside<T>(&mut self, run: impl FnOnce() -> T) -> Result<T, Stop> {
         let mut run = Some(run);
         let mut result = None;
@@ -703,7 +832,7 @@ mod tests {
         assert!(shown.contains("The fast tier thinks with:"), "{shown}");
         assert!(shown.contains("> codex"), "{shown}");
         assert!(shown.contains("gemini"), "{shown}");
-        assert!(shown.contains("Ctrl-C quits"), "{shown}");
+        assert!(shown.contains("Esc goes back   q quits"), "{shown}");
     }
 
     #[test]

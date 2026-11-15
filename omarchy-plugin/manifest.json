@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "lucy.panel",
+  "name": "Lucy",
+  "version": "0.1.0",
+  "author": "Lucy",
+  "license": "MIT OR Apache-2.0",
+  "description": "Turn Lucy on or off, end a Session, and change her models and audio devices from the Omarchy bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Lucy",
+    "description": "Whether Lucy is listening, in a Session or stopped, with her thinking, speech-to-text and audio choices.",
+    "category": "Status",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

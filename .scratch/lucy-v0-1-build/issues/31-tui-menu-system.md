@@ -2,7 +2,7 @@
 
 **What to build:** Replace today's `lucy` home page and the linear `lucy setup` flow with one menu where the user picks what to configure. This changes the shape of the TUI only: it covers the same settings the TUI touches today (spec, Providers and configuration, TUI scope), and thresholds, timeouts, endpointing and paths stay file-only.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 ## Layout
 
@@ -51,16 +51,20 @@ Sections that need lucyd (real check, meter, wake-word test, voice preview, Appr
 
 ## Acceptance
 
-- [ ] `lucy` opens the section list with the lucyd status line; Enter and Esc move between the list and sections
-- [ ] With no `config.toml`, `lucy` walks the sections in order; Esc leaves the walk and keeps what was picked; `lucy setup` reruns the walk
-- [ ] Each change is written straight away with comments preserved, and the section says when it takes effect, offering a restart when needed
-- [ ] The Service section enables, disables, starts, stops and restarts `lucyd.service`
-- [ ] Sections that need lucyd say so when it is stopped and offer to start it
-- [ ] `lucy credentials <plugin>` opens the Plugins section for that Plugin
-- [ ] Granting Approval never happens in the TUI, only revoking
-- [ ] The old home page and linear setup flow are gone, with no duplicated step logic
-- [ ] Pages are tested through `TestBackend`
+- [x] `lucy` opens the section list with the lucyd status line; Enter and Esc move between the list and sections
+- [x] With no `config.toml`, `lucy` walks the sections in order; Esc leaves the walk and keeps what was picked; `lucy setup` reruns the walk
+- [x] Each change is written straight away with comments preserved, and the section says when it takes effect, offering a restart when needed
+- [x] The Service section enables, disables, starts, stops and restarts `lucyd.service`
+- [x] Sections that need lucyd say so when it is stopped and offer to start it
+- [x] `lucy credentials <plugin>` opens the Plugins section for that Plugin
+- [x] Granting Approval never happens in the TUI, only revoking
+- [x] The old home page and linear setup flow are gone, with no duplicated step logic
+- [x] Pages are tested through `TestBackend`
 
 ## Comments
 
 Settled in a grilling session with the user (2026-11-15). The user rejected a sidebar layout and asked for a full-screen list you go into and back out of.
+
+Built (2026-11-15): `home.rs` and `setup.rs` are gone. `lucy::menu::run` is the one full screen, opened at `menu::Open::{Lucy, Setup, Credentials(plugin)}`; the eight sections are `crates/lucy/src/sections/`, each a page of rows (`ui::Rows`) plus letter actions in the footer. The walk is those same pages with a last "Next" row; the cursor moves on after each pick, so Enter alone takes every suggestion. Esc on a row's question goes back to the page, Esc on a page to the list, Esc on the list quits. A walk left early still writes a one-line `config.toml`, so `lucy` opens at the list next time. Service: Enter toggles start-at-login (enable is `enable --now` of both units, as setup did), `s`/`x`/`r` start, stop, restart. Sections needing lucyd show "lucyd isn't running. s starts it." The scrollback print of setup's transcript is dropped.
+
+For ticket 36: `lucy::settings` is the writer (`settings::set`/`unset`, over `lucy_config::set` and the new `lucy_config::unset`), `settings::Key` names each setting the TUI writes, and `Key::applies() -> Applies::{NextSession, Restart}`, with `Display` giving "Applies at the next Session." / "Applies after restarting lucyd.". From lucyd's code, only Whisper's model needs a restart (loaded once in `main.rs`); Providers, tiers, STT kind, voice, mic and speaker are re-read at each Session start. Installing Piper also needs a restart (lucyd looks for it once). Switching STT to Whisper works at the next Session only if lucyd loaded Whisper at start; `Applies` doesn't model that.

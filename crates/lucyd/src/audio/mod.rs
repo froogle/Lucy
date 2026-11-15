@@ -23,7 +23,6 @@ use crate::adapters::SpeechSegment;
 use endpoint::Endpointer;
 pub use gate::BargeInEvent;
 use gate::Gate;
-pub(crate) use livekit::BUNDLED_NAME as BUNDLED_WAKE_MODEL;
 pub use livekit::{install_bundled_wake_model, LiveKit};
 pub use silero::Silero;
 

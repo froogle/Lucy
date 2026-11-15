@@ -1,6 +1,7 @@
-//! `lucy`: a thin client of lucyd's public socket. With no arguments it
-//! shows Lucy's Providers and Approvals; `lucy setup` sets her up. Both are
-//! full-screen; every other command prints plain lines.
+//! `lucy`: a thin client of lucyd's public socket. With no arguments it is
+//! a full-screen list of sections to set Lucy up with; `lucy setup` walks
+//! them in order. Every other command prints plain lines, but for the JSON
+//! the bar panel reads: `status --json`, `set` and `unset`.
 
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -8,10 +9,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use lucy::menu::{self, Open};
+use lucy::panel::{self, Devices, Snapshot};
+use lucy::settings::{self, Change};
+use lucy::systemd::{self, Verb};
 use lucy::ui::{Console, Ui};
-use lucy::{home, setup, Env};
+use lucy::Env;
 use lucy_ipc::{Client, State, Topic};
 use ratatui::DefaultTerminal;
+
+const OS_RELEASE: &str = "/etc/os-release";
 
 #[derive(Parser)]
 #[command(version, about = "Talk to Lucy's daemon, lucyd")]
@@ -22,21 +29,49 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// First-run setup: Providers, speech, voice, devices, the Wake word
-    /// and the service.
+    /// Walk every section in order: Providers, speech, voice, devices, the
+    /// Wake word, Plugins, Approvals and the service.
     Setup {
         /// Where to read the distro from, for installing Piper.
-        #[arg(long, hide = true, default_value = "/etc/os-release")]
+        #[arg(long, hide = true, default_value = OS_RELEASE)]
         os_release: PathBuf,
     },
-    /// Enter the credentials a Plugin declares, such as an API key. They
-    /// go into your keyring, never to Lucy's model.
+    /// Enter the credentials a Plugin declares, such as an API key, in the
+    /// Plugins section. They go into your keyring, never to Lucy's model.
     Credentials {
         /// The Plugin's name.
         plugin: String,
     },
     /// Print a snapshot of lucyd's state.
-    Status,
+    Status {
+        /// As one line of JSON, with the settings the bar panel offers and
+        /// their options. lucyd needn't be running.
+        #[arg(long)]
+        json: bool,
+        /// Keep running, printing a snapshot each time one changes.
+        #[arg(long, requires = "json")]
+        follow: bool,
+    },
+    /// Set one setting in config.toml, keeping its comments, and print as
+    /// JSON when lucyd takes it up. lucyd needn't be running.
+    Set {
+        /// Its dotted path, such as tiers.fast or audio.mic; or stt, for
+        /// superwhisper or one of Whisper's models.
+        key: String,
+        value: String,
+    },
+    /// Remove one setting from config.toml, so its default applies, and
+    /// print as JSON when lucyd takes that up.
+    Unset {
+        /// Its dotted path, such as whisper.model.
+        key: String,
+    },
+    /// Start, stop or restart lucyd.service, as the bar panel's switch and
+    /// Restart button do.
+    Service {
+        #[arg(value_enum)]
+        verb: Verb,
+    },
     /// Print lucyd's raw event stream as NDJSON, for client authors.
     Events,
     /// Open a Session, as if the Wake word had been heard.
@@ -62,10 +97,19 @@ enum Command {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        None => return home_page(),
-        Some(Command::Setup { os_release }) => return setup_page(&os_release),
-        Some(Command::Credentials { plugin }) => return credentials_page(&plugin),
-        Some(Command::Status) => status(),
+        None => return lucy(Open::Lucy, Path::new(OS_RELEASE)),
+        Some(Command::Setup { os_release }) => return lucy(Open::Setup, &os_release),
+        Some(Command::Credentials { plugin }) => {
+            return lucy(Open::Credentials(plugin), Path::new(OS_RELEASE))
+        }
+        Some(Command::Status {
+            json: false,
+            follow: _,
+        }) => status(),
+        Some(Command::Status { json: true, follow }) => return snapshot(follow),
+        Some(Command::Set { key, value }) => return write(settings::parse_set(&key, value)),
+        Some(Command::Unset { key }) => return write(settings::parse_unset(&key)),
+        Some(Command::Service { verb }) => return service(verb),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
         Some(Command::End) => connect().and_then(|mut client| client.end_session()),
@@ -105,65 +149,21 @@ fn full_screen(page: &str) -> Result<DefaultTerminal, ExitCode> {
     })
 }
 
-fn home_page() -> ExitCode {
-    let mut client = match connect() {
-        Ok(client) => client,
-        Err(e) => return failed(e),
-    };
-    let mut terminal = match full_screen("lucy") {
-        Ok(terminal) => terminal,
-        Err(code) => return code,
-    };
-    let result = home::run(&mut client, &mut terminal, &mut Console);
-    ratatui::restore();
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => failed(e),
-    }
-}
-
-fn setup_page(os_release: &Path) -> ExitCode {
-    let terminal = match full_screen("lucy setup") {
+fn lucy(open: Open, os_release: &Path) -> ExitCode {
+    let terminal = match full_screen("lucy") {
         Ok(terminal) => terminal,
         Err(code) => return code,
     };
     let env = Env::of_process(os_release);
     let mut keys = Console;
-    let mut ui = Ui::new(terminal, &mut keys, "Lucy setup");
-    let result = setup::run(&mut ui, &env);
-    ratatui::restore();
-    // What was said and chosen stays in the terminal's scrollback.
-    for line in &ui.screen.lines {
-        println!("{line}");
-    }
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("lucy: setup: {e}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn credentials_page(plugin: &str) -> ExitCode {
-    let terminal = match full_screen("lucy credentials") {
-        Ok(terminal) => terminal,
-        Err(code) => return code,
-    };
-    let env = Env::of_process(Path::new("/etc/os-release"));
-    let mut keys = Console;
-    let mut ui = Ui::new(terminal, &mut keys, "Lucy credentials");
+    let mut ui = Ui::new(terminal, &mut keys, "Lucy");
     let store = lucy_config::credentials::SecretService;
-    let result = lucy::credentials::run(&mut ui, &env, plugin, &store);
+    let result = menu::run(&mut ui, &env, &store, open);
     ratatui::restore();
-    // The transcript holds names only, never what was typed.
-    for line in &ui.screen.lines {
-        println!("{line}");
-    }
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("lucy: credentials: {e}");
+            eprintln!("lucy: {e}");
             ExitCode::FAILURE
         }
     }
@@ -190,6 +190,46 @@ fn status() -> Result<(), lucy_ipc::Error> {
         println!("Session: {session_id}");
     }
     Ok(())
+}
+
+fn snapshot(follow: bool) -> ExitCode {
+    let env = Env::of_process(Path::new(OS_RELEASE));
+    let mut stdout = std::io::stdout().lock();
+    if follow {
+        let _reader_gone = panel::follow(&env, &mut stdout);
+        return ExitCode::SUCCESS;
+    }
+    let status = env.connect().and_then(|mut client| client.status()).ok();
+    let snapshot = Snapshot::of(&env, status.as_ref(), &Devices::list(&env));
+    let _ = writeln!(stdout, "{}", snapshot.to_json());
+    ExitCode::SUCCESS
+}
+
+fn service(verb: Verb) -> ExitCode {
+    match systemd::run(&Env::of_process(Path::new(OS_RELEASE)), verb) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("lucy: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn write(changes: Result<Vec<Change>, String>) -> ExitCode {
+    let written = changes.and_then(|changes| {
+        settings::write(&lucy_config::default_path(), &changes).map_err(|e| e.to_string())
+    });
+    match written {
+        Ok(applies) => {
+            let answer = serde_json::json!({"applies": applies, "message": applies.to_string()});
+            println!("{answer}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("lucy: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn events() -> Result<(), lucy_ipc::Error> {

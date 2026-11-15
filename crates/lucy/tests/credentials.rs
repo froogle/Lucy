@@ -1,40 +1,14 @@
-//! `lucy credentials <plugin>`: the user types each credential a Plugin
-//! declares, full-screen. The values go to the Secret Service (here a fake),
-//! never to lucyd, the screen or the transcript.
+//! `lucy credentials <plugin>`: the Plugins section, opened entering the
+//! credentials that Plugin declares, each typed hidden. The values go to
+//! the Secret Service (here a fake), never to lucyd, the screen or the
+//! transcript.
 
 mod support;
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
-use lucy::ui::Ui;
+use lucy::menu::Open;
 use lucy_config::credentials::CredentialStore;
-use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyCode;
-use ratatui::Terminal;
-use support::{Home, Script};
-
-#[derive(Default)]
-struct FakeStore(Mutex<HashMap<(String, String), String>>);
-
-impl FakeStore {
-    fn value(&self, plugin: &str, name: &str) -> Option<String> {
-        let key = (plugin.to_owned(), name.to_owned());
-        self.0.lock().unwrap().get(&key).cloned()
-    }
-}
-
-impl CredentialStore for FakeStore {
-    fn get(&self, plugin: &str, name: &str) -> Result<Option<String>, String> {
-        Ok(self.value(plugin, name))
-    }
-
-    fn set(&self, plugin: &str, name: &str, value: &str) -> Result<(), String> {
-        let key = (plugin.to_owned(), name.to_owned());
-        self.0.lock().unwrap().insert(key, value.to_owned());
-        Ok(())
-    }
-}
+use support::{FakeStore, Home, Script, Tui};
 
 /// Installs a Plugin declaring `credentials`, as lucyd lists it.
 fn install(home: &Home, name: &str, credentials: &[&str]) {
@@ -51,33 +25,24 @@ fn install(home: &Home, name: &str, credentials: &[&str]) {
     std::fs::write(dir.join("plugin"), "not run").unwrap();
 }
 
-/// What a run showed: everything said and asked, the transcript, and the
-/// last screen drawn.
-struct Shown {
-    result: Result<(), String>,
-    shown: String,
-    lines: Vec<String>,
-    screen: String,
+fn configured_home() -> Home {
+    let home = Home::with_lucyd();
+    std::fs::write(home.config_path(), "# Mine.\n").unwrap();
+    home
 }
 
-fn enter(home: &Home, plugin: &str, store: &FakeStore, mut keys: Script) -> Shown {
-    let terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
-    let mut ui = Ui::new(terminal, &mut keys, "Lucy credentials");
-    let result = lucy::credentials::run(&mut ui, &home.env(), plugin, store);
-    let shown = Shown {
-        result,
-        shown: ui.screen.shown(),
-        lines: ui.screen.lines.clone(),
-        screen: ui.terminal().backend().to_string(),
-    };
-    drop(ui);
-    assert!(keys.is_done(), "keys left over:\n{}", shown.shown);
-    shown
+fn enter(home: &Home, plugin: &str, store: &FakeStore, keys: Script) -> Tui {
+    home.tui_with(
+        &home.env(),
+        store,
+        Open::Credentials(plugin.to_owned()),
+        keys,
+    )
 }
 
 #[test]
-fn each_declared_credential_is_typed_hidden_and_kept_in_the_secret_service() {
-    let home = Home::with_lucyd();
+fn it_opens_the_plugins_section_entering_that_plugins_credentials() {
+    let home = configured_home();
     install(&home, "weather", &["WEATHER_KEY", "CITY_ID"]);
     let store = FakeStore::default();
 
@@ -85,72 +50,107 @@ fn each_declared_credential_is_typed_hidden_and_kept_in_the_secret_service() {
         .typed("w-secret-1")
         .enter()
         .typed("c-secret-2")
-        .enter();
-    let run = enter(&home, "weather", &store, keys);
+        .enter()
+        .press(KeyCode::Esc) // back to the list
+        .typed("q");
+    let tui = enter(&home, "weather", &store, keys);
 
-    assert_eq!(run.result, Ok(()));
+    assert_eq!(tui.result, Ok(()));
     assert_eq!(store.value("weather", "WEATHER_KEY").unwrap(), "w-secret-1");
     assert_eq!(store.value("weather", "CITY_ID").unwrap(), "c-secret-2");
-    assert!(run.shown.contains("WEATHER_KEY"), "{}", run.shown);
-    assert!(run.shown.contains("CITY_ID"), "{}", run.shown);
+    assert!(
+        tui.shown.contains(
+            "weather: awaiting Approval; credentials: WEATHER_KEY (entered), CITY_ID (entered)"
+        ),
+        "{}",
+        tui.shown
+    );
     for value in ["w-secret", "c-secret"] {
-        assert!(!run.shown.contains(value), "{}", run.shown);
-        assert!(!run.lines.join("\n").contains(value), "{:?}", run.lines);
-        assert!(!run.screen.contains(value), "{}", run.screen);
+        assert!(!tui.shown.contains(value), "{}", tui.shown);
+        assert!(!tui.screen.contains(value), "{}", tui.screen);
     }
+    assert!(
+        tui.screen.contains("Approvals"),
+        "back on the list:\n{}",
+        tui.screen
+    );
 }
 
 #[test]
 fn the_secret_is_hidden_on_screen_while_it_is_typed() {
-    let home = Home::with_lucyd();
+    let home = configured_home();
     install(&home, "weather", &["WEATHER_KEY"]);
     let store = FakeStore::default();
     // Ctrl-C mid-entry: the screen still shows what was being typed.
     let keys = Script::new().typed("w-secret-1").ctrl_c();
 
-    let run = enter(&home, "weather", &store, keys);
+    let tui = enter(&home, "weather", &store, keys);
 
-    assert!(run.result.is_err());
-    assert!(!run.screen.contains("w-secret"), "{}", run.screen);
+    assert!(!tui.screen.contains("w-secret"), "{}", tui.screen);
     assert_eq!(store.value("weather", "WEATHER_KEY"), None);
 }
 
 #[test]
+fn q_is_typed_into_a_credential_not_taken_as_quit() {
+    let home = configured_home();
+    install(&home, "weather", &["WEATHER_KEY"]);
+    let store = FakeStore::default();
+
+    let keys = Script::new().typed("qq").enter().typed("q");
+    enter(&home, "weather", &store, keys);
+
+    assert_eq!(store.value("weather", "WEATHER_KEY").unwrap(), "qq");
+}
+
+#[test]
 fn enter_alone_keeps_a_credential_already_entered() {
-    let home = Home::with_lucyd();
+    let home = configured_home();
     install(&home, "weather", &["WEATHER_KEY"]);
     let store = FakeStore::default();
     store.set("weather", "WEATHER_KEY", "old").unwrap();
 
-    let run = enter(
-        &home,
-        "weather",
-        &store,
-        Script::new().press(KeyCode::Enter),
-    );
+    let tui = enter(&home, "weather", &store, Script::new().enter().typed("q"));
 
-    assert_eq!(run.result, Ok(()));
     assert_eq!(store.value("weather", "WEATHER_KEY").unwrap(), "old");
-    assert!(run.shown.contains("already"), "{}", run.shown);
+    assert!(tui.shown.contains("already"), "{}", tui.shown);
 }
 
 #[test]
 fn an_unknown_plugin_or_one_declaring_none_is_said_plainly() {
-    let home = Home::with_lucyd();
+    let home = configured_home();
     install(&home, "clock", &[]);
     let store = FakeStore::default();
 
-    let unknown = enter(&home, "weather", &store, Script::new());
-    let none = enter(&home, "clock", &store, Script::new());
+    let unknown = enter(&home, "weather", &store, Script::new().typed("q"));
+    let none = enter(&home, "clock", &store, Script::new().typed("q"));
 
-    assert!(unknown
-        .result
-        .unwrap_err()
-        .contains("no Plugin called weather"));
-    assert_eq!(none.result, Ok(()));
+    assert!(
+        unknown.shown.contains("There's no Plugin called weather."),
+        "{}",
+        unknown.shown
+    );
     assert!(
         none.shown.contains("declares no credentials"),
         "{}",
         none.shown
     );
+}
+
+#[test]
+fn any_plugins_credentials_can_be_entered_from_its_row() {
+    let home = configured_home();
+    install(&home, "weather", &["WEATHER_KEY"]);
+    let store = FakeStore::default();
+
+    // Plugins, then the weather Plugin's row.
+    let keys = Script::new()
+        .down(5)
+        .enter()
+        .enter()
+        .typed("k")
+        .enter()
+        .typed("q");
+    home.tui_with(&home.env(), &store, Open::Lucy, keys);
+
+    assert_eq!(store.value("weather", "WEATHER_KEY").unwrap(), "k");
 }
