@@ -349,31 +349,41 @@ fn sections_that_need_lucyd_open_while_it_is_stopped_and_say_so() {
     );
 }
 
+fn fifo(path: &Path) -> PathBuf {
+    let made = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    path.to_owned()
+}
+
 #[test]
 fn s_starts_lucyd_from_a_section_that_needs_it() {
     let home = Home::without_lucyd();
-    home.fake("systemctl", "exit 0");
+    let started = fifo(&home.bin().join("started"));
+    let up = fifo(&home.bin().join("up"));
+    home.fake(
+        "systemctl",
+        &format!(
+            "[ \"$2\" = start ] && {{ echo > '{}'; read _ < '{}'; }}; exit 0",
+            started.display(),
+            up.display()
+        ),
+    );
     configured(&home);
-    let log = home.bin().join("systemctl.log");
 
-    let (tui, lucyd) = std::thread::scope(|scope| {
-        // Stands in for systemd: lucyd comes up once it is started.
+    let (tui, _lucyd) = std::thread::scope(|scope| {
         let systemd = scope.spawn(|| {
-            for _ in 0..1000 {
-                let calls = std::fs::read_to_string(&log).unwrap_or_default();
-                if calls.contains("--user start lucyd.service") {
-                    return Some(home.spawn_lucyd());
-                }
-                // sleep-ok: polls for the fake systemctl's call
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            None
+            std::fs::read(&started).unwrap();
+            let lucyd = home.spawn_lucyd();
+            std::fs::write(&up, "\n").unwrap();
+            lucyd
         });
         let tui = home.tui(Open::Lucy, leave(open(APPROVALS).typed("s")));
         (tui, systemd.join().unwrap())
     });
 
-    assert!(lucyd.is_some(), "{}", tui.shown);
     assert!(tui.shown.contains("lucyd is running."), "{}", tui.shown);
     assert!(tui.shown.contains("Lucy holds none."), "{}", tui.shown);
     assert!(
