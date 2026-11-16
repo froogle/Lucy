@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use lucy_ipc::{State, Status};
 use tokio::sync::{broadcast, mpsc};
 
+use crate::input::Dialogs;
+
 #[derive(Clone)]
 pub struct StatusBus(Arc<Mutex<Inner>>);
 
@@ -64,6 +66,8 @@ pub struct Buses {
     pub levels: LevelBus,
     /// `plugins.changed`.
     pub plugins: ChangeBus,
+    /// `input.open` and `input.close`, to the `input` holder.
+    pub dialogs: Dialogs,
 }
 
 /// Lucy's voice level while she speaks. A subscriber that falls behind skips

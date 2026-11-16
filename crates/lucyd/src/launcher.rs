@@ -33,6 +33,16 @@ impl Launcher for SystemLauncher {
         command.push(entry);
         spawn(&command)
     }
+
+    fn open_terminal(&self, command: &[String]) -> io::Result<()> {
+        let mut terminal = if uwsm_is_running() {
+            vec!["uwsm", "app", "--", "xdg-terminal-exec"]
+        } else {
+            vec!["xdg-terminal-exec"]
+        };
+        terminal.extend(command.iter().map(String::as_str));
+        spawn(&terminal)
+    }
 }
 
 fn uwsm_is_running() -> bool {

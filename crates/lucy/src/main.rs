@@ -82,6 +82,14 @@ enum Command {
     /// wait until she has.
     #[command(hide = true)]
     Say { text: String },
+    /// Show the box Lucy puts on screen for you to type in. lucyd opens it
+    /// in a terminal while nothing else draws it.
+    #[command(hide = true)]
+    Input {
+        /// lucyd's socket; defaults to `$XDG_RUNTIME_DIR/lucy/lucyd.sock`.
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
     /// Bridge stdio to lucyd's private MCP socket. A model process that
     /// lucyd spawns runs this as its MCP server.
     #[command(hide = true)]
@@ -110,6 +118,7 @@ fn main() -> ExitCode {
         Some(Command::Set { key, value }) => return write(settings::parse_set(&key, value)),
         Some(Command::Unset { key }) => return write(settings::parse_unset(&key)),
         Some(Command::Service { verb }) => return service(verb),
+        Some(Command::Input { socket }) => return input(socket),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
         Some(Command::End) => connect().and_then(|mut client| client.end_session()),
@@ -150,15 +159,18 @@ fn full_screen(page: &str) -> Result<DefaultTerminal, ExitCode> {
 }
 
 fn lucy(open: Open, os_release: &Path) -> ExitCode {
-    let terminal = match full_screen("lucy") {
+    full_screen_page("lucy", open, &Env::of_process(os_release))
+}
+
+fn full_screen_page(page: &str, open: Open, env: &Env) -> ExitCode {
+    let terminal = match full_screen(page) {
         Ok(terminal) => terminal,
         Err(code) => return code,
     };
-    let env = Env::of_process(os_release);
     let mut keys = Console;
     let mut ui = Ui::new(terminal, &mut keys, "Lucy");
     let store = lucy_config::credentials::SecretService;
-    let result = menu::run(&mut ui, &env, &store, open);
+    let result = menu::run(&mut ui, env, &store, open);
     ratatui::restore();
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -167,6 +179,14 @@ fn lucy(open: Open, os_release: &Path) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn input(socket: Option<PathBuf>) -> ExitCode {
+    let mut env = Env::of_process(Path::new(OS_RELEASE));
+    if socket.is_some() {
+        env.socket = socket;
+    }
+    full_screen_page("lucy input", Open::Input, &env)
 }
 
 fn connect() -> Result<Client, lucy_ipc::Error> {
@@ -183,6 +203,7 @@ fn status() -> Result<(), lucy_ipc::Error> {
         State::Thinking => "Thinking",
         State::Speaking => "Speaking",
         State::Confirming => "Confirming",
+        State::Typing => "Typing",
         State::Error => "Error",
     };
     println!("State: {state}");

@@ -59,6 +59,23 @@ impl Home {
         .unwrap()
     }
 
+    /// Opens a Session and asks `question` in the Input dialog, as the
+    /// model's `ask_typed` does, with one field of `kind`. The answer
+    /// arrives on the returned channel.
+    pub fn ask_typed(
+        &self,
+        question: &str,
+        kind: lucyd::FieldKind,
+        choices: Vec<String>,
+    ) -> std::sync::mpsc::Receiver<lucyd::TypedAnswer> {
+        self.env().connect().unwrap().start_session().unwrap();
+        let daemon = self._lucyd.as_ref().expect("lucyd runs in this home");
+        let answer = daemon.ask_typed(question, kind, choices);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(answer.blocking_recv().expect("lucyd answers")));
+        rx
+    }
+
     /// A home where lucyd hears a microphone that stays at `level` (RMS),
     /// with nothing else that hears or speaks.
     pub fn with_mic(level: f32) -> Home {

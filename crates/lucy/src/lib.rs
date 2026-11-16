@@ -6,6 +6,7 @@
 
 mod credentials;
 mod devices;
+mod input;
 pub mod menu;
 pub mod panel;
 mod piper;
@@ -17,7 +18,7 @@ pub mod ui;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use lucy_ipc::Client;
+use lucy_ipc::{Client, Role};
 
 /// Where `lucy` finds and puts things. [`Env::of_process`] reads them from
 /// the environment; tests give their own.
@@ -56,8 +57,13 @@ impl Env {
 
     /// A client of lucyd.
     pub fn connect(&self) -> Result<Client, lucy_ipc::Error> {
+        self.connect_as(None)
+    }
+
+    /// A client of lucyd that claims `role`.
+    pub fn connect_as(&self, role: Option<Role>) -> Result<Client, lucy_ipc::Error> {
         // With no runtime dir there can be no socket, so lucyd isn't running.
         let path = self.socket.as_ref().ok_or(lucy_ipc::Error::NotRunning)?;
-        Client::connect(path, "lucy", None)
+        Client::connect(path, "lucy", role)
     }
 }

@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use lucy_config::{Config, Tier};
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, LevelEvent, MicLevel, PluginsChanged, ProviderCheck,
-    ProviderCheckResult, ProviderStatus, ProvidersStatus, RevokeApproval, Role, SessionStarted,
-    SetPluginEnabled, Status, Subscribe, Topic, VoicePreview, WakeWordTest, WakeWordTestResult,
-    PROTOCOL,
+    error_code, Event, Hello, HelloResult, InputAnswer, InputCancel, LevelEvent, MicLevel,
+    PluginsChanged, ProviderCheck, ProviderCheckResult, ProviderStatus, ProvidersStatus,
+    RevokeApproval, Role, SessionStarted, SetPluginEnabled, Status, Subscribe, Topic, VoicePreview,
+    WakeWordTest, WakeWordTestResult, PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,6 +18,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::adapters::Thinking;
+use crate::input::{self, InputClaim};
 use crate::notifications::{IndicatorClaim, Indicators};
 use crate::plugins::{self, Host};
 use crate::runner::{self, Command, PreviewError, SetupTest, SetupTestError, WakeWordHeard};
@@ -66,6 +67,8 @@ struct Connection {
     greeted: bool,
     /// Held while this client holds the `indicator` role.
     indicator: Option<IndicatorClaim>,
+    /// Held while this client holds the `input` role.
+    input: Option<InputClaim>,
     state_subscribed: bool,
     /// Every state change since subscribing, once subscribed.
     state_events: Option<mpsc::UnboundedReceiver<Status>>,
@@ -94,6 +97,7 @@ async fn connection(
         plugins,
         greeted: false,
         indicator: None,
+        input: None,
         state_subscribed: false,
         state_events: None,
         level_events: None,
@@ -112,6 +116,7 @@ async fn connection(
             Some(()) = next_change(&mut conn.plugin_events) => {
                 conn.send_event(Event::PluginsChanged(PluginsChanged {})).await
             }
+            Some(event) = next_dialog(&mut conn.input) => conn.send_event(event).await,
         };
         if sent.is_err() {
             return;
@@ -146,6 +151,14 @@ async fn next_level(level_events: &mut Option<broadcast::Receiver<f32>>) -> Opti
 async fn next_change(changes: &mut Option<mpsc::UnboundedReceiver<()>>) -> Option<()> {
     match changes {
         Some(changes) => changes.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The next `input.open` or `input.close`, or never without the role.
+async fn next_dialog(input: &mut Option<InputClaim>) -> Option<Event> {
+    match input {
+        Some(input) => input.events.recv().await,
         None => std::future::pending().await,
     }
 }
@@ -276,11 +289,33 @@ impl Connection {
                     .await?;
                 Ok(json!(WakeWordTestResult { heard, score }))
             }
+            "input.answer" => {
+                let InputAnswer { id, values } = parse_params(params)?;
+                self.input_holder()?
+                    .answer(&id, values)
+                    .map_err(dialog_error)?;
+                Ok(json!({}))
+            }
+            "input.cancel" => {
+                let InputCancel { id } = parse_params(params)?;
+                self.input_holder()?.cancel(&id).map_err(dialog_error)?;
+                Ok(json!({}))
+            }
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method {method:?}"),
             )),
         }
+    }
+
+    /// This client's claim on the `input` role, or why it may not answer.
+    fn input_holder(&self) -> Result<&InputClaim, RpcError> {
+        self.input.as_ref().ok_or_else(|| {
+            RpcError::new(
+                error_code::NOT_INPUT_HOLDER,
+                "only the client holding the input role answers the Input dialog",
+            )
+        })
     }
 
     /// Sends a command to the Session runner and waits for its reply.
@@ -413,11 +448,20 @@ impl Connection {
                 ),
             ));
         }
+        match hello.role {
+            Some(Role::Indicator) => self.indicator = Some(self.indicators.claim()),
+            Some(Role::Input) => {
+                let claim = self.buses.dialogs.claim().ok_or_else(|| {
+                    RpcError::new(
+                        error_code::ROLE_TAKEN,
+                        "another client holds the input role and draws the Input dialog",
+                    )
+                })?;
+                self.input = Some(claim);
+            }
+            None => {}
+        }
         self.greeted = true;
-        self.indicator = match hello.role {
-            Some(Role::Indicator) => Some(self.indicators.claim()),
-            None => None,
-        };
         Ok(json!(HelloResult {
             protocol: PROTOCOL,
             server: format!("lucyd {}", env!("CARGO_PKG_VERSION")),
@@ -466,6 +510,19 @@ fn plugin_error(e: plugins::Refusal) -> RpcError {
         _ => error_code::INTERNAL_ERROR,
     };
     RpcError::new(code, e.to_string())
+}
+
+fn dialog_error(e: input::Refusal) -> RpcError {
+    match e {
+        input::Refusal::NoDialog => RpcError::new(
+            error_code::NO_DIALOG,
+            "no Input dialog with that id is open; Lucy may have closed it",
+        ),
+        input::Refusal::Fields => RpcError::new(
+            error_code::INVALID_PARAMS,
+            "values must hold a value for each of the dialog's fields, and nothing else",
+        ),
+    }
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcError> {
