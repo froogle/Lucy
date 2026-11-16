@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (missing cr
 
 **Seams:** none new. Uses the `secret` path (owned by 43) and `CredentialStore` (ticket 21).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -21,3 +21,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (missing cr
 - [ ] A declined Confirmation opens no dialog
 - [ ] A cancel or timeout fails the call with the `lucy credentials <plugin>` pointer
 - [ ] Once, by hand: a Plugin with a missing credential asks for it, and the request completes
+
+## Comments
+
+2026-11-16: built in slice 10 (`lucy-v0-1-slice-10`). Lucy names the credential from its env-var name ("your Linear API key"). Values typed before a later cancel stay stored. Hand check left: a Plugin with a missing credential asks for it (in the bar and in a terminal), and the request completes.

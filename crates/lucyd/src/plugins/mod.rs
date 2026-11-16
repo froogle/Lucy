@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
+use lucy_ipc::FieldKind;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ElicitRequestParams, ElicitResult,
     ElicitationAction, InputRequest, InputRequests, InputResponses, JsonObject, ProtocolVersion,
@@ -30,7 +31,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use crate::adapters::{CredentialStore, Notification, NotificationKind};
-use crate::input::{self, Filled};
+use crate::input::{self, Filled, TypedAnswer};
 use crate::mcp;
 use crate::model_text::CALL_FINISHED;
 use crate::runner::{self, Command, When};
@@ -539,14 +540,14 @@ impl Host {
             .map_err(|e| format!("What the user typed can't be kept: {e}."))
     }
 
-    async fn credentials(&self, plugin: &Usable) -> Result<Vec<(String, String)>, String> {
+    async fn credentials(&self, plugin: &Usable) -> Result<Credentials, String> {
         let store = self.credentials.clone();
         let name = plugin.name.clone();
         let declared = plugin.manifest.access.credentials.clone();
         let found = tokio::task::spawn_blocking(move || {
             declared
                 .into_iter()
-                .map(|credential| Ok((store.get(&name, &credential)?, credential)))
+                .map(|credential| Ok((credential.clone(), store.get(&name, &credential)?)))
                 .collect::<Result<Vec<_>, String>>()
         })
         .await
@@ -558,30 +559,56 @@ impl Host {
                 plugin.name
             )
         })?;
-        let missing: Vec<&str> = found
-            .iter()
-            .filter(|(value, _)| value.is_none())
-            .map(|(_, name)| &**name)
-            .collect();
-        if !missing.is_empty() {
-            return Err(format!(
-                "The {plugin} Plugin needs {}, which the user hasn't entered yet. They enter it \
-                 by running `lucy credentials {plugin}` in a terminal, never by voice or \
-                 through you.",
-                missing.join(" and "),
-                plugin = plugin.name,
-            ));
+        let mut credentials = Credentials::default();
+        for (name, value) in found {
+            match value {
+                Some(value) => credentials.entered.push(Credential { name, value }),
+                None => credentials.missing.push(name),
+            }
         }
-        Ok(found
-            .into_iter()
-            .filter_map(|(value, name)| Some((name, value?)))
-            .collect())
+        Ok(credentials)
+    }
+
+    async fn ask_missing(
+        &self,
+        plugin: &Usable,
+        credentials: Credentials,
+    ) -> Result<Vec<Credential>, String> {
+        let mut entered = credentials.entered;
+        for name in credentials.missing {
+            let what = format!("your {}", words(&name));
+            let message = format!("The {} Plugin needs {name}.", plugin.name);
+            let value =
+                match input::ask_for(&self.commands, &what, &message, &name, FieldKind::Secret)
+                    .await
+                {
+                    TypedAnswer::Answer(value) => value,
+                    TypedAnswer::Cancelled => {
+                        return Err(unentered(
+                            &plugin.name,
+                            &name,
+                            "the box for it was cancelled",
+                        ))
+                    }
+                    TypedAnswer::TimedOut => {
+                        return Err(unentered(&plugin.name, &name, "the box for it timed out"))
+                    }
+                };
+            self.keep(&plugin.name, &name, &value).await?;
+            entered.push(Credential { name, value });
+        }
+        Ok(entered)
+    }
+
+    async fn entered(&self, plugin: &Usable) -> Result<Vec<Credential>, String> {
+        let read = self.credentials(plugin).await?;
+        self.ask_missing(plugin, read).await
     }
 
     async fn start(
         &self,
         plugin: &Usable,
-        env: &[(String, String)],
+        env: &[Credential],
     ) -> Result<RunningService<RoleClient, ()>, String> {
         let state_dir = self.paths.state_dir(&plugin.name);
         std::fs::DirBuilder::new()
@@ -603,7 +630,7 @@ impl Host {
                 command.env(var, value);
             }
         }
-        command.envs(env.iter().map(|(name, value)| (name, value)));
+        command.envs(env.iter().map(|c| (&c.name, &c.value)));
         sandbox::confine(
             &mut command,
             &plugin.folder,
@@ -627,6 +654,47 @@ impl Host {
         .map_err(|_| "it didn't start in time".to_owned())?
         .map_err(|e| format!("it didn't start: {e}"))
     }
+}
+
+#[derive(Default)]
+struct Credentials {
+    entered: Vec<Credential>,
+    missing: Vec<String>,
+}
+
+struct Credential {
+    name: String,
+    value: String,
+}
+
+const ACRONYMS: [&str; 10] = [
+    "API", "URL", "URI", "ID", "SSH", "AWS", "JWT", "HTTP", "SMTP", "IMAP",
+];
+
+fn words(name: &str) -> String {
+    let parts: Vec<String> = name
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| match &*word.to_ascii_uppercase() {
+            "OAUTH" => "OAuth".to_owned(),
+            upper if ACRONYMS.contains(&upper) => upper.to_owned(),
+            _ => word.to_ascii_lowercase(),
+        })
+        .collect();
+    let spoken = parts.join(" ");
+    let mut chars = spoken.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => spoken,
+    }
+}
+
+fn unentered(plugin: &str, name: &str, why: &str) -> String {
+    format!(
+        "The {plugin} Plugin needs {name}, but {why}, so nothing was done. The \
+         user can enter it by running `lucy credentials {plugin}` in a terminal, never by voice \
+         or through you."
+    )
 }
 
 struct Candidate {
@@ -794,26 +862,40 @@ impl SessionTools {
         if !self.running.lock().await.contains_key(plugin_name) {
             match self.host.credentials(&plugin).await {
                 Ok(read) => read_before_confirming = Some(read),
-                Err(missing) => return Some(mcp::error(missing)),
+                Err(unreadable) => return Some(mcp::error(unreadable)),
             }
         }
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
         }
+        let mut entered = match read_before_confirming {
+            Some(read) => match self.host.ask_missing(&plugin, read).await {
+                Ok(entered) => Some(entered),
+                Err(reason) => return Some(mcp::error(reason)),
+            },
+            None => None,
+        };
         let mut barge_ins = self.barge_ins.subscribe();
         let outcome = async {
             let peer = {
                 let mut running = self.running.lock().await;
                 if !running.contains_key(plugin_name) {
-                    let credentials = match read_before_confirming.take() {
-                        Some(read) => read,
-                        None => match self.host.credentials(&plugin).await {
-                            Ok(read) => read,
-                            Err(missing) => return Ok(mcp::error(missing)),
-                        },
+                    let entered = match entered.take() {
+                        Some(entered) => entered,
+                        None => {
+                            drop(running);
+                            let entered = match self.host.entered(&plugin).await {
+                                Ok(entered) => entered,
+                                Err(reason) => return Ok(mcp::error(reason)),
+                            };
+                            running = self.running.lock().await;
+                            entered
+                        }
                     };
-                    let client = self.host.start(&plugin, &credentials).await?;
-                    running.insert(plugin_name.to_owned(), client);
+                    if !running.contains_key(plugin_name) {
+                        let client = self.host.start(&plugin, &entered).await?;
+                        running.insert(plugin_name.to_owned(), client);
+                    }
                 }
                 running[plugin_name].peer().clone()
             };

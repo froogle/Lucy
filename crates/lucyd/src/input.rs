@@ -277,15 +277,24 @@ pub async fn ask(
     question: &str,
     kind: FieldKind,
 ) -> TypedAnswer {
+    let what = what(&kind);
+    ask_for(commands, what, question, ANSWER, kind).await
+}
+
+pub async fn ask_for(
+    commands: &mpsc::UnboundedSender<Command>,
+    what: &str,
+    question: &str,
+    name: &str,
+    kind: FieldKind,
+) -> TypedAnswer {
     let field = Field {
-        name: ANSWER.to_owned(),
+        name: name.to_owned(),
         description: None,
         kind,
     };
-    match fill(commands, question, vec![field]).await {
-        Filled::Values(mut values) => {
-            TypedAnswer::Answer(values.remove(ANSWER).unwrap_or_default())
-        }
+    match fill_saying(commands, what, question, vec![field]).await {
+        Filled::Values(mut values) => TypedAnswer::Answer(values.remove(name).unwrap_or_default()),
         Filled::Cancelled => TypedAnswer::Cancelled,
         Filled::TimedOut => TypedAnswer::TimedOut,
     }
@@ -307,6 +316,15 @@ pub async fn fill(
         [field] => what(&field.kind),
         _ => "your answers",
     };
+    fill_saying(commands, what, message, fields).await
+}
+
+async fn fill_saying(
+    commands: &mpsc::UnboundedSender<Command>,
+    what: &str,
+    message: &str,
+    fields: Vec<Field>,
+) -> Filled {
     let question = Question {
         prompt: format!("I've put a box on screen for {what}."),
         expects: Expects::Typed(Dialog {
