@@ -339,6 +339,72 @@ fn a_declared_path_under_xdg_runtime_dir_is_writable_where_it_points() {
 }
 
 #[test]
+fn a_declared_path_is_left_out_when_its_variable_is_unset_empty_relative_or_climbs() {
+    let cwd = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+    let name = cwd.path().file_name().unwrap().to_str().unwrap().to_owned();
+    let scratch = tempfile::tempdir().unwrap();
+    for dir in ["unset", "empty", "relative"] {
+        std::fs::create_dir(cwd.path().join(dir)).unwrap();
+    }
+    for dir in ["up", "climbs"] {
+        std::fs::create_dir(scratch.path().join(dir)).unwrap();
+    }
+    let relative = format!("{name}/relative");
+    let climbs = format!("{}/up/../climbs", scratch.path().display());
+    let lucyd = Harness::with_env(&[
+        ("FIXTURE_EMPTY", ""),
+        ("FIXTURE_RELATIVE", &relative),
+        ("FIXTURE_CLIMBS", &climbs),
+    ]);
+    let access = format!(
+        "write = [\"$FIXTURE_UNSET/{name}/unset\", \"$FIXTURE_EMPTY/{name}/empty\", \
+         \"$FIXTURE_RELATIVE\", \"$FIXTURE_CLIMBS\"]"
+    );
+    lucyd.install_plugin("fixture", &manifest("fixture", &["write_file"], &access));
+    lucyd.approve("fixture");
+    lucyd.client().start_session().unwrap();
+
+    for dir in [
+        cwd.path().join("unset"),
+        cwd.path().join("empty"),
+        cwd.path().join("relative"),
+        scratch.path().join("climbs"),
+    ] {
+        let result = lucyd
+            .thinking
+            .call_tool_with(
+                "fixture__write_file",
+                json!({"path": dir.join("note"), "text": "x"}),
+            )
+            .unwrap();
+        assert_eq!(result.is_error, Some(true), "{}", dir.display());
+    }
+}
+
+#[test]
+fn a_declared_path_that_climbs_with_dot_dot_makes_the_plugin_broken() {
+    let climbing = ["~/../etc", "$XDG_RUNTIME_DIR/../x", "/tmp/a/../b"];
+    let lucyd = Harness::start();
+    for (i, path) in climbing.iter().enumerate() {
+        let name = format!("plugin{i}");
+        let access = format!("read = [{path:?}]");
+        lucyd.install_plugin(&name, &manifest(&name, &["echo"], &access));
+    }
+
+    let listed = lucyd.client().plugins().unwrap().plugins;
+
+    for (i, path) in climbing.iter().enumerate() {
+        let plugin = listed
+            .iter()
+            .find(|p| p.name == format!("plugin{i}"))
+            .unwrap();
+        assert_eq!(plugin.status, lucy_ipc::PluginStatus::Broken, "{path}");
+        let problem = plugin.problem.as_deref().unwrap_or_default();
+        assert!(problem.contains(&format!("{path:?}")), "{problem}");
+    }
+}
+
+#[test]
 fn each_plugin_gets_a_private_writable_state_dir() {
     use std::os::unix::fs::PermissionsExt;
     let lucyd = Harness::start();

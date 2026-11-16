@@ -105,6 +105,16 @@ impl Manifest {
                 return Err(format!("its tool {} has more than 3 examples", tool.name));
             }
         }
+        for path in self.access.read.iter().chain(&self.access.write) {
+            if Path::new(path)
+                .components()
+                .any(|c| c == Component::ParentDir)
+            {
+                return Err(format!(
+                    "its declared path {path:?} must not contain \"..\""
+                ));
+            }
+        }
         for credential in &self.access.credentials {
             credential_name(credential)?;
         }

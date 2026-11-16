@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use landlock::{
     Access, AccessFs, BitFlags, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreated,
@@ -137,14 +137,19 @@ fn add(
 
 fn expand(path: &str, environment: &Environment) -> Option<PathBuf> {
     if let Some(rest) = path.strip_prefix("~/") {
-        return Some(home().join(rest));
+        return Some(base(home())?.join(rest));
     }
     let Some(var) = path.strip_prefix('$') else {
         return Some(PathBuf::from(path));
     };
     let (name, rest) = var.split_once('/').unwrap_or((var, ""));
-    let dir = PathBuf::from(environment.var(name)?);
+    let dir = base(PathBuf::from(environment.var(name)?))?;
     Some(if rest.is_empty() { dir } else { dir.join(rest) })
+}
+
+fn base(dir: PathBuf) -> Option<PathBuf> {
+    let climbs = dir.components().any(|c| c == Component::ParentDir);
+    (dir.is_absolute() && !climbs).then_some(dir)
 }
 
 pub fn program_dir(program: &Path) -> Option<PathBuf> {

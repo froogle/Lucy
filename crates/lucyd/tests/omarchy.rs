@@ -63,46 +63,52 @@ impl Omarchy {
                 let _ = stream.write_all(answer.as_bytes());
             }
         });
-        let bin = dir.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        for command in [
-            "omarchy-hyprland-workspace-layout-current",
-            "omarchy-hyprland-workspace-layout-toggle",
-        ] {
-            write_executable(&bin.join(command), "#!/bin/sh\necho dwindle\n");
-        }
-        write_executable(
-            &bin.join("omarchy-toggle-bar"),
-            &format!("#!/bin/sh\necho \"$*\" >> '{}/bar'\n", dir.path().display()),
-        );
         Omarchy { dir, dispatched }
-    }
-
-    fn bar_toggles(&self) -> String {
-        std::fs::read_to_string(self.dir.path().join("bar")).unwrap_or_default()
-    }
-
-    fn bin(&self) -> String {
-        self.dir.path().join("bin").display().to_string()
     }
 
     fn lucyd(&self) -> Harness {
         let runtime = self.dir.path().display().to_string();
-        let bin = self.bin();
+        let bin = self.dir.path().join("bin");
         let lucyd = Harness::with_env(&[
             ("HYPRLAND_INSTANCE_SIGNATURE", "sig"),
             ("XDG_RUNTIME_DIR", &runtime),
             ("OMARCHY_PATH", "/usr/share/omarchy"),
             ("WAYLAND_DISPLAY", "wayland-1"),
-            ("PATH", &bin),
+            ("PATH", &bin.display().to_string()),
         ]);
-        install_omarchy(&lucyd);
+        let runnable_in_the_sandbox = install_omarchy(&lucyd).join("bin");
+        fake_commands(&runnable_in_the_sandbox);
+        std::os::unix::fs::symlink(&runnable_in_the_sandbox, &bin).unwrap();
         lucyd
     }
 
     fn dispatched(&self) -> Vec<String> {
         self.dispatched.lock().unwrap().clone()
     }
+}
+
+fn fake_commands(bin: &Path) {
+    std::fs::create_dir(bin).unwrap();
+    for command in [
+        "omarchy-hyprland-workspace-layout-current",
+        "omarchy-hyprland-workspace-layout-toggle",
+    ] {
+        write_executable(&bin.join(command), "#!/bin/sh\necho dwindle\n");
+    }
+    write_executable(
+        &bin.join("omarchy-toggle-bar"),
+        "#!/bin/sh\n\
+         echo \"$*\" >> \"$LUCY_PLUGIN_STATE_DIR/bar\"\n\
+         for file in omarchy-theme-set.lock lucy/probe hypr/probe probe; do\n\
+         \x20 echo x 2>/dev/null > \"$XDG_RUNTIME_DIR/$file\" && echo $file >> \"$LUCY_PLUGIN_STATE_DIR/wrote\"\n\
+         done\n\
+         true\n",
+    );
+}
+
+fn recorded(lucyd: &Harness, name: &str) -> String {
+    std::fs::read_to_string(lucyd.state_dir().join("plugins/omarchy").join(name))
+        .unwrap_or_default()
 }
 
 fn write_executable(path: &Path, script: &str) {
@@ -121,7 +127,7 @@ fn write_executable(path: &Path, script: &str) {
     assert!(writer.wait().unwrap().success());
 }
 
-fn install_omarchy(lucyd: &Harness) {
+fn install_omarchy(lucyd: &Harness) -> PathBuf {
     let manifest = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../lucy-omarchy/manifest.toml"),
     )
@@ -133,6 +139,7 @@ fn install_omarchy(lucyd: &Harness) {
         .status()
         .unwrap();
     assert!(copied.success());
+    folder
 }
 
 fn in_a_session(lucyd: &Harness) -> Client {
@@ -229,7 +236,24 @@ fn a_settings_call_runs_omarchys_command_in_the_sandbox_without_a_confirmation()
         .unwrap();
 
     assert_eq!(result.is_error, Some(false), "{result:?}");
-    assert_eq!(desktop.bar_toggles(), "on\n");
+    assert_eq!(recorded(&lucyd, "bar"), "on\n");
+}
+
+#[test]
+fn omarchys_commands_take_their_locks_but_write_nowhere_else_in_the_runtime_dir() {
+    let desktop = Omarchy::new();
+    let runtime = desktop.dir.path();
+    std::fs::write(runtime.join("omarchy-theme-set.lock"), "").unwrap();
+    std::fs::create_dir(runtime.join("lucy")).unwrap();
+    let lucyd = desktop.lucyd();
+    let _events = in_a_session(&lucyd);
+
+    lucyd
+        .thinking
+        .call_tool_with("omarchy__bar", json!({"action": "hide"}))
+        .unwrap();
+
+    assert_eq!(recorded(&lucyd, "wrote"), "omarchy-theme-set.lock\n");
 }
 
 #[test]
@@ -265,8 +289,9 @@ fn a_force_quit_declined_leaves_the_window_alone() {
 #[test]
 fn on_another_desktop_it_is_left_out_quietly() {
     let desktop = Omarchy::new();
-    let bin = desktop.bin();
-    let lucyd = Harness::with_env(&[("PATH", &bin)]);
+    let bin = desktop.dir.path().join("bin");
+    fake_commands(&bin);
+    let lucyd = Harness::with_env(&[("PATH", &bin.display().to_string())]);
     install_omarchy(&lucyd);
     let _events = in_a_session(&lucyd);
 

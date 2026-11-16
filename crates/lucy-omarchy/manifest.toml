@@ -69,14 +69,22 @@ handles = "locking the screen, or keeping the computer awake"
 examples = ["lock the screen", "keep the computer awake"]
 
 [access]
-# $XDG_RUNTIME_DIR holds Hyprland's IPC socket, the Omarchy shell's (which
-# locks the screen) and Omarchy's theme lock. Landlock in v0.1 doesn't confine
-# connecting to a socket. Omarchy's commands keep their state (layouts,
-# themes, toggles) under ~/.local/state/omarchy and caches under
-# ~/.cache/omarchy, read their themes and language from ~/.config/omarchy, and
-# save screenshots in ~/Pictures. The night light checks whether hyprsunset is
-# running through /proc.
-write = ["$XDG_RUNTIME_DIR", "~/.local/state/omarchy", "~/.cache/omarchy", "~/Pictures"]
+# omarchy-theme-set takes these locks in $XDG_RUNTIME_DIR, each only once it
+# exists there (Omarchy makes it on the first theme change after login). The
+# rest of $XDG_RUNTIME_DIR, Hyprland's and the Omarchy shell's sockets
+# included, stays out: Landlock in v0.1 doesn't confine connecting to a socket.
+# Omarchy's commands keep their state (layouts, themes, toggles) under
+# ~/.local/state/omarchy and caches under ~/.cache/omarchy, read their themes
+# and language from ~/.config/omarchy, and save screenshots in ~/Pictures. The
+# night light checks whether hyprsunset is running through /proc.
+write = [
+    "$XDG_RUNTIME_DIR/omarchy-theme-set.lock",
+    "$XDG_RUNTIME_DIR/omarchy-theme-set-retint.lock",
+    "$XDG_RUNTIME_DIR/omarchy-theme-set-herdr-machines.lock",
+    "~/.local/state/omarchy",
+    "~/.cache/omarchy",
+    "~/Pictures",
+]
 read = ["~/.config/omarchy", "~/.config/user-dirs.dirs", "/proc"]
 commands = [
     "omarchy-capture-screenshot",
