@@ -34,8 +34,8 @@ pub struct Snapshot {
     fast: Choice<String>,
     advanced: Choice<String>,
     stt: Choice<Option<String>>,
-    mic: Choice<String>,
-    speaker: Choice<String>,
+    mic: DeviceChoice,
+    speaker: DeviceChoice,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -55,18 +55,42 @@ impl<T> Choice<T> {
     }
 }
 
+#[derive(Debug, PartialEq, Serialize)]
+struct DeviceChoice {
+    key: String,
+    current: String,
+    options: Vec<String>,
+    labels: Vec<String>,
+}
+
+impl DeviceChoice {
+    fn new(key: Key, current: String, listed: &devices::Listed) -> DeviceChoice {
+        let (options, labels) = listed
+            .choices(&current)
+            .into_iter()
+            .map(|device| (device.name, device.label))
+            .unzip();
+        DeviceChoice {
+            key: key.to_string(),
+            current,
+            options,
+            labels,
+        }
+    }
+}
+
 /// The microphones and speakers PipeWire has.
 pub struct Devices {
-    mics: Vec<String>,
-    speakers: Vec<String>,
+    mics: devices::Listed,
+    speakers: devices::Listed,
 }
 
 impl Devices {
     /// The devices `pactl` lists now.
     pub fn list(env: &Env) -> Devices {
         Devices {
-            mics: devices::names(env, Kind::Mic),
-            speakers: devices::names(env, Kind::Speaker),
+            mics: devices::list(env, Kind::Mic),
+            speakers: devices::list(env, Kind::Speaker),
         }
     }
 }
@@ -76,11 +100,6 @@ impl Snapshot {
     pub fn of(env: &Env, status: Option<&Status>, devices: &Devices) -> Snapshot {
         let config = lucy_config::load(&env.config).unwrap_or_default();
         let providers: Vec<String> = config.providers.keys().cloned().collect();
-        let device = |key, current: String, names: &[String]| {
-            let mut options = vec!["default".to_owned()];
-            options.extend_from_slice(names);
-            Choice::new(key, current, options)
-        };
         Snapshot {
             state: state(env, status),
             wake_word: titled(&config.wake_word.word()),
@@ -95,8 +114,8 @@ impl Snapshot {
                 providers,
             ),
             stt: stt(env, &config),
-            mic: device(Key::Mic, config.audio.mic.clone(), &devices.mics),
-            speaker: device(
+            mic: DeviceChoice::new(Key::Mic, config.audio.mic.clone(), &devices.mics),
+            speaker: DeviceChoice::new(
                 Key::Speaker,
                 config.audio.speaker.clone(),
                 &devices.speakers,
@@ -211,7 +230,8 @@ fn watch_devices(env: &Env, changes: &Sender<Change>) {
     for event in events.lines().map_while(Result::ok) {
         let gained_or_lost = event.contains("'new'") || event.contains("'remove'");
         let device = event.contains(" source ") || event.contains(" sink ");
-        if gained_or_lost && device && changes.send(Change::Devices).is_err() {
+        let new_default = event.contains("'change' on server");
+        if ((gained_or_lost && device) || new_default) && changes.send(Change::Devices).is_err() {
             return;
         }
     }

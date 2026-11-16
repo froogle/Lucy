@@ -136,11 +136,13 @@ fn tools(home: &Home) {
         "systemctl",
         "case \"$2\" in cat|is-enabled) exit 1;; esac; exit 0",
     );
-    home.fake(
-        "pactl",
-        "case \"$3\" in \
-         sources) printf '1\\talsa_input.usb-Yeti\\tPipeWire\\n2\\talsa_output.hdmi.monitor\\tPipeWire\\n';; \
-         sinks) printf '1\\talsa_output.hdmi\\tPipeWire\\n';; esac",
+    home.fake_pactl(
+        &[
+            ("alsa_input.usb-Yeti", "Yeti Analog Stereo"),
+            ("alsa_output.hdmi.monitor", "Monitor of HDMI Digital Stereo"),
+        ],
+        &[("alsa_output.hdmi", "HDMI Digital Stereo")],
+        ("alsa_input.usb-Yeti", "alsa_output.hdmi"),
     );
 }
 
