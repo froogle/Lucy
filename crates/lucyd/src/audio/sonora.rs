@@ -67,6 +67,8 @@ pub struct Sonora {
     render: [f32; FRAME_LEN],
     scratch: [f32; FRAME_LEN],
     frames: usize,
+    /// Reference frames that arrived since the stats were last read.
+    rendered: usize,
     erle_db: Option<f32>,
     echo: EchoMeter,
     pre_gain: PreGain,
@@ -91,6 +93,7 @@ impl Sonora {
             render: [0.0; FRAME_LEN],
             scratch: [0.0; FRAME_LEN],
             frames: 0,
+            rendered: 0,
             erle_db: None,
             echo: EchoMeter::default(),
             pre_gain: PreGain::default(),
@@ -118,6 +121,7 @@ impl EchoCanceller for Sonora {
             self.render[first.len()..].copy_from_slice(second);
             chunk.commit_all();
             *played.get_or_insert(0.0) += power(&self.render);
+            self.rendered += 1;
             let _ = self
                 .apm
                 .process_render_f32(&[&self.render], &mut [&mut self.scratch]);
@@ -137,6 +141,7 @@ impl EchoCanceller for Sonora {
         let gain = 10f32.powf(self.gain_db() / 10.0);
         self.echo.push(mic, power(frame) / gain, played);
         if let Some(gain_db) = self.pre_gain.push(mic, !self.echo.lucy_speaking()) {
+            log::debug!("canceller: pre-gain now {gain_db:.1} dB");
             self.apm
                 .set_capture_pre_gain(10f32.powf(gain_db as f32 / 20.0));
         }
@@ -144,6 +149,17 @@ impl EchoCanceller for Sonora {
         if self.frames.is_multiple_of(STATS_EVERY) {
             let erle = self.apm.statistics().echo_return_loss_enhancement;
             self.erle_db = erle.map(|erle| erle as f32);
+            if self.echo.lucy_speaking() {
+                log::debug!(
+                    "canceller: pre_gain_db={:.1} erle_db={:?} echo_heard={:?} \
+                     reference_frames={}/{STATS_EVERY}",
+                    self.gain_db(),
+                    self.erle_db,
+                    self.echo.heard,
+                    self.rendered,
+                );
+            }
+            self.rendered = 0;
         }
     }
 

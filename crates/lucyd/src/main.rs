@@ -9,6 +9,8 @@ use lucyd::superwhisper::Superwhisper;
 use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
+    // Silent unless RUST_LOG asks, e.g. `lucyd=debug` for the Barge-in gate.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("off")).init();
     let config_path = lucy_config::default_path();
     // Read again at each Session start. Only Whisper's settings, and
     // whether it is needed, are used from this first read, since its model
