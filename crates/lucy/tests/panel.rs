@@ -22,22 +22,20 @@ advanced = \"codex-fast\"\n\n\
 [audio]\n\
 mic = \"alsa_input.usb-Yeti\"\n";
 
-const SOURCES: &str = "60\talsa_input.usb-Yeti\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n\
-77\talsa_output.hdmi.monitor\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n";
-const SINKS: &str = "61\talsa_output.hdmi\tPipeWire\ts16le 2ch 48000Hz\tIDLE\n";
-
 fn home(active: &str) -> Home {
     let home = Home::without_lucyd();
     systemd_says(&home, active, Duration::ZERO);
     std::fs::write(home.config_path(), CONFIGURED).unwrap();
-    home.fake(
-        "pactl",
-        &format!(
-            "case \"$1 $3\" in \
-             'list sources') printf '{SOURCES}';; \
-             'list sinks') printf '{SINKS}';; \
-             esac"
-        ),
+    home.fake_pactl(
+        &[
+            (
+                "alsa_input.usb-Yeti",
+                "Yeti Stereo Microphone Analog Stereo",
+            ),
+            ("alsa_output.hdmi.monitor", "Monitor of HDMI Digital Stereo"),
+        ],
+        &[("alsa_output.hdmi", "HDMI Digital Stereo")],
+        ("alsa_input.usb-Yeti", "alsa_output.hdmi"),
     );
     home
 }
@@ -310,14 +308,119 @@ fn with_lucyd_stopped_the_snapshot_says_so_and_still_lists_every_choice() {
                 "key": "audio.mic",
                 "current": "alsa_input.usb-Yeti",
                 "options": ["default", "alsa_input.usb-Yeti"],
+                "labels": [
+                    "Default (Yeti Stereo Microphone Analog Stereo)",
+                    "Yeti Stereo Microphone Analog Stereo",
+                ],
             },
             "speaker": {
                 "key": "audio.speaker",
                 "current": "default",
                 "options": ["default", "alsa_output.hdmi"],
+                "labels": ["Default (HDMI Digital Stereo)", "HDMI Digital Stereo"],
             },
         })
     );
+}
+
+#[test]
+fn devices_are_labelled_by_description_numbered_when_equal_and_marked_when_missing() {
+    let home = home("inactive");
+    home.fake_pactl(
+        &[
+            ("alsa_input.usb-B", "USB Mic Mono"),
+            ("alsa_input.usb-A", "USB Mic Mono"),
+            ("alsa_input.pci-analog", "Built-in Analog Stereo"),
+        ],
+        &[("alsa_output.usb-Pebble", "Pebble V3 Analog Stereo")],
+        ("alsa_input.usb-B", "alsa_output.usb-Pebble"),
+    );
+    std::fs::write(
+        home.config_path(),
+        "[audio]\nmic = \"alsa_input.usb-A\"\nspeaker = \"alsa_output.usb-Gone\"\n",
+    )
+    .unwrap();
+
+    let snapshot = snapshot(&home);
+
+    assert_eq!(
+        snapshot["mic"],
+        json!({
+            "key": "audio.mic",
+            "current": "alsa_input.usb-A",
+            "options": ["default", "alsa_input.usb-B", "alsa_input.usb-A", "alsa_input.pci-analog"],
+            "labels": [
+                "Default (USB Mic Mono (2))",
+                "USB Mic Mono (2)",
+                "USB Mic Mono (1)",
+                "Built-in Analog Stereo",
+            ],
+        })
+    );
+    assert_eq!(
+        snapshot["speaker"],
+        json!({
+            "key": "audio.speaker",
+            "current": "alsa_output.usb-Gone",
+            "options": ["default", "alsa_output.usb-Pebble", "alsa_output.usb-Gone"],
+            "labels": [
+                "Default (Pebble V3 Analog Stereo)",
+                "Pebble V3 Analog Stereo",
+                "alsa_output.usb-Gone (not connected)",
+            ],
+        })
+    );
+}
+
+#[test]
+fn following_relabels_the_default_when_the_system_default_changes() {
+    let home = home("inactive");
+    let bin = home.bin();
+    let default = bin.join("default-source");
+    let changed = bin.join("changed");
+    assert!(std::process::Command::new("mkfifo")
+        .arg(&changed)
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(&default, "alsa_input.usb-A\n").unwrap();
+    let sources = json!([
+        {"name": "alsa_input.usb-A", "description": "Mic A"},
+        {"name": "alsa_input.usb-B", "description": "Mic B"},
+    ]);
+    home.fake(
+        "pactl",
+        &format!(
+            "case \"$*\" in \
+             '-f json list sources') printf '%s' '{sources}';; \
+             '-f json list sinks') echo '[]';; \
+             get-default-source) read name < '{default}'; echo \"$name\";; \
+             subscribe) read _ < '{changed}'; \
+               echo \"Event 'change' on server #4294967295\";; \
+             esac",
+            default = default.display(),
+            changed = changed.display(),
+        ),
+    );
+    let follow = Follow::start(&home);
+    assert_eq!(follow.next()["mic"]["labels"][0], "Default (Mic A)");
+
+    std::fs::write(&default, "alsa_input.usb-B\n").unwrap();
+    std::fs::write(&changed, "\n").unwrap();
+
+    assert_eq!(follow.next()["mic"]["labels"][0], "Default (Mic B)");
+}
+
+#[test]
+fn choosing_a_device_writes_its_node_name() {
+    let home = home("inactive");
+
+    let output = home.lucy(&["set", "audio.speaker", "alsa_output.hdmi"], &[]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let parsed = lucy_config::load(&home.config_path()).unwrap();
+    assert_eq!(parsed.audio.speaker, "alsa_output.hdmi");
+    assert_eq!(snapshot(&home)["speaker"]["current"], "alsa_output.hdmi");
 }
 
 #[test]

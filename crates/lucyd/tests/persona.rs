@@ -30,6 +30,22 @@ fn a_missing_persona_is_created_with_the_default_and_given_to_the_model() {
 }
 
 #[test]
+fn the_default_persona_keeps_greetings_and_goodbyes_to_a_word_or_two() {
+    let lucyd = Harness::first_run();
+
+    introduce(&lucyd);
+
+    let instructions = lucyd.thinking.instructions();
+    let rule = instructions
+        .lines()
+        .find(|line| line.contains("only greets you"))
+        .unwrap_or_else(|| panic!("no greeting rule in {instructions}"));
+    assert!(rule.contains("word or two"), "{rule}");
+    assert!(rule.contains("goodbye"), "{rule}");
+    assert!(rule.contains("end_session"), "{rule}");
+}
+
+#[test]
 fn the_default_persona_names_no_one_until_told() {
     let lucyd = Harness::first_run();
 
