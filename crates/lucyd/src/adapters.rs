@@ -337,6 +337,8 @@ pub trait Launcher: Send + Sync {
     /// Starts the app whose desktop entry is at `entry`, through `launcher`
     /// (`[desktop] launcher`, with the entry's path appended) if it is set.
     fn launch(&self, entry: &Path, launcher: Option<&[String]>) -> io::Result<()>;
+    /// Runs `command` in a new window of the user's terminal.
+    fn open_terminal(&self, command: &[String]) -> io::Result<()>;
 }
 
 pub struct Adapters {
@@ -490,6 +492,10 @@ impl Launcher for Inert {
     }
 
     fn launch(&self, _entry: &Path, _launcher: Option<&[String]>) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn open_terminal(&self, _command: &[String]) -> io::Result<()> {
         Ok(())
     }
 }

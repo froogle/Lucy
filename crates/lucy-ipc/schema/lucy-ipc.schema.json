@@ -39,6 +39,55 @@
       ],
       "type": "object"
     },
+    "Field": {
+      "description": "One box in the Input dialog.",
+      "properties": {
+        "choices": {
+          "description": "The options to pick from, for `choice`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": {
+          "description": "What to type in it, if the question alone doesn't say.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/FieldKind"
+        },
+        "name": {
+          "description": "Its key in `input.answer`'s `values`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FieldKind": {
+      "description": "What a field takes.",
+      "oneOf": [
+        {
+          "enum": [
+            "text",
+            "url",
+            "number"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "choice",
+          "description": "One of the field's `choices`.",
+          "type": "string"
+        }
+      ]
+    },
     "Hello": {
       "description": "Params of `hello`, the first request on every connection.",
       "properties": {
@@ -88,6 +137,75 @@
       "required": [
         "protocol",
         "server"
+      ],
+      "type": "object"
+    },
+    "InputAnswer": {
+      "description": "Params of `input.answer`, from the `input` holder only: what the user\ntyped. It never goes out on the socket.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Each field's value, by its name.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "values"
+      ],
+      "type": "object"
+    },
+    "InputCancel": {
+      "description": "Params of `input.cancel`, from the `input` holder only: the user closed\nthe Input dialog without answering.",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "InputClose": {
+      "description": "Params of the `input.close` event: take the Input dialog away, unanswered.",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "InputOpen": {
+      "description": "Params of the `input.open` event, sent to the `input` holder only: show\nthe Input dialog.",
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/Field"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "Names this dialog in `input.answer`, `input.cancel` and `input.close`.",
+          "type": "string"
+        },
+        "message": {
+          "description": "The question, written by the tool or Plugin that asks it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "message",
+        "fields"
       ],
       "type": "object"
     },
@@ -342,6 +460,11 @@
           "const": "indicator",
           "description": "Draws the Indicator. While no client holds it, lucyd uses notifications.",
           "type": "string"
+        },
+        {
+          "const": "input",
+          "description": "Draws the Input dialog. One client holds it, the first to claim it;\nwhile none does, lucyd opens `lucy input` in a terminal.",
+          "type": "string"
         }
       ]
     },
@@ -400,6 +523,11 @@
         {
           "const": "confirming",
           "description": "A tool call waits for the user's spoken yes.",
+          "type": "string"
+        },
+        {
+          "const": "typing",
+          "description": "The Input dialog is open: Lucy waits for the user to type.",
           "type": "string"
         },
         {
@@ -532,6 +660,16 @@
   "description": "Newline-delimited JSON-RPC 2.0 on $XDG_RUNTIME_DIR/lucy/lucyd.sock. Send hello first. Within a major protocol version, fields are only ever added.",
   "title": "lucyd public IPC, protocol 1",
   "x-events": {
+    "input.close": {
+      "params": {
+        "$ref": "#/$defs/InputClose"
+      }
+    },
+    "input.open": {
+      "params": {
+        "$ref": "#/$defs/InputOpen"
+      }
+    },
     "level": {
       "params": {
         "$ref": "#/$defs/LevelEvent"
@@ -568,6 +706,22 @@
       },
       "result": {
         "$ref": "#/$defs/HelloResult"
+      }
+    },
+    "input.answer": {
+      "params": {
+        "$ref": "#/$defs/InputAnswer"
+      },
+      "result": {
+        "type": "object"
+      }
+    },
+    "input.cancel": {
+      "params": {
+        "$ref": "#/$defs/InputCancel"
+      },
+      "result": {
+        "type": "object"
       }
     },
     "plugins.list": {

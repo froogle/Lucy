@@ -22,6 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::adapters::Relay;
 use crate::authoring::{self, Authoring, Build};
 use crate::desktop::Desktop;
+use crate::input;
 use crate::persona::Persona;
 use crate::plugins::{self, SessionTools};
 use crate::runner::Command;
@@ -317,6 +318,7 @@ impl ServerHandler for Tools {
                     update_persona_tool(),
                     plugins::manage_plugin_tool(),
                     authoring::request_plugin_tool(),
+                    input::ask_typed_tool(),
                 ],
                 Desktop::tools(),
                 plugins.list(),
@@ -346,6 +348,7 @@ impl ServerHandler for Tools {
             "update_persona" => Ok(self.update_persona(&request).into()),
             "manage_plugin" => Ok(plugins.manage(&arguments).await.into()),
             "request_plugin" => Ok(self.authoring.request(&arguments).into()),
+            "ask_typed" => Ok(input::ask_typed(&self.commands, &arguments).await.into()),
             name => {
                 if let Some(result) = desktop.call(name, &arguments).await {
                     return Ok(result.into());

@@ -1,12 +1,13 @@
 //! The Session state machine: pure and I/O-free. The runner feeds it inputs
 //! and carries out the outputs it returns.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use lucy_ipc::State;
 
 use crate::adapters::ThinkingEvent;
 use crate::authoring::Building;
+use crate::input::{Dialog, Typed};
 use crate::model_text::INTERRUPTED;
 
 pub enum Input {
@@ -42,6 +43,9 @@ pub enum Input {
     /// What Authoring is doing now. While a build works, the Session stays
     /// open in Listening.
     Building(Building),
+    /// The Input dialog's holder sent back what the user typed, or that
+    /// they closed it.
+    Typed(Typed),
 }
 
 /// Something Lucy asks the user in the middle of a tool call.
@@ -60,6 +64,9 @@ pub enum Expects {
     Words,
     /// A yes, as one of the yes-phrases, or else any words.
     YesOrWords,
+    /// What the user types in the Input dialog (Typing). Of what is said,
+    /// only a cancel phrase counts.
+    Typed(Dialog),
 }
 
 /// How the user answered a `Question`.
@@ -71,6 +78,12 @@ pub enum Answer {
     Said(String),
     /// Nothing, to a question that expects words.
     Silence,
+    /// Each field's value, typed in the Input dialog.
+    Typed(BTreeMap<String, String>),
+    /// The Input dialog was closed unanswered.
+    Cancelled,
+    /// The Input dialog went unanswered for too long.
+    TimedOut,
 }
 
 /// Said after any answer to a Confirmation but a yes.
@@ -137,6 +150,8 @@ pub struct Session {
     /// What the question being asked expects, while Confirming.
     asking: Option<Expects>,
     yes_phrases: Vec<String>,
+    /// What closes the Input dialog by voice.
+    cancel_phrases: Vec<String>,
     /// What Authoring is doing.
     building: Building,
 }
@@ -155,8 +170,15 @@ impl Session {
         self.speech_barges_in = on;
     }
 
+    /// Lets `phrases` close the Input dialog.
+    pub fn hear_cancel_phrases(&mut self, phrases: Vec<String>) {
+        self.cancel_phrases = phrases;
+    }
+
     pub fn state(&self) -> State {
-        if self.asking.is_some() {
+        if matches!(self.asking, Some(Expects::Typed(_))) {
+            State::Typing
+        } else if self.asking.is_some() {
             State::Confirming
         } else if !self.queued.is_empty() {
             State::Speaking
@@ -186,9 +208,12 @@ impl Session {
     }
 
     /// The wait for an answer counts once the question has been said, and
-    /// not while the user is speaking or their reply is being transcribed.
+    /// not while the user is speaking or their reply is being transcribed,
+    /// unless it is typed.
     pub fn answer_timer_runs(&self) -> bool {
-        self.asking.is_some() && self.queued.is_empty() && !self.transcribing && !self.speaking
+        let said = self.asking.is_some() && self.queued.is_empty();
+        let typed = self.state() == State::Typing;
+        said && (typed || !self.transcribing && !self.speaking)
     }
 
     pub fn handle(&mut self, input: Input) -> Vec<Output> {
@@ -209,8 +234,10 @@ impl Session {
             }
             // While Confirming, a reply spoken over the question counts.
             Input::Speech
-                if matches!(self.state(), State::Listening | State::Confirming)
-                    && !self.transcribing =>
+                if matches!(
+                    self.state(),
+                    State::Listening | State::Confirming | State::Typing
+                ) && !self.transcribing =>
             {
                 self.transcribing = true;
                 vec![Output::Transcribe]
@@ -237,11 +264,19 @@ impl Session {
                     if text.is_empty() {
                         return vec![];
                     }
-                    let yes = is_yes(text, &self.yes_phrases);
+                    if let Expects::Typed(_) = expects {
+                        if is_one_of(text, &self.cancel_phrases) {
+                            return self.answered(Answer::Cancelled);
+                        }
+                        // Someone else in the room.
+                        return vec![];
+                    }
+                    let yes = is_one_of(text, &self.yes_phrases);
                     let answer = match expects {
                         Expects::Yes | Expects::YesOrWords if yes => Answer::Yes,
                         Expects::Yes => Answer::No,
                         Expects::Words | Expects::YesOrWords => Answer::Said(text.to_owned()),
+                        Expects::Typed(_) => unreachable!("handled above"),
                     };
                     return self.answered(answer);
                 }
@@ -270,6 +305,10 @@ impl Session {
             // Say sorry; a second failure in a row ends the Session.
             Input::TranscribeFailed => {
                 self.transcribing = false;
+                // Only a cancel phrase could have counted.
+                if self.state() == State::Typing {
+                    return vec![];
+                }
                 // An answer that couldn't be heard isn't a yes.
                 if let Some(answer) = self.unheard() {
                     let mut outputs = vec![Output::Error];
@@ -362,6 +401,11 @@ impl Session {
                 self.building = building;
                 vec![]
             }
+            Input::Typed(typed) if self.state() == State::Typing => self.answered(match typed {
+                Typed::Values(values) => Answer::Typed(values),
+                Typed::Cancelled => Answer::Cancelled,
+            }),
+            Input::Typed(_) => vec![],
         }
     }
 
@@ -391,6 +435,7 @@ impl Session {
         match self.asking {
             Some(Expects::Yes) => Some(Answer::No),
             Some(Expects::Words | Expects::YesOrWords) => Some(Answer::Silence),
+            Some(Expects::Typed(_)) => Some(Answer::TimedOut),
             None => None,
         }
     }
@@ -438,8 +483,8 @@ fn push_sentence(heard: &mut String, sentence: &str) {
     heard.push_str(sentence);
 }
 
-/// Whether `reply` is a clear yes: one of `phrases`.
-fn is_yes(reply: &str, phrases: &[String]) -> bool {
+/// Whether the whole of `reply` is one of `phrases`.
+fn is_one_of(reply: &str, phrases: &[String]) -> bool {
     phrases.iter().any(|phrase| is_phrase(reply, phrase))
 }
 
@@ -503,16 +548,16 @@ mod tests {
 
     #[test]
     fn a_yes_phrase_counts_whatever_its_case_and_punctuation() {
-        assert!(is_yes("Yes.", &yes_phrases()));
-        assert!(is_yes("  Go ahead!", &yes_phrases()));
-        assert!(is_yes("yep", &yes_phrases()));
+        assert!(is_one_of("Yes.", &yes_phrases()));
+        assert!(is_one_of("  Go ahead!", &yes_phrases()));
+        assert!(is_one_of("yep", &yes_phrases()));
     }
 
     #[test]
     fn anything_but_a_whole_yes_phrase_is_not_a_yes() {
-        assert!(!is_yes("yes but not to Bob", &yes_phrases()));
-        assert!(!is_yes("no", &yes_phrases()));
-        assert!(!is_yes("yesterday", &yes_phrases()));
-        assert!(!is_yes("...", &yes_phrases()));
+        assert!(!is_one_of("yes but not to Bob", &yes_phrases()));
+        assert!(!is_one_of("no", &yes_phrases()));
+        assert!(!is_one_of("yesterday", &yes_phrases()));
+        assert!(!is_one_of("...", &yes_phrases()));
     }
 }

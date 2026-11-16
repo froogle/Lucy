@@ -47,8 +47,8 @@ fn main() -> ExitCode {
                 building: status.building,
             },
             Ok(Event::Level(level)) => Update::Level(level.rms),
-            // Not subscribed to.
-            Ok(Event::PluginsChanged(_)) => continue,
+            // Not subscribed to, or for the `input` role only.
+            Ok(Event::PluginsChanged(_) | Event::InputOpen(_) | Event::InputClose(_)) => continue,
             Err(e) => Update::Lost(e.to_string()),
         };
         let lost = matches!(update, Update::Lost(_));

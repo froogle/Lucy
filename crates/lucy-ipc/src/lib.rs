@@ -9,6 +9,7 @@
 mod client;
 mod schema;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -53,6 +54,13 @@ pub mod error_code {
     pub const NO_MICROPHONE: i64 = -32012;
     /// `test.wake_word`, but the wake-word engine is off.
     pub const WAKE_WORD_OFF: i64 = -32013;
+    /// `hello` claimed a role another client holds.
+    pub const ROLE_TAKEN: i64 = -32014;
+    /// `input.answer` or `input.cancel` from a client without the `input`
+    /// role.
+    pub const NOT_INPUT_HOLDER: i64 = -32015;
+    /// `input.answer` or `input.cancel` named no open Input dialog.
+    pub const NO_DIALOG: i64 = -32016;
 }
 
 /// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
@@ -88,6 +96,9 @@ pub struct Hello {
 pub enum Role {
     /// Draws the Indicator. While no client holds it, lucyd uses notifications.
     Indicator,
+    /// Draws the Input dialog. One client holds it, the first to claim it;
+    /// while none does, lucyd opens `lucy input` in a terminal.
+    Input,
 }
 
 /// Result of `hello`.
@@ -125,6 +136,8 @@ pub enum State {
     Speaking,
     /// A tool call waits for the user's spoken yes.
     Confirming,
+    /// The Input dialog is open: Lucy waits for the user to type.
+    Typing,
     /// Something went wrong. Transient: the next state follows straight after.
     Error,
 }
@@ -203,6 +216,64 @@ pub enum Topic {
     Level,
     /// `plugins.changed` events.
     Plugins,
+}
+
+/// Params of the `input.open` event, sent to the `input` holder only: show
+/// the Input dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputOpen {
+    /// Names this dialog in `input.answer`, `input.cancel` and `input.close`.
+    pub id: String,
+    /// The question, written by the tool or Plugin that asks it.
+    pub message: String,
+    pub fields: Vec<Field>,
+}
+
+/// One box in the Input dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Field {
+    /// Its key in `input.answer`'s `values`.
+    pub name: String,
+    /// What to type in it, if the question alone doesn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub kind: FieldKind,
+    /// The options to pick from, for `choice`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+}
+
+/// What a field takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldKind {
+    Text,
+    Url,
+    Number,
+    /// One of the field's `choices`.
+    Choice,
+}
+
+/// Params of the `input.close` event: take the Input dialog away, unanswered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputClose {
+    pub id: String,
+}
+
+/// Params of `input.answer`, from the `input` holder only: what the user
+/// typed. It never goes out on the socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputAnswer {
+    pub id: String,
+    /// Each field's value, by its name.
+    pub values: BTreeMap<String, String>,
+}
+
+/// Params of `input.cancel`, from the `input` holder only: the user closed
+/// the Input dialog without answering.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputCancel {
+    pub id: String,
 }
 
 /// Params of the `state` event: the new status.
@@ -356,4 +427,8 @@ pub enum Event {
     Level(LevelEvent),
     #[serde(rename = "plugins.changed")]
     PluginsChanged(PluginsChanged),
+    #[serde(rename = "input.open")]
+    InputOpen(InputOpen),
+    #[serde(rename = "input.close")]
+    InputClose(InputClose),
 }
