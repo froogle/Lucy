@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use lucy::menu::Open;
 pub use lucy::ui::Script;
@@ -231,6 +234,85 @@ impl Home {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         command
+    }
+
+    pub fn parented(&self, args: &[&str], stdin: ParentStdin) -> Parented {
+        let lucy = self.command(args);
+        let mut bash = Command::new("/bin/bash");
+        bash.arg("-c")
+            .arg(stdin.script())
+            .arg("bash")
+            .arg(lucy.get_program())
+            .args(lucy.get_args())
+            .env_clear()
+            .envs(
+                lucy.get_envs()
+                    .filter_map(|(name, value)| Some((name, value?))),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut parent = bash.spawn().unwrap();
+        let stdout = BufReader::new(parent.stdout.take().unwrap());
+        let (send, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in stdout.lines().map_while(Result::ok) {
+                let _ = send.send(line);
+            }
+        });
+        Parented { parent, lines }
+    }
+}
+
+pub enum ParentStdin {
+    Null,
+    Held,
+}
+
+impl ParentStdin {
+    fn script(&self) -> &'static str {
+        match self {
+            ParentStdin::Null => r#""$@" </dev/null & wait"#,
+            ParentStdin::Held => r#"exec 3>&1; coproc "$@" >&3; wait"#,
+        }
+    }
+}
+
+pub struct Parented {
+    parent: Child,
+    lines: Receiver<String>,
+}
+
+const SOON: Duration = Duration::from_secs(10);
+
+impl Parented {
+    pub fn next(&self) -> serde_json::Value {
+        let line = self.lines.recv_timeout(SOON).expect("a line within 10 s");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    pub fn kill_parent(&mut self) {
+        self.parent.kill().unwrap();
+        self.parent.wait().unwrap();
+    }
+
+    pub fn exits_soon(&self) -> bool {
+        let deadline = Instant::now() + SOON;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Disconnected) => return true,
+                Err(RecvTimeoutError::Timeout) => return false,
+            }
+        }
+    }
+}
+
+impl Drop for Parented {
+    fn drop(&mut self) {
+        let _ = self.parent.kill();
+        let _ = self.parent.wait();
     }
 }
 

@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use support::{read, stderr, stdout, Home};
+use support::{read, stderr, stdout, Home, ParentStdin};
 
 const CONFIGURED: &str = "# My Lucy, tuned by hand.\n\n\
 [providers.claude-fast]\n\
@@ -477,4 +477,15 @@ fn lucy_service_fails_plainly_when_systemd_refuses() {
         "{}",
         stderr(&output)
     );
+}
+
+#[test]
+fn following_ends_when_the_bar_that_ran_it_goes() {
+    let home = home("inactive");
+    let mut bar = home.parented(&["status", "--follow", "--json"], ParentStdin::Null);
+    assert_eq!(bar.next()["state"], "stopped");
+
+    bar.kill_parent();
+
+    assert!(bar.exits_soon());
 }

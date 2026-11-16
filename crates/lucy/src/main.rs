@@ -17,6 +17,7 @@ use lucy::ui::{Console, Ui};
 use lucy::Env;
 use lucy_ipc::{Client, State, Topic};
 use ratatui::DefaultTerminal;
+use rustix::process::{self, Signal};
 
 const OS_RELEASE: &str = "/etc/os-release";
 
@@ -226,6 +227,15 @@ fn input(socket: Option<PathBuf>, json: bool) -> ExitCode {
     full_screen_page("lucy input", Open::Input, &env)
 }
 
+fn end_with_parent() {
+    let parent = process::getppid();
+    process::set_parent_process_death_signal(Some(Signal::TERM))
+        .expect("Linux sends a signal when the parent dies");
+    if process::getppid() != parent {
+        std::process::exit(0);
+    }
+}
+
 fn connect() -> Result<Client, lucy_ipc::Error> {
     let path = lucy_ipc::default_socket_path().ok_or(lucy_ipc::Error::NotRunning)?;
     Client::connect(&path, "lucy", None)
@@ -253,6 +263,7 @@ fn snapshot(follow: bool) -> ExitCode {
     let env = Env::of_process(Path::new(OS_RELEASE));
     let mut stdout = std::io::stdout().lock();
     if follow {
+        end_with_parent();
         let _reader_gone = panel::follow(&env, &mut stdout);
         return ExitCode::SUCCESS;
     }
