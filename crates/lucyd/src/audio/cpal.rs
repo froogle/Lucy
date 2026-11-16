@@ -65,7 +65,9 @@ impl Drop for StopOnDrop {
 pub(crate) fn is_device_lost(e: &cpal::Error) -> bool {
     matches!(
         e.kind(),
-        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::HostUnavailable
+        cpal::ErrorKind::StreamInvalidated
+            | cpal::ErrorKind::DeviceNotAvailable
+            | cpal::ErrorKind::HostUnavailable
     )
 }
 
@@ -139,4 +141,27 @@ pub(crate) fn find(direction: Direction, name: &str) -> Result<cpal::Device, Str
         }
     }
     default.ok_or_else(|| format!("there is no {what}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use cpal::ErrorKind;
+
+    use super::is_device_lost;
+
+    fn lost(kind: ErrorKind) -> bool {
+        is_device_lost(&cpal::Error::new(kind))
+    }
+
+    #[test]
+    fn a_stream_that_lost_its_device_counts_as_lost() {
+        assert!(lost(ErrorKind::StreamInvalidated));
+        assert!(lost(ErrorKind::DeviceNotAvailable));
+        assert!(lost(ErrorKind::HostUnavailable));
+    }
+
+    #[test]
+    fn a_default_stream_following_a_new_device_is_not_lost() {
+        assert!(!lost(ErrorKind::DeviceChanged));
+    }
 }
