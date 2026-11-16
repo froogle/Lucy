@@ -1,5 +1,7 @@
-//! Each section of `lucy`, opened from the list: what it writes to
-//! `config.toml`, when that applies, and the parts that need lucyd.
+//! Each section of `lucy`, opened from the list.
+//! What it writes to `config.toml`, when that applies, and the parts that
+//! need lucyd.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 
@@ -57,7 +59,6 @@ fn thinking_shows_each_tiers_provider_with_its_health_and_runs_a_real_check() {
     ] {
         assert!(tui.shown.contains(shown), "{shown} missing:\n{}", tui.shown);
     }
-    // The inert lucyd has no Thinking Provider, for the status and the check.
     let problem = "This lucyd has no Thinking Provider.";
     assert!(
         tui.shown
@@ -79,12 +80,13 @@ fn picking_a_tiers_provider_writes_it_at_once_keeping_comments() {
     home.fake("claude", "exit 0");
     configured(&home);
 
+    let advanced_tier = Script::new().down(1).enter();
+    let claude = Script::new().enter();
+    let own_model = Script::new().typed("sonnet").enter();
     let keys = open(THINKING)
-        .down(1)
-        .enter() // the advanced tier
-        .enter() // Claude
-        .typed("sonnet")
-        .enter(); // a model of my own
+        .chain(advanced_tier)
+        .chain(claude)
+        .chain(own_model);
     let tui = home.tui(Open::Lucy, leave(keys));
 
     assert_eq!(tui.result, Ok(()), "{}", tui.shown);
@@ -153,8 +155,13 @@ fn whispers_model_applies_after_a_restart_which_is_offered_while_lucyd_runs() {
     home.fake("systemctl", "exit 0");
     configured(&home);
 
-    // Whisper's model: base.en, then yes to the restart.
-    let keys = open(SPEECH).down(1).enter().down(2).enter().typed("y");
+    let whisper_model = Script::new().down(1).enter();
+    let base_en = Script::new().down(2).enter();
+    let restart = Script::new().typed("y");
+    let keys = open(SPEECH)
+        .chain(whisper_model)
+        .chain(base_en)
+        .chain(restart);
     let tui = home.tui(Open::Lucy, leave(keys));
 
     assert_eq!(
@@ -220,7 +227,6 @@ fn declining_piper_means_text_only_replies_and_no_voice_to_pick() {
 fn piper_is_installed_after_a_yes_with_uv_then_lucyd_restarts_to_use_it() {
     let home = Home::with_lucyd();
     home.fake("systemctl", "exit 0");
-    // python3 imports Piper once uv has installed it.
     let installed = home.bin().join("installed");
     home.fake("python3", &format!("[ -e '{}' ]", installed.display()));
     home.fake("uv", &format!(": > '{}'", installed.display()));
@@ -231,8 +237,9 @@ fn piper_is_installed_after_a_yes_with_uv_then_lucyd_restarts_to_use_it() {
         ..home.env()
     };
 
-    // Yes to the install and to the restart; then the voice row is there.
-    let keys = open(VOICE).enter().typed("yy").press(KeyCode::Up);
+    let install_and_restart = Script::new().enter().typed("yy");
+    let voice_row = Script::new().press(KeyCode::Up);
+    let keys = open(VOICE).chain(install_and_restart).chain(voice_row);
     let store = support::FakeStore::default();
     let tui = home.tui_with(&env, &store, Open::Lucy, leave(keys));
 
@@ -258,8 +265,13 @@ fn a_non_commercial_voice_shows_its_licence_and_is_kept_after_its_preview() {
     home.fake("python3", "exit 0");
     configured(&home);
 
-    // The third voice, yes despite its licence, keep it after hearing it.
-    let keys = open(VOICE).enter().down(2).enter().typed("y").enter();
+    let third_voice = Script::new().enter().down(2).enter();
+    let despite_licence = Script::new().typed("y");
+    let keep_it = Script::new().enter();
+    let keys = open(VOICE)
+        .chain(third_voice)
+        .chain(despite_licence)
+        .chain(keep_it);
     let tui = home.tui(Open::Lucy, leave(keys));
 
     assert!(tui.shown.contains("non-commercial"), "{}", tui.shown);
@@ -280,13 +292,13 @@ const BARELY: &str = "Lucy can barely hear you on this mic, so talking over her 
 
 #[test]
 fn a_mic_lucy_can_barely_hear_is_flagged_and_not_kept_by_default() {
-    // About −60 dBFS: too quiet even for Lucy's boost.
-    let home = Home::with_mic(0.001);
+    let minus_60_dbfs = 0.001;
+    let home = Home::with_mic(minus_60_dbfs);
     configured(&home);
 
-    // The mic; Enter at "Keep this microphone?" picks No, so the mic again,
-    // then keep it with a "y".
-    let keys = open(AUDIO).enters(3).enter().typed("y");
+    let mic_not_kept_by_default = Script::new().enters(3);
+    let mic_kept = Script::new().enter().typed("y");
+    let keys = open(AUDIO).chain(mic_not_kept_by_default).chain(mic_kept);
     let tui = home.tui(Open::Lucy, leave(keys));
 
     assert_eq!(tui.result, Ok(()), "{}", tui.shown);
@@ -301,11 +313,12 @@ fn a_mic_lucy_can_barely_hear_is_flagged_and_not_kept_by_default() {
 
 #[test]
 fn a_mic_at_a_normal_level_is_kept_by_default_with_no_warning() {
-    // About −20 dBFS.
-    let home = Home::with_mic(0.1);
-    home.fake(
-        "pactl",
-        "[ \"$3\" = sources ] && printf '1\\talsa_input.usb-Yeti\\tPipeWire\\n'",
+    let minus_20_dbfs = 0.1;
+    let home = Home::with_mic(minus_20_dbfs);
+    home.fake_pactl(
+        &[("alsa_input.usb-Yeti", "Yeti Analog Stereo")],
+        &[],
+        ("", ""),
     );
     configured(&home);
 
@@ -317,6 +330,48 @@ fn a_mic_at_a_normal_level_is_kept_by_default_with_no_warning() {
     assert_eq!(
         lucy_config::load(&home.config_path()).unwrap().audio.mic,
         "alsa_input.usb-Yeti"
+    );
+}
+
+#[test]
+fn audio_devices_shows_descriptions_and_writes_the_chosen_node_name() {
+    let home = Home::with_lucyd();
+    home.fake_pactl(
+        &[
+            ("alsa_input.usb-B", "USB Mic Mono"),
+            ("alsa_input.usb-A", "USB Mic Mono"),
+        ],
+        &[("alsa_output.usb-Pebble", "Pebble V3 Analog Stereo")],
+        ("alsa_input.usb-A", "alsa_output.usb-Pebble"),
+    );
+    std::fs::write(
+        home.config_path(),
+        "[audio]\nspeaker = \"alsa_output.usb-Gone\"\n",
+    )
+    .unwrap();
+
+    let speaker_row = Script::new().down(1).enter();
+    let pebble = Script::new().down(1).enter();
+    let heard = Script::new().enter();
+    let keys = open(AUDIO).chain(speaker_row).chain(pebble).chain(heard);
+    let tui = home.tui(Open::Lucy, leave(keys));
+
+    assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    for label in [
+        "Microphone: Default (USB Mic Mono (1))",
+        "Speaker: alsa_output.usb-Gone (not connected)",
+        "Default (Pebble V3 Analog Stereo)",
+        "Pebble V3 Analog Stereo",
+        "Speaker: Pebble V3 Analog Stereo",
+    ] {
+        assert!(tui.shown.contains(label), "{label}:\n{}", tui.shown);
+    }
+    assert_eq!(
+        lucy_config::load(&home.config_path())
+            .unwrap()
+            .audio
+            .speaker,
+        "alsa_output.usb-Pebble"
     );
 }
 
@@ -340,10 +395,10 @@ fn sections_that_need_lucyd_open_while_it_is_stopped_and_say_so() {
             tui.shown
         );
     }
-    // Settings only written to the file still work.
     assert_eq!(
         lucy_config::load(&home.config_path()).unwrap().audio.mic,
-        "default"
+        "default",
+        "settings only written to the file still work"
     );
 }
 
@@ -584,10 +639,10 @@ fn approvals_are_listed_and_one_is_revoked_after_a_yes() {
 
     let keys = open(APPROVALS)
         .down(1)
-        .typed("ry") // revoke notes
+        .typed("ry")
         .press(KeyCode::Up)
         .enter()
-        .typed("n"); // not news
+        .typed("n");
     let tui = home.tui(Open::Lucy, leave(keys));
 
     assert!(tui.shown.contains("Not revoked."), "{}", tui.shown);

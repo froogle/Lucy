@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Persona; stories 17
 
 **Seams:** none (the default Persona text only).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -23,3 +23,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Persona; stories 17
 ## Comments
 
 2026-11-16: settled in a grilling session. The fix lives in the Persona (it is manner), not in fixed instructions or a runtime sign-off.
+
+2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand check left: tell Lucy to keep greetings and goodbyes short (your `persona.md` has the old default), then try "hi" and "bye Lucy".

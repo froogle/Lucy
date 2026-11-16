@@ -1,6 +1,3 @@
-//! Thinking: the Provider each Model tier thinks with, its health, and a
-//! real check of it on request.
-
 use lucy_config::{Tier, RECOMMENDATIONS};
 use lucy_ipc::Client;
 use ratatui::backend::Backend;

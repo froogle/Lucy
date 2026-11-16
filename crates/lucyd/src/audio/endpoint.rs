@@ -1,5 +1,3 @@
-//! End-of-utterance detection: hysteresis on the VAD's speech probability.
-
 use std::collections::VecDeque;
 
 use lucy_config::Endpointing;
@@ -11,29 +9,23 @@ pub struct Endpointer {
     vad: Box<dyn Vad>,
     start_threshold: f32,
     end_threshold: f32,
-    /// These lengths are in samples.
     start_len: usize,
     pre_roll_len: usize,
     end_silence_len: usize,
     max_len: usize,
-    /// Samples waiting to fill a VAD chunk.
-    pending: Vec<f32>,
-    /// The most recent audio before any speech.
+    partial_chunk: Vec<f32>,
     pre_roll: VecDeque<f32>,
     state: State,
 }
 
 enum State {
     Quiet,
-    /// Above the start threshold, but not for long enough yet.
     Starting {
         audio: Vec<f32>,
     },
-    /// In an utterance, with `silence` samples below the end threshold at
-    /// its end.
     Speaking {
         audio: Vec<f32>,
-        silence: usize,
+        trailing_silence: usize,
     },
 }
 
@@ -47,7 +39,7 @@ impl Endpointer {
             pre_roll_len: 0,
             end_silence_len: 0,
             max_len: 0,
-            pending: Vec::new(),
+            partial_chunk: Vec::new(),
             pre_roll: VecDeque::new(),
             state: State::Quiet,
         };
@@ -55,7 +47,6 @@ impl Endpointer {
         endpointer
     }
 
-    /// Takes new settings, dropping any utterance in progress.
     pub fn configure(&mut self, config: &Endpointing) {
         let samples = |ms: u64| (ms * u64::from(SAMPLE_RATE) / 1000) as usize;
         self.start_threshold = config.start_threshold;
@@ -68,27 +59,22 @@ impl Endpointer {
         self.state = State::Quiet;
     }
 
-    /// Whether an utterance is under way: speech has gone on long enough
-    /// to start one, and it hasn't ended.
     pub fn speaking(&self) -> bool {
         matches!(self.state, State::Speaking { .. })
     }
 
-    /// Takes the next frame of audio, returning an utterance if it ended.
-    /// `judged` hears the speech probability of each VAD chunk judged, and
-    /// its length.
     pub fn push(
         &mut self,
         frame: &[f32],
-        mut judged: impl FnMut(f32, usize),
+        mut on_judged: impl FnMut(f32, usize),
     ) -> Option<SpeechSegment> {
-        self.pending.extend_from_slice(frame);
+        self.partial_chunk.extend_from_slice(frame);
         let chunk_len = self.vad.chunk_len();
         let mut ended = None;
-        while self.pending.len() >= chunk_len {
-            let chunk: Vec<f32> = self.pending.drain(..chunk_len).collect();
+        while self.partial_chunk.len() >= chunk_len {
+            let chunk: Vec<f32> = self.partial_chunk.drain(..chunk_len).collect();
             let probability = self.vad.speech_probability(&chunk);
-            judged(probability, chunk_len);
+            on_judged(probability, chunk_len);
             ended = self.judge(chunk, probability).or(ended);
         }
         ended
@@ -109,20 +95,23 @@ impl Endpointer {
             }
             State::Speaking {
                 mut audio,
-                mut silence,
+                mut trailing_silence,
             } => {
                 if probability < self.end_threshold {
-                    silence += chunk.len();
+                    trailing_silence += chunk.len();
                 } else {
-                    silence = 0;
+                    trailing_silence = 0;
                 }
                 audio.extend(chunk);
-                if silence >= self.end_silence_len
+                if trailing_silence >= self.end_silence_len
                     || self.pre_roll.len() + audio.len() >= self.max_len
                 {
                     return Some(self.end(audio));
                 }
-                self.state = State::Speaking { audio, silence };
+                self.state = State::Speaking {
+                    audio,
+                    trailing_silence,
+                };
             }
         }
         None
@@ -130,7 +119,10 @@ impl Endpointer {
 
     fn starting(&mut self, audio: Vec<f32>) {
         self.state = if audio.len() >= self.start_len {
-            State::Speaking { audio, silence: 0 }
+            State::Speaking {
+                audio,
+                trailing_silence: 0,
+            }
         } else {
             State::Starting { audio }
         };

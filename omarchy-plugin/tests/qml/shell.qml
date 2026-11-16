@@ -26,8 +26,10 @@ ShellRoot {
         fast: { key: "tiers.fast", current: "claude-fast", options: ["claude-fast", "codex-fast"] },
         advanced: { key: "tiers.advanced", current: "claude-advanced", options: ["claude-advanced", "claude-fast"] },
         stt: { key: "stt", current: null, options: [null, "small.en", "base.en", "superwhisper"] },
-        mic: { key: "audio.mic", current: "default", options: ["default", "alsa_input.usb-Yeti"] },
-        speaker: { key: "audio.speaker", current: "default", options: ["default", "alsa_output.hdmi"] }
+        mic: { key: "audio.mic", current: "default", options: ["default", "alsa_input.usb-Yeti"],
+               labels: ["Default (Yeti Analog Stereo)", "Yeti Analog Stereo"] },
+        speaker: { key: "audio.speaker", current: "alsa_output.gone", options: ["default", "alsa_output.hdmi", "alsa_output.gone"],
+                   labels: ["Default (HDMI Digital Stereo)", "HDMI Digital Stereo", "alsa_output.gone (not connected)"] }
       }
       for (var key in changes || {}) s[key] = changes[key]
       return s
@@ -98,7 +100,7 @@ ShellRoot {
         console.log("markup from lucy is shown as text")
         feed("waiting", {
           fast: { key: "tiers.fast", current: "<b>bold</b>", options: ["<b>bold</b>"] },
-          mic: { key: "audio.mic", current: "<i>mic</i>", options: ["default", "<i>mic</i>"] }
+          mic: { key: "audio.mic", current: "<i>mic</i>", options: ["default", "<i>mic</i>"], labels: ["Default (<i>mic</i>)", "<i>mic</i>"] }
         })
         barPanel.openList = "mic"
       },
@@ -174,6 +176,15 @@ ShellRoot {
 
         console.log("devices")
         feed("session")
+        barPanel.openList = "mic"
+      },
+      function () {
+        var shown = texts(barPanel, []).map(function (t) { return t.text })
+        check("the mic row shows the default's label", shown.indexOf("Default (Yeti Analog Stereo)") >= 0, true)
+        check("its list shows each device's label", shown.indexOf("Yeti Analog Stereo") >= 0, true)
+        check("not its node name", shown.indexOf("alsa_input.usb-Yeti"), -1)
+        check("an unplugged pin shows as not connected", shown.indexOf("alsa_output.gone (not connected)") >= 0, true)
+        barPanel.openList = ""
         lucy.choose(lucy.snapshot.mic, "alsa_input.usb-Yeti")
         check("a device can change during a Session", lucy.current(lucy.snapshot.mic), "alsa_input.usb-Yeti")
         barPanel.moreSettings()

@@ -1,6 +1,3 @@
-//! Real capture through cpal, which tries PipeWire, then PulseAudio, then
-//! ALSA. It asks for 16 kHz so the sound server does the resampling.
-
 use std::sync::mpsc;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -12,9 +9,6 @@ pub struct Cpal;
 
 impl AudioIo for Cpal {
     fn capture(&self, mic: &str, ring: rtrb::Producer<f32>) -> Result<Box<dyn Send>, Error> {
-        // A cpal stream may not move between threads, so one thread owns it
-        // until the handle is dropped or the device goes away. Dropping the
-        // stream drops the ring.
         let (opened_tx, opened) = mpsc::channel();
         let (stop, stopped) = mpsc::channel::<()>();
         let lost = stop.clone();
@@ -52,7 +46,6 @@ impl AudioIo for Cpal {
     }
 }
 
-/// Stops capture when dropped.
 struct StopOnDrop(mpsc::Sender<()>);
 
 impl Drop for StopOnDrop {
@@ -61,11 +54,12 @@ impl Drop for StopOnDrop {
     }
 }
 
-/// Whether a stream error means its device has gone away.
 pub(crate) fn is_device_lost(e: &cpal::Error) -> bool {
     matches!(
         e.kind(),
-        cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::HostUnavailable
+        cpal::ErrorKind::StreamInvalidated
+            | cpal::ErrorKind::DeviceNotAvailable
+            | cpal::ErrorKind::HostUnavailable
     )
 }
 
@@ -73,31 +67,21 @@ fn is_named(device: &cpal::Device, name: &str) -> bool {
     device.id().is_ok_and(|id| id.id() == name)
 }
 
-/// `lost` hears once the device goes away.
 fn open(
     mic: &str,
     mut ring: rtrb::Producer<f32>,
     lost: mpsc::Sender<()>,
 ) -> Result<cpal::Stream, Error> {
     let device = find(Direction::Input, mic).map_err(Error)?;
-    // Mono 16 kHz whatever the device records; the sound server converts.
-    let config = cpal::StreamConfig {
+    let lucys_format = cpal::StreamConfig {
         channels: 1,
         sample_rate: SAMPLE_RATE,
         buffer_size: cpal::BufferSize::Default,
     };
     let stream = device
         .build_input_stream(
-            config,
-            // Only pushes into the ring; when the ring is full the rest of
-            // the buffer is dropped.
-            move |data: &[f32], _| {
-                for &sample in data {
-                    if ring.push(sample).is_err() {
-                        break;
-                    }
-                }
-            },
+            lucys_format,
+            move |data: &[f32], _| push_until_full(&mut ring, data),
             move |e| {
                 eprintln!("lucyd: microphone error: {e}");
                 if is_device_lost(&e) {
@@ -113,8 +97,14 @@ fn open(
     Ok(stream)
 }
 
-/// The default device for `direction`, or the one whose node name is
-/// pinned. A pinned device that isn't there falls back to the default.
+fn push_until_full(ring: &mut rtrb::Producer<f32>, data: &[f32]) {
+    for &sample in data {
+        if ring.push(sample).is_err() {
+            break;
+        }
+    }
+}
+
 pub(crate) fn find(direction: Direction, name: &str) -> Result<cpal::Device, String> {
     let host = cpal::default_host();
     let (what, devices, default) = match direction {
@@ -139,4 +129,27 @@ pub(crate) fn find(direction: Direction, name: &str) -> Result<cpal::Device, Str
         }
     }
     default.ok_or_else(|| format!("there is no {what}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use cpal::ErrorKind;
+
+    use super::is_device_lost;
+
+    fn lost(kind: ErrorKind) -> bool {
+        is_device_lost(&cpal::Error::new(kind))
+    }
+
+    #[test]
+    fn a_stream_that_lost_its_device_counts_as_lost() {
+        assert!(lost(ErrorKind::StreamInvalidated));
+        assert!(lost(ErrorKind::DeviceNotAvailable));
+        assert!(lost(ErrorKind::HostUnavailable));
+    }
+
+    #[test]
+    fn a_default_stream_following_a_new_device_is_not_lost() {
+        assert!(!lost(ErrorKind::DeviceChanged));
+    }
 }

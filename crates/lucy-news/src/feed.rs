@@ -1,31 +1,21 @@
-//! Reads RSS and Atom feeds into plain-text items. Feed text is untrusted:
-//! markup is stripped, lengths are capped and only web links survive.
-
 use roxmltree::{Document, Node, ParsingOptions};
 
 const ATOM: &str = "http://www.w3.org/2005/Atom";
 const RSS_1: &str = "http://purl.org/rss/1.0/";
 const DUBLIN_CORE: &str = "http://purl.org/dc/elements/1.1/";
 
-/// The longest headline and description kept, in characters.
 const HEADLINE_CHARS: usize = 200;
 const DESCRIPTION_CHARS: usize = 600;
 const DATE_CHARS: usize = 64;
 
-/// One story, as its feed tells it.
 #[derive(Debug, PartialEq)]
 pub struct Item {
     pub headline: String,
     pub description: String,
-    /// Only `http` and `https` links are kept.
     pub link: Option<String>,
-    /// When it was published, as the feed writes it; empty if it doesn't
-    /// say. Some feeds go stale, so this lets old stories be left out.
     pub published: String,
 }
 
-/// The items of an RSS 2.0, RSS 1.0 or Atom feed, in feed order. Items
-/// without a headline are skipped.
 pub fn parse(xml: &str) -> Result<Vec<Item>, String> {
     let options = ParsingOptions {
         allow_dtd: true,
@@ -88,8 +78,6 @@ fn atom_entry(entry: Node) -> Item {
     }
 }
 
-/// The first child element of `parent` called `name` in one of
-/// `namespaces`, so that `media:description` isn't taken for `description`.
 fn child<'a>(
     parent: Node<'a, 'a>,
     name: &str,
@@ -117,9 +105,6 @@ fn web_link(link: &str) -> Option<String> {
     (web && clean).then(|| link.to_owned())
 }
 
-/// Plain text from feed text that may hold HTML: tags (and script and style
-/// contents) removed, entities decoded, whitespace collapsed and the length
-/// capped at `max` characters.
 fn clean(html: &str, max: usize) -> String {
     let decoded = decode_entities(&strip_tags(html));
     let words: Vec<&str> = decoded
@@ -136,6 +121,7 @@ fn clean(html: &str, max: usize) -> String {
 }
 
 fn strip_tags(html: &str) -> String {
+    const WORD_BREAK: char = ' ';
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(start) = rest.find('<') {
@@ -158,8 +144,7 @@ fn strip_tags(html: &str) -> String {
                 None => "",
             };
         }
-        // Keep words either side of a tag apart.
-        out.push(' ');
+        out.push(WORD_BREAK);
     }
     out.push_str(rest);
     out

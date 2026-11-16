@@ -1,17 +1,10 @@
-//! Finding Piper, and installing it after the user's yes (ADR 0003): the
-//! distro's package if there is one and it installs cleanly, otherwise
-//! `uv tool install`, then `pipx`.
-
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Piper with its `http` extra, which lucyd runs as a server.
 const PACKAGE: &str = "piper-tts[http]";
 
-/// Whether a Python that lucyd would find can import Piper's HTTP server.
-/// `PYTHONPATH` is cleared, as lucyd clears it.
 pub fn installed(path: &OsStr) -> bool {
     python_candidates(path).iter().any(|python| {
         Command::new(python)
@@ -26,8 +19,6 @@ pub fn installed(path: &OsStr) -> bool {
     })
 }
 
-/// The interpreter behind a `piper` script on `PATH`, then `python3`, as
-/// lucyd looks for them.
 fn python_candidates(path: &OsStr) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(script) = on_path("piper", path) {
@@ -46,16 +37,12 @@ fn shebang(script: &Path) -> Option<PathBuf> {
     Some(line.strip_prefix("#!")?.split_whitespace().next()?.into())
 }
 
-/// `program` on `path`, if it is there.
 pub fn on_path(program: &str, path: &OsStr) -> Option<PathBuf> {
     std::env::split_paths(path)
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())
 }
 
-/// The commands to try, in order, until one installs Piper. `os_release`
-/// is the text of `/etc/os-release`; `has` says whether a program is on
-/// `PATH`.
 pub fn install_plan(os_release: &str, has: impl Fn(&str) -> bool) -> Vec<Vec<String>> {
     let mut plan = Vec::new();
     if let Some(command) = distro_package(os_release, &has) {
@@ -70,9 +57,6 @@ pub fn install_plan(os_release: &str, has: impl Fn(&str) -> bool) -> Vec<Vec<Str
     plan
 }
 
-/// The distro's own way to install Piper, from os-release's `ID`, then
-/// `ID_LIKE`. Only Arch's AUR carries a `piper-tts` package, through the
-/// user's AUR helper.
 fn distro_package(os_release: &str, has: &impl Fn(&str) -> bool) -> Option<Vec<String>> {
     let field = |key: &str| {
         os_release.lines().find_map(|line| {
@@ -141,7 +125,7 @@ mod tests {
             [words(&["pipx", "install", "piper-tts[http]"])]
         );
         assert!(install_plan(os_release, has(&[])).is_empty());
-        // Arch with no AUR helper.
-        assert!(install_plan("ID=arch\n", has(&[])).is_empty());
+        let arch_without_aur_helper = install_plan("ID=arch\n", has(&[]));
+        assert!(arch_without_aur_helper.is_empty());
     }
 }

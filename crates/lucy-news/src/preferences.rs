@@ -1,48 +1,31 @@
-//! The user's news preferences, kept in `preferences.toml` in the Plugin's
-//! private state dir.
-
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::catalogue::DEFAULT_ROTATION;
 
-/// How long a briefing is.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Length {
-    /// A greeting and the top stories in a sentence or two.
     Brief,
-    /// A roundup of about two minutes.
     Detailed,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Preferences {
-    /// Source ids read for a briefing.
     pub rotation: Vec<String>,
-    /// Source ids the user likes but Lucy can't read: their front pages are
-    /// opened beside the briefing.
     pub open_beside: Vec<String>,
-    /// Source ids the user doesn't want.
     pub avoid: Vec<String>,
-    /// Topics to give more of.
     pub more_of: Vec<String>,
-    /// Topics to give less of.
     pub less_of: Vec<String>,
-    /// How many top stories a brief briefing speaks.
     pub stories: u8,
     pub length: Length,
-    /// Sources outside the catalogue that the user named and whose official
-    /// feed Lucy found. Their terms aren't vetted.
     pub found: Vec<Found>,
 }
 
-/// A Source outside the catalogue, with the official feed Lucy found.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Found {
-    /// Its host, which stands for it in `rotation`.
     pub id: String,
     pub name: String,
     pub feed: String,
@@ -64,13 +47,11 @@ impl Default for Preferences {
     }
 }
 
-/// Where the preferences live.
 pub fn path(state_dir: &Path) -> PathBuf {
     state_dir.join("preferences.toml")
 }
 
 impl Preferences {
-    /// The name of the Source `id`, from the catalogue or found.
     pub fn name_of(&self, id: &str) -> Option<String> {
         match crate::catalogue::by_id(id) {
             Some(source) => Some(source.name.to_owned()),
@@ -82,7 +63,6 @@ impl Preferences {
         self.found.iter().find(|found| found.id == id)
     }
 
-    /// The saved preferences, or the defaults if there are none yet.
     pub fn load(state_dir: &Path) -> Result<Preferences, String> {
         match std::fs::read_to_string(path(state_dir)) {
             Ok(text) => toml::from_str(&text).map_err(|e| format!("preferences.toml: {e}")),

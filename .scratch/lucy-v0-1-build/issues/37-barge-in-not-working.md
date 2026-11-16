@@ -36,3 +36,5 @@ A harness test that reproduces the cause comes before the fix.
 ## Comments
 
 2026-11-16: grilled with the user; the details are in the body above.
+
+2026-11-16: slice 8 added the gate debug log (`RUST_LOG=lucyd=debug`) and ruled out the DSP pipeline, gate tuning and Silero on recorded audio. Leading hypothesis: the pinned mic on the same USB card as playback gets no audio while Lucy plays. Waiting on the user's two recorded talk-over runs (Superwhisper and Whisper).

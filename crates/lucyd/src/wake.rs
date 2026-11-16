@@ -1,9 +1,3 @@
-//! The Wake word inside a Session: ordinary speech, with a leading Wake
-//! word taken off what the model hears.
-
-/// `transcript` without a leading Wake word `word`, however STT punctuated
-/// or spaced it ("Hey, Lucy." or "hey lucy"), and without the punctuation
-/// after it.
 pub fn strip<'a>(transcript: &'a str, word: &str) -> &'a str {
     let mut wanted = word
         .chars()
@@ -22,8 +16,9 @@ pub fn strip<'a>(transcript: &'a str, word: &str) -> &'a str {
         }
         if wanted.peek().is_none() {
             let rest = &transcript[i + c.len_utf8()..];
-            // The Wake word must end a word: "Lucy's" is not "Lucy".
-            if rest.starts_with(|c: char| c.is_alphanumeric() || c == '\'' || c == '’') {
+            let inside_a_word =
+                rest.starts_with(|c: char| c.is_alphanumeric() || c == '\'' || c == '’');
+            if inside_a_word {
                 return transcript;
             }
             return rest.trim_start_matches(|c: char| !c.is_alphanumeric());

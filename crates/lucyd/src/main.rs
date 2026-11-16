@@ -9,11 +9,13 @@ use lucyd::superwhisper::Superwhisper;
 use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
+    let silent_unless_rust_log = "off";
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(silent_unless_rust_log),
+    )
+    .init();
     let config_path = lucy_config::default_path();
-    // Read again at each Session start. Only Whisper's settings, and
-    // whether it is needed, are used from this first read, since its model
-    // stays loaded.
-    let config = match lucy_config::load(&config_path) {
+    let startup_config = match lucy_config::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
             eprintln!("lucyd: {e}");
@@ -25,7 +27,6 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     };
 
-    // `lucy` is installed beside `lucyd`.
     let lucy_program = match std::env::current_exe() {
         Ok(exe) => exe.with_file_name("lucy"),
         Err(e) => {
@@ -46,25 +47,23 @@ fn main() -> ExitCode {
         lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
             .join("lucy")
             .join("voices"),
-        &config.piper.voice,
+        &startup_config.piper.voice,
     );
-    // What Lucy plays is the echo canceller's reference.
     let echo = piper
         .take_reference()
-        .map(|reference| Box::new(Sonora::new(reference)) as Box<dyn EchoCanceller>);
+        .map(|played| Box::new(Sonora::new(played)) as Box<dyn EchoCanceller>);
     adapters.tts = Box::new(piper);
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
     adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher);
     adapters.credentials = Arc::new(lucy_config::credentials::SecretService);
-    // Utterances go beside the socket, in the user's runtime dir.
     let utterances = socket_path.parent().expect("the socket is in a dir");
     adapters.superwhisper = Arc::new(Superwhisper::new(
         "superwhisper".into(),
         utterances.to_owned(),
     ));
     adapters.applications = lucyd::desktop_entries::xdg_dirs();
-    if let Err(e) = hear(&config, &mut adapters, echo) {
+    if let Err(e) = hear(&startup_config, &mut adapters, echo) {
         eprintln!("lucyd: {e}; Lucy can't hear");
     }
     let daemon = match lucyd::spawn(lucyd::Options {
@@ -76,6 +75,7 @@ fn main() -> ExitCode {
         lucy_program,
         adapters,
         plugin_paths: lucyd::plugins::Paths::from_env(),
+        plugin_env: lucyd::plugins::Environment::from_process(),
     }) {
         Ok(daemon) => daemon,
         Err(e) => {
@@ -91,9 +91,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Loads Whisper and the wake word once, listens for the Wake word and cuts
-/// the microphone, cleaned of Lucy's echo by `echo`, into utterances for STT.
-/// Whisper is optional while `[stt]` chooses Superwhisper.
 fn hear(
     config: &lucy_config::Config,
     adapters: &mut Adapters,
@@ -136,8 +133,6 @@ fn hear(
     Ok(())
 }
 
-/// The configured wake-word model, or the bundled one, installed under
-/// `models/wake`.
 fn wake_word(config: &lucy_config::WakeWord, models: &Path) -> Result<LiveKit, Box<dyn Error>> {
     let model = match &config.model {
         Some(model) => model.clone(),

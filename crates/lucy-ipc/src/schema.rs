@@ -1,13 +1,11 @@
-//! The JSON Schema of the public IPC, generated from the types.
-
 use schemars::generate::SchemaSettings;
 use serde_json::{json, Value};
 
 use crate::{
-    ApprovalsList, Hello, HelloResult, LevelEvent, MicLevel, PluginsChanged, PluginsList,
-    ProviderCheck, ProviderCheckResult, ProvidersStatus, RevokeApproval, SessionStarted,
-    SetPluginEnabled, StateEvent, Status, Subscribe, VoicePreview, WakeWordTest,
-    WakeWordTestResult, PROTOCOL,
+    ApprovalsList, Hello, HelloResult, InputAnswer, InputCancel, InputClose, InputOpen, LevelEvent,
+    MicLevel, PluginsChanged, PluginsList, ProviderCheck, ProviderCheckResult, ProvidersStatus,
+    RevokeApproval, SessionStarted, SetPluginEnabled, StateEvent, Status, Subscribe, VoicePreview,
+    WakeWordTest, WakeWordTestResult, PROTOCOL,
 };
 
 /// The schema committed as `schema/lucy-ipc.schema.json`. `x-methods` maps
@@ -34,6 +32,10 @@ pub fn schema() -> Value {
     let mic_level = generator.subschema_for::<MicLevel>();
     let wake_word_test = generator.subschema_for::<WakeWordTest>();
     let wake_word_test_result = generator.subschema_for::<WakeWordTestResult>();
+    let input_answer = generator.subschema_for::<InputAnswer>();
+    let input_cancel = generator.subschema_for::<InputCancel>();
+    let input_open = generator.subschema_for::<InputOpen>();
+    let input_close = generator.subschema_for::<InputClose>();
 
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -55,11 +57,15 @@ pub fn schema() -> Value {
             "test.voice_preview": {"params": voice_preview, "result": {"type": "object"}},
             "test.mic_level": {"result": mic_level},
             "test.wake_word": {"params": wake_word_test, "result": wake_word_test_result},
+            "input.answer": {"params": input_answer, "result": {"type": "object"}},
+            "input.cancel": {"params": input_cancel, "result": {"type": "object"}},
         },
         "x-events": {
             "state": {"params": state_event},
             "level": {"params": level_event},
             "plugins.changed": {"params": plugins_changed},
+            "input.open": {"params": input_open},
+            "input.close": {"params": input_close},
         },
         "$defs": generator.take_definitions(true),
     })

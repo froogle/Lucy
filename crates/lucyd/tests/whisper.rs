@@ -1,4 +1,5 @@
 //! The `whisper` STT Provider.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 mod recording;
@@ -49,14 +50,11 @@ fn a_missing_model_is_reported_with_its_path() {
             "{error}"
         );
     };
-    // small.en on the GPU, base.en on the CPU, unless one is named.
     expect(gpu, "ggml-small.en.bin");
     expect(cpu, "ggml-base.en.bin");
     expect(named, "ggml-large-v3-turbo-q5_0.bin");
 }
 
-/// Where the voice-loop prototype keeps its models, unless
-/// `LUCY_WHISPER_MODELS` names another directory.
 fn models_dir() -> PathBuf {
     std::env::var_os("LUCY_WHISPER_MODELS")
         .map(PathBuf::from)
@@ -118,9 +116,6 @@ fn a_long_utterance_on_the_cpu_is_transcribed_to_the_end() {
     assert_eq!(heard.to_lowercase().matches("lucy").count(), 3, "{heard:?}");
 }
 
-/// The whole hearing path with the real VAD and Whisper: the recording,
-/// played into the microphone between silences, comes out as one utterance
-/// that Whisper transcribes.
 #[test]
 #[ignore = "needs the small.en model and a Vulkan GPU"]
 fn a_recording_played_into_the_microphone_is_heard() {

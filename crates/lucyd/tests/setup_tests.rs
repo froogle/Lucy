@@ -1,4 +1,5 @@
 //! The tests setup runs inside lucyd: `test.mic_level` and `test.wake_word`.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -7,7 +8,6 @@ use std::time::Duration;
 use harness::{wait_until, Harness, SILENCE, WAKE};
 use lucy_ipc::{error_code, State};
 
-/// Quiet enough that the fake VAD doesn't hear speech.
 const MURMUR: f32 = 0.3;
 
 fn refusal<T: std::fmt::Debug>(outcome: Result<T, lucy_ipc::Error>) -> (i64, String) {
@@ -37,20 +37,22 @@ fn a_mic_level_too_low_for_lucy_to_boost_is_quiet() {
     lucyd.mic.wait_until_open();
     let mut client = lucyd.client();
 
-    // About −60 dBFS.
-    lucyd.mic.feed(0.001, Duration::from_millis(100));
+    let minus_60_dbfs = 0.001;
+    lucyd.mic.feed(minus_60_dbfs, Duration::from_millis(100));
     lucyd.mic.wait_until_heard();
     let level = client.mic_level().unwrap();
     assert!(level.quiet, "{level:?}");
 
-    // About −20 dBFS.
-    lucyd.mic.feed(0.1, Duration::from_millis(100));
+    let minus_20_dbfs = 0.1;
+    lucyd.mic.feed(minus_20_dbfs, Duration::from_millis(100));
     lucyd.mic.wait_until_heard();
     let level = client.mic_level().unwrap();
     assert!(!level.quiet, "{level:?}");
 
-    // Silence looks the same as a mic too quiet to hear.
-    assert!(client.mic_level().unwrap().quiet);
+    assert!(
+        client.mic_level().unwrap().quiet,
+        "silence looks the same as a mic too quiet to hear"
+    );
 }
 
 #[test]
@@ -98,7 +100,6 @@ fn hearing_the_wake_word_in_its_test_reports_the_score_and_opens_no_session() {
     let mut client = lucyd.client();
     let test = std::thread::spawn(move || client.test_wake_word(5.0));
 
-    // The test is listening once a Session can't start alongside it.
     wait_until("the wake word test to start", || {
         lucyd.client().mic_level().is_err().then_some(())
     });

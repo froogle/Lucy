@@ -1,9 +1,5 @@
-//! What Lucy says, and shows, when she asks the user's Approval of a Plugin.
+use super::manifest::{Manifest, ToolEntry};
 
-use super::manifest::{Access, Manifest, ToolEntry};
-
-/// The full spoken summary of a new Plugin: what it handles, what it can
-/// access and what it asks before doing.
 pub fn summary(manifest: &Manifest) -> String {
     let handles: Vec<&str> = manifest.tools.iter().map(|t| &*t.handles).collect();
     let mut said = vec![format!(
@@ -11,7 +7,7 @@ pub fn summary(manifest: &Manifest) -> String {
         manifest.name,
         and(&handles)
     )];
-    let access: Vec<String> = kinds(&manifest.access)
+    let access: Vec<String> = kinds(manifest)
         .into_iter()
         .filter(|(_, items)| !items.is_empty())
         .map(|(verb, items)| format!("{verb} {}", and(items)))
@@ -36,7 +32,6 @@ pub fn summary(manifest: &Manifest) -> String {
     said.join(" ")
 }
 
-/// The spoken summary of an update: only what changed from `old`.
 pub fn changes(old: &Manifest, new: &Manifest) -> String {
     let mut said = vec![format!(
         "The {} Plugin has changed and needs your Approval again.",
@@ -69,7 +64,7 @@ pub fn changes(old: &Manifest, new: &Manifest) -> String {
             said.push(format!("It no longer handles {}.", tool.handles));
         }
     }
-    for ((verb, before), (_, after)) in kinds(&old.access).into_iter().zip(kinds(&new.access)) {
+    for ((verb, before), (_, after)) in kinds(old).into_iter().zip(kinds(new)) {
         let added: Vec<&str> = after
             .iter()
             .filter(|item| !before.contains(item))
@@ -101,34 +96,30 @@ fn find<'a>(manifest: &'a Manifest, name: &str) -> Option<&'a ToolEntry> {
     manifest.tools.iter().find(|t| t.name == name)
 }
 
-/// Each kind of access, as what the Plugin can do: "read", "write to" and
-/// so on, with its items.
-fn kinds(access: &Access) -> [(&'static str, &[String]); 5] {
+fn kinds(manifest: &Manifest) -> [(&'static str, &[String]); 6] {
+    let access = &manifest.access;
     [
         ("read", &access.read),
         ("write to", &access.write),
         ("reach", &access.network),
         ("use the credentials", &access.credentials),
         ("run", &access.commands),
+        ("see the environment variables", &manifest.requires.env),
     ]
 }
 
-/// The whole of `new` against `old`, line by line: `-` for a removed line,
-/// `+` for an added one. Unchanged Manifests mean only the executable
-/// changed.
 pub fn diff(old: &str, new: &str) -> String {
     if old == new {
         return "The Manifest is the same; only the executable changed.".to_owned();
     }
     let (old, new): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
-    // common[i][j]: the longest common run of old[i..] and new[j..].
-    let mut common = vec![vec![0usize; new.len() + 1]; old.len() + 1];
+    let mut lcs_of_tails = vec![vec![0usize; new.len() + 1]; old.len() + 1];
     for i in (0..old.len()).rev() {
         for j in (0..new.len()).rev() {
-            common[i][j] = if old[i] == new[j] {
-                common[i + 1][j + 1] + 1
+            lcs_of_tails[i][j] = if old[i] == new[j] {
+                lcs_of_tails[i + 1][j + 1] + 1
             } else {
-                common[i + 1][j].max(common[i][j + 1])
+                lcs_of_tails[i + 1][j].max(lcs_of_tails[i][j + 1])
             };
         }
     }
@@ -138,7 +129,9 @@ pub fn diff(old: &str, new: &str) -> String {
         if i < old.len() && j < new.len() && old[i] == new[j] {
             lines.push(format!("  {}", old[i]));
             (i, j) = (i + 1, j + 1);
-        } else if i < old.len() && (j == new.len() || common[i + 1][j] >= common[i][j + 1]) {
+        } else if i < old.len()
+            && (j == new.len() || lcs_of_tails[i + 1][j] >= lcs_of_tails[i][j + 1])
+        {
             lines.push(format!("- {}", old[i]));
             i += 1;
         } else {
@@ -149,7 +142,6 @@ pub fn diff(old: &str, new: &str) -> String {
     lines.join("\n")
 }
 
-/// "a", "a and b", "a, b and c".
 fn and<S: AsRef<str>>(items: &[S]) -> String {
     list(items, "and")
 }

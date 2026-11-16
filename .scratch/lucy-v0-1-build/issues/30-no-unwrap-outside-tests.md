@@ -10,7 +10,7 @@ Spec: none; `CODING_STANDARDS.md`.
 
 **Seams:** none.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -24,3 +24,7 @@ Spec: none; `CODING_STANDARDS.md`.
 - [ ] Every `expect` message states the assumption, not the operation ("the Session thread panicked holding the queue", not "lock failed")
 - [ ] `cargo clippy` denies `unwrap_used` outside tests across the workspace, and an `unwrap()` added to non-test code fails `scripts/check.sh`
 - [ ] `scripts/check.sh` passes; behaviour is unchanged
+
+## Comments
+
+2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Locks go through `sync::Locked::locked()`; integration-test crates carry `#![expect(clippy::unwrap_used)]` for their helpers.

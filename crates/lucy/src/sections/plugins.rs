@@ -1,5 +1,3 @@
-//! Plugins: each one's state, and entering the credentials it declares.
-
 use lucy_ipc::{Client, PluginInfo, PluginStatus};
 use ratatui::backend::Backend;
 
@@ -26,6 +24,7 @@ pub(super) fn page(context: &Context) -> Page {
                 (false, _) => "disabled".to_owned(),
                 (true, PluginStatus::Approved) => "approved".to_owned(),
                 (true, PluginStatus::AwaitingApproval) => "awaiting Approval".to_owned(),
+                (true, PluginStatus::NotForThisDesktop) => "not for this desktop".to_owned(),
                 (true, PluginStatus::Broken) => match &plugin.problem {
                     Some(problem) => format!("broken: {problem}"),
                     None => "broken".to_owned(),

@@ -1,33 +1,19 @@
-//! The vetted Source catalogue. Each Source's feed and "AI summary allowed"
-//! flag come from its terms (`.scratch/lucy-v0-1/research/news-site-access.md`);
-//! re-check them before each release, alongside the Anthropic and OpenAI
-//! terms.
-
-/// One news Source.
 #[derive(Debug)]
 pub struct Source {
-    /// Stored in preferences.
     pub id: &'static str,
-    /// Said to the user.
     pub name: &'static str,
-    /// Other names the user might call it by, lowercase.
     pub aliases: &'static [&'static str],
-    /// What it is, to help pick a replacement the user will like.
     pub about: &'static str,
-    /// Its official RSS or Atom feed, if it has one.
     pub feed: Option<&'static str>,
     pub front_page: &'static str,
-    /// Whether its terms let Lucy summarise its feed with a model.
     pub ai_summary_allowed: bool,
 }
 
 impl Source {
-    /// Whether Lucy may read and summarise it.
     pub fn readable(&self) -> bool {
         self.feed.is_some() && self.ai_summary_allowed
     }
 
-    /// Why Lucy can't read it, if she can't.
     pub fn why_not(&self) -> Option<&'static str> {
         match (self.feed, self.ai_summary_allowed) {
             (None, _) => Some("it has no public feed"),
@@ -37,7 +23,6 @@ impl Source {
     }
 }
 
-/// The default rotation.
 pub const DEFAULT_ROTATION: &[&str] = &["cnn", "npr", "sky"];
 
 pub const SOURCES: &[Source] = &[
@@ -59,7 +44,6 @@ pub const SOURCES: &[Source] = &[
         front_page: "https://www.npr.org",
         ai_summary_allowed: true,
     },
-    // Its terms couldn't be found; verify before release.
     Source {
         id: "sky",
         name: "Sky News",
@@ -87,8 +71,6 @@ pub const SOURCES: &[Source] = &[
         front_page: "https://www.aljazeera.com",
         ai_summary_allowed: true,
     },
-    // "Anything plucked from our services to develop or train artificial
-    // intelligence or to do computer analysis" is arguable, so it's out.
     Source {
         id: "bbc",
         name: "BBC News",
@@ -136,12 +118,10 @@ pub const SOURCES: &[Source] = &[
     },
 ];
 
-/// The Source with this id.
 pub fn by_id(id: &str) -> Option<&'static Source> {
     SOURCES.iter().find(|source| source.id == id)
 }
 
-/// The Source the user means by `name`, ignoring case and a leading "the".
 pub fn find(name: &str) -> Option<&'static Source> {
     let wanted = normalise(name);
     SOURCES.iter().find(|source| {

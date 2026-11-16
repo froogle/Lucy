@@ -9,6 +9,7 @@
 mod client;
 mod schema;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -53,6 +54,13 @@ pub mod error_code {
     pub const NO_MICROPHONE: i64 = -32012;
     /// `test.wake_word`, but the wake-word engine is off.
     pub const WAKE_WORD_OFF: i64 = -32013;
+    /// `hello` claimed a role another client holds.
+    pub const ROLE_TAKEN: i64 = -32014;
+    /// `input.answer` or `input.cancel` from a client without the `input`
+    /// role.
+    pub const NOT_INPUT_HOLDER: i64 = -32015;
+    /// `input.answer` or `input.cancel` named no open Input dialog.
+    pub const NO_DIALOG: i64 = -32016;
 }
 
 /// `$XDG_RUNTIME_DIR/lucy/lucyd.sock`, or `None` if `XDG_RUNTIME_DIR` is unset.
@@ -88,6 +96,9 @@ pub struct Hello {
 pub enum Role {
     /// Draws the Indicator. While no client holds it, lucyd uses notifications.
     Indicator,
+    /// Draws the Input dialog. One client holds it, the first to claim it;
+    /// while none does, lucyd opens `lucy input` in a terminal.
+    Input,
 }
 
 /// Result of `hello`.
@@ -105,7 +116,7 @@ pub struct Status {
     pub state: State,
     /// The current Session, if one is open.
     pub session_id: Option<String>,
-    /// An Authoring build is running, with or without a Session: the
+    /// An Authoring build is running, with or without a Session. The
     /// Indicator adds a "building" mark.
     #[serde(default)]
     pub building: bool,
@@ -125,6 +136,8 @@ pub enum State {
     Speaking,
     /// A tool call waits for the user's spoken yes.
     Confirming,
+    /// The Input dialog is open: Lucy waits for the user to type.
+    Typing,
     /// Something went wrong. Transient: the next state follows straight after.
     Error,
 }
@@ -135,8 +148,8 @@ pub struct SessionStarted {
     pub session_id: String,
 }
 
-/// Result of `providers.status`: each Thinking Provider in `config.toml`,
-/// with health checks that make no model call.
+/// Result of `providers.status`: each Thinking Provider in `config.toml`.
+/// Its health checks make no model call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProvidersStatus {
     /// Sorted by name.
@@ -181,7 +194,7 @@ pub struct ProviderCheck {
 }
 
 /// Result of `provider.check`: a real "Reply OK" round trip through the
-/// Provider, with the subscription guard's checks on it.
+/// Provider. The subscription guard's checks run on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderCheckResult {
     /// What's wrong and how to fix it, or `None` if the check passed.
@@ -205,6 +218,99 @@ pub enum Topic {
     Plugins,
 }
 
+/// Params of the `input.open` event, sent to the `input` holder only: show
+/// the Input dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputOpen {
+    /// Names this dialog in `input.answer`, `input.cancel` and `input.close`.
+    pub id: String,
+    /// The question, written by the tool or Plugin that asks it.
+    pub message: String,
+    pub fields: Vec<Field>,
+}
+
+/// One box in the Input dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Field {
+    /// Its key in `input.answer`'s `values`.
+    pub name: String,
+    /// What to type in it, if the question alone doesn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(flatten)]
+    pub kind: FieldKind,
+}
+
+/// What a field takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FieldKind {
+    Text,
+    Url,
+    Number,
+    /// One of `choices`.
+    Choice {
+        choices: Choices,
+    },
+}
+
+/// The options of a choice field: at least one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "Vec<String>")]
+#[schemars(extend("minItems" = 1))]
+pub struct Choices(Vec<String>);
+
+impl TryFrom<Vec<String>> for Choices {
+    type Error = NoChoices;
+
+    fn try_from(choices: Vec<String>) -> Result<Choices, NoChoices> {
+        match choices.is_empty() {
+            true => Err(NoChoices),
+            false => Ok(Choices(choices)),
+        }
+    }
+}
+
+impl Choices {
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+/// A choice field was given nothing to pick from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoChoices;
+
+impl std::fmt::Display for NoChoices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a choice needs at least one option")
+    }
+}
+
+impl std::error::Error for NoChoices {}
+
+/// Params of the `input.close` event: take the Input dialog away, unanswered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputClose {
+    pub id: String,
+}
+
+/// Params of `input.answer`, from the `input` holder only: what the user
+/// typed. It never goes out on the socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputAnswer {
+    pub id: String,
+    /// Each field's value, by its name.
+    pub values: BTreeMap<String, String>,
+}
+
+/// Params of `input.cancel`: the user closed the Input dialog unanswered.
+/// Only the `input` holder sends it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputCancel {
+    pub id: String,
+}
+
 /// Params of the `state` event: the new status.
 pub type StateEvent = Status;
 
@@ -215,7 +321,7 @@ pub struct LevelEvent {
     pub rms: f32,
 }
 
-/// Result of `plugins.list`: every installed Plugin, a user one overriding
+/// Result of `plugins.list`: every installed Plugin. A user Plugin overrides
 /// a shipped one of the same name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PluginsList {
@@ -262,6 +368,8 @@ pub enum PluginStatus {
     AwaitingApproval,
     /// It can't be used; `problem` says why.
     Broken,
+    /// Its Manifest's `requires` isn't met here, so it is left out quietly.
+    NotForThisDesktop,
 }
 
 /// Params of `plugins.set_enabled`.
@@ -296,16 +404,16 @@ pub struct RevokeApproval {
     pub plugin: String,
 }
 
-/// Params of `test.voice_preview`: Lucy speaks `text` in her running voice
-/// on the configured speaker, outside any Session, between the Start and
-/// Closing sounds. It replies once playback has finished. Refused while a
+/// Params of `test.voice_preview`: Lucy speaks `text` outside any Session.
+/// She uses her running voice on the configured speaker, between the Start
+/// and Closing sounds. It replies once playback has finished. Refused while a
 /// Session is open or another Voice preview plays; a Session that opens
 /// cuts it short.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VoicePreview {
     /// The sentence to say. Not empty.
     pub text: String,
-    /// A Piper voice to say it in, such as `en_GB-cori-medium`, in place of
+    /// A Piper voice to say it in, such as `en_GB-cori-medium`. It replaces
     /// the running one. lucyd downloads it first if it must.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
@@ -319,14 +427,13 @@ pub struct MicLevel {
     /// The loudest RMS the microphone heard since the last `test.mic_level`,
     /// from 0.0 (silent) to 1.0.
     pub rms: f32,
-    /// `rms` is so low that even Lucy's +24 dB boost of a quiet microphone
-    /// leaves it under the level she wants, so Barge-in by speech may not
-    /// work. Silence is quiet too.
+    /// `rms` is under the level Lucy wants, even after her +24 dB quiet-mic
+    /// boost. Barge-in by speech may not work then. Silence is quiet too.
     pub quiet: bool,
 }
 
-/// Params of `test.wake_word`: lucyd listens for the Wake word, outside any
-/// Session, and replies once it is heard or `timeout_secs` have passed.
+/// Params of `test.wake_word`: lucyd listens for the Wake word outside any
+/// Session. It replies once it is heard or `timeout_secs` have passed.
 /// Hearing it opens no Session. Refused while a Session is open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WakeWordTest {
@@ -356,4 +463,8 @@ pub enum Event {
     Level(LevelEvent),
     #[serde(rename = "plugins.changed")]
     PluginsChanged(PluginsChanged),
+    #[serde(rename = "input.open")]
+    InputOpen(InputOpen),
+    #[serde(rename = "input.close")]
+    InputClose(InputClose),
 }

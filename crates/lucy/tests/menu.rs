@@ -1,6 +1,7 @@
-//! `lucy`: the list of sections, each opened as its own page, and the walk
-//! through them that first run and `lucy setup` take. Full-screen, pressed
+//! `lucy`: the list of sections, each opened as its own page, and the walk.
+//! First run and `lucy setup` take the walk. Full-screen, pressed
 //! by scripted keys.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 
@@ -77,10 +78,10 @@ fn enter_opens_a_section_as_its_own_page_and_esc_goes_back_to_the_list() {
     configured(&home);
 
     let keys = Script::new()
-        .enter() // Thinking
+        .enter()
         .press(KeyCode::Esc)
         .down(6)
-        .enter() // Approvals
+        .enter()
         .press(KeyCode::Esc)
         .typed("q");
     let tui = home.tui(Open::Lucy, keys);
@@ -129,31 +130,43 @@ fn lucy_needs_a_terminal_rather_than_writing_escape_codes_to_a_pipe() {
 
 fn tools(home: &Home) {
     home.fake("claude", "exit 0");
-    // Imports piper.http_server.
-    home.fake("python3", "exit 0");
+    let imports_piper = "exit 0";
+    home.fake("python3", imports_piper);
     home.fake("superwhisper", "exit 0");
     home.fake(
         "systemctl",
         "case \"$2\" in cat|is-enabled) exit 1;; esac; exit 0",
     );
-    home.fake(
-        "pactl",
-        "case \"$3\" in \
-         sources) printf '1\\talsa_input.usb-Yeti\\tPipeWire\\n2\\talsa_output.hdmi.monitor\\tPipeWire\\n';; \
-         sinks) printf '1\\talsa_output.hdmi\\tPipeWire\\n';; esac",
+    home.fake_pactl(
+        &[
+            ("alsa_input.usb-Yeti", "Yeti Analog Stereo"),
+            ("alsa_output.hdmi.monitor", "Monitor of HDMI Digital Stereo"),
+        ],
+        &[("alsa_output.hdmi", "HDMI Digital Stereo")],
+        ("alsa_input.usb-Yeti", "alsa_output.hdmi"),
     );
 }
 
+const FAST_TIER_CLI_AND_MODEL: usize = 3;
+
 fn every_suggestion() -> Script {
+    let thinking_each_tier = 7;
+    let speech_whisper_and_restart = 6;
+    let voice_heard_and_kept = 4;
+    let mic_and_speaker = 7;
+    let wake_word_test = 2;
+    let plugins_next = 1;
+    let approvals_next = 1;
+    let service_at_login = 3;
     Script::new()
-        .enters(7) // Thinking: each tier, its CLI and model, then Next
-        .enters(6) // Speech-to-text: Whisper; its model, restarting lucyd; Next
-        .enters(4) // Voice: the first, heard and kept; Next
-        .enters(7) // Audio devices: the default mic, kept; the default speaker, heard; Next
-        .enters(2) // Wake word: the test; Next
-        .enter() // Plugins: Next
-        .enter() // Approvals: Next
-        .enters(3) // Service: start at login, yes; Done
+        .enters(thinking_each_tier)
+        .enters(speech_whisper_and_restart)
+        .enters(voice_heard_and_kept)
+        .enters(mic_and_speaker)
+        .enters(wake_word_test)
+        .enters(plugins_next)
+        .enters(approvals_next)
+        .enters(service_at_login)
 }
 
 #[test]
@@ -217,7 +230,7 @@ fn esc_leaves_the_walk_for_the_list_keeping_what_was_picked() {
     home.fake("claude", "exit 0");
 
     let keys = Script::new()
-        .enters(3) // the fast tier's CLI and model
+        .enters(FAST_TIER_CLI_AND_MODEL)
         .press(KeyCode::Esc)
         .typed("q");
     let left = home.tui(Open::Lucy, keys);

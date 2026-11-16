@@ -1,10 +1,6 @@
-//! The Persona: the user's `persona.md`, which goes into every Session's
-//! instructions. The user edits it by hand, or asks Lucy to change it.
-
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Written when the user has no `persona.md`. Nothing in it is personal.
 const DEFAULT: &str = "\
 # Lucy
 
@@ -20,12 +16,14 @@ grave, be plain and kind.
 Answer in one to three short spoken sentences. No markdown, no lists, no emoji. Before calling \
 a tool that may be slow, first say \"Let me check.\"
 
+When the user only greets you, greet them back in a word or two. When they say goodbye, say a \
+word or two in return and call end_session.
+
 ## The user
 
 You don't know what to call the user yet.
 ";
 
-/// The opening Turn of the user's first Session.
 pub const INTRODUCTION: &str = "[This is the user's first Session with you. Introduce yourself \
 briefly and ask what to call them. When they tell you, add it to your Persona with \
 update_persona.]";
@@ -44,8 +42,6 @@ impl Persona {
         &self.path
     }
 
-    /// The Persona's text, or the default if there is none yet. `first_run`
-    /// is true when there is none: the user hasn't been introduced to Lucy.
     pub fn load(&self) -> io::Result<Loaded> {
         match std::fs::read_to_string(&self.path) {
             Ok(text) => Ok(Loaded {
@@ -60,8 +56,6 @@ impl Persona {
         }
     }
 
-    /// Writes the default once Lucy has introduced herself, unless the
-    /// Persona has been written since.
     pub fn introduced(&self) -> io::Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -77,7 +71,6 @@ impl Persona {
         }
     }
 
-    /// Replaces the Persona with `text`.
     pub fn save(&self, text: &str) -> io::Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -92,7 +85,6 @@ pub struct Loaded {
 }
 
 impl Loaded {
-    /// The default, for when `persona.md` can't be read or written.
     pub fn fallback() -> Loaded {
         Loaded {
             text: DEFAULT.to_owned(),

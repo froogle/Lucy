@@ -6,10 +6,17 @@
 /// Where Plugin credentials are kept. Blocking; lucyd calls it off the
 /// async runtime.
 pub trait CredentialStore: Send + Sync {
-    /// The value of `plugin`'s credential `name`, if the user has entered
-    /// one. `Err` says why the store couldn't be read.
+    /// The value of `plugin`'s credential `name`, if the user has entered one.
+    ///
+    /// # Errors
+    ///
+    /// Why the store couldn't be read.
     fn get(&self, plugin: &str, name: &str) -> Result<Option<String>, String>;
     /// Keeps `value` as `plugin`'s credential `name`, replacing any before.
+    ///
+    /// # Errors
+    ///
+    /// Why the store couldn't be written.
     fn set(&self, plugin: &str, name: &str, value: &str) -> Result<(), String>;
 }
 
@@ -28,7 +35,6 @@ impl SecretService {
     }
 }
 
-/// The attributes an item is kept under.
 fn attributes<'a>(plugin: &'a str, name: &'a str) -> [(&'static str, &'a str); 3] {
     [
         ("application", "lucy"),

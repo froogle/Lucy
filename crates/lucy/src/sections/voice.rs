@@ -1,6 +1,3 @@
-//! Voice: installing Piper after a yes when it is missing, then Lucy's
-//! voice, heard in a Voice preview, with the terms of non-commercial ones.
-
 use ratatui::backend::Backend;
 
 use super::{Context, Page};

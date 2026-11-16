@@ -1,5 +1,5 @@
-//! The settings `lucy` changes in `config.toml`, written one at a time with
-//! every comment kept, and when lucyd takes each one up.
+//! The settings `lucy` changes in `config.toml`, and when lucyd takes each up.
+//! They are written one at a time with every comment kept.
 
 use std::fmt;
 use std::path::Path;
@@ -47,7 +47,6 @@ pub enum Key {
 }
 
 impl Key {
-    /// When lucyd takes up a change to this setting.
     pub fn applies(&self) -> Applies {
         match self {
             Key::WhisperModel => Applies::Restart,
@@ -75,7 +74,6 @@ impl Key {
     }
 }
 
-/// Its dotted path in `config.toml`, such as `tiers.fast`.
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.path().join("."))
@@ -85,8 +83,6 @@ impl fmt::Display for Key {
 impl FromStr for Key {
     type Err = String;
 
-    /// The setting at a dotted path, such as `audio.mic`; any other is
-    /// file-only.
     fn from_str(name: &str) -> Result<Key, String> {
         let path: Vec<&str> = name.split('.').collect();
         let key = match path[..] {
@@ -129,8 +125,6 @@ impl Change {
     }
 }
 
-/// The name `lucy set` and `unset` know Speech-to-text by: the STT Provider
-/// and Whisper's model in one, as the bar panel offers them.
 pub const SPEECH: &str = "stt";
 
 enum Speech {
@@ -152,9 +146,10 @@ impl Speech {
     }
 }
 
-/// What `lucy set <name> <value>` changes: `name` is a [`Key`]'s dotted
-/// path or [`SPEECH`], whose value is `superwhisper` or one of Whisper's
-/// models.
+/// What `lucy set <name> <value>` changes.
+///
+/// `name` is a [`Key`]'s dotted path or [`SPEECH`], whose value is
+/// `superwhisper` or one of Whisper's models.
 ///
 /// # Errors
 ///
@@ -168,8 +163,10 @@ pub fn parse_set(name: &str, value: String) -> Result<Vec<Change>, String> {
     }
 }
 
-/// What `lucy unset <name>` changes: unsetting [`SPEECH`] leaves Whisper
-/// hearing, with its model sized to the computer.
+/// What `lucy unset <name>` changes.
+///
+/// Unsetting [`SPEECH`] leaves Whisper hearing, with its model sized to the
+/// computer.
 ///
 /// # Errors
 ///
@@ -182,7 +179,7 @@ pub fn parse_unset(name: &str) -> Result<Vec<Change>, String> {
 }
 
 /// Makes `changes` in the config file at `config`, in order, keeping its
-/// comments; when lucyd takes them all up.
+/// comments. Returns when lucyd takes them all up.
 ///
 /// # Errors
 ///

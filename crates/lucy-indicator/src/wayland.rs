@@ -1,7 +1,3 @@
-//! The marker on screen: a wlr-layer-shell surface on the overlay layer,
-//! anchored bottom right, that never takes keyboard focus or reserves space.
-//! It exists only while there is something to show.
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -28,31 +24,21 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_dispatch2, delegate_registry, registry_handlers};
+use tiny_skia::PremultipliedColorU8;
 
 use crate::look::{Indicator, SIZE};
 use crate::theme::Palette;
 
-/// Gap between the marker and the screen's bottom-right corner.
 const MARGIN: i32 = 16;
-/// How often the theme is re-read, to follow theme changes.
 const THEME_POLL: Duration = Duration::from_secs(2);
-/// Linux `BTN_LEFT`.
-const LEFT_BUTTON: u32 = 0x110;
+const BTN_LEFT: u32 = 0x110;
 
-/// What the lucyd connection reports.
 pub enum Update {
-    State {
-        state: State,
-        /// Whether an Authoring build is running.
-        building: bool,
-    },
-    /// Lucy's voice level, as RMS from 0.0 to 1.0.
+    State { state: State, building: bool },
     Level(f32),
-    /// The connection to lucyd ended.
     Lost(String),
 }
 
-/// A compositor that can show the marker.
 pub struct Display {
     connection: Connection,
     queue: EventQueue<App>,
@@ -65,8 +51,6 @@ pub struct Display {
 }
 
 impl Display {
-    /// Connects to the Wayland compositor, or says why the marker can't be
-    /// shown there.
     pub fn connect() -> Result<Display, String> {
         let connection = Connection::connect_to_env()
             .map_err(|e| format!("can't connect to a Wayland compositor: {e}"))?;
@@ -91,8 +75,6 @@ impl Display {
         })
     }
 
-    /// Shows lucyd's state until the connection to lucyd ends, and returns
-    /// why it stopped. `end_session` runs when the marker is clicked.
     pub fn run(
         self,
         updates: Channel<Update>,
@@ -173,10 +155,8 @@ impl Display {
     }
 }
 
-/// The marker's surface while it is shown.
 struct Surface {
     layer: LayerSurface,
-    /// False until the compositor first configures it.
     configured: bool,
 }
 
@@ -218,7 +198,6 @@ impl App {
         }
     }
 
-    /// Creates the surface; it is drawn once the compositor configures it.
     fn show(&mut self) {
         let wl_surface = self.compositor.create_surface(&self.qh);
         let layer = self.layer_shell.create_layer_surface(
@@ -240,8 +219,6 @@ impl App {
         });
     }
 
-    /// Draws the next frame and asks for the one after, or removes the
-    /// surface once there is nothing to show.
     fn draw(&mut self) {
         let Some(surface) = &self.surface else {
             return;
@@ -258,9 +235,8 @@ impl App {
             eprintln!("lucy-indicator: can't allocate a frame buffer");
             return;
         };
-        // tiny-skia's premultiplied RGBA to wl_shm's little-endian ARGB.
         for (out, pixel) in canvas.as_chunks_mut::<4>().0.iter_mut().zip(frame.pixels()) {
-            *out = [pixel.blue(), pixel.green(), pixel.red(), pixel.alpha()];
+            *out = little_endian_argb(*pixel);
         }
         let wl_surface = surface.layer.wl_surface();
         wl_surface.damage_buffer(0, 0, SIZE as i32, SIZE as i32);
@@ -271,6 +247,10 @@ impl App {
         }
         surface.layer.commit();
     }
+}
+
+fn little_endian_argb(pixel: PremultipliedColorU8) -> [u8; 4] {
+    [pixel.blue(), pixel.green(), pixel.red(), pixel.alpha()]
 }
 
 impl CompositorHandler for App {
@@ -316,8 +296,6 @@ impl CompositorHandler for App {
 }
 
 impl LayerShellHandler for App {
-    /// The compositor took the surface away, e.g. its monitor was unplugged.
-    /// It comes back on the next state change.
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
         self.surface = None;
     }
@@ -352,7 +330,7 @@ impl PointerHandler for App {
         };
         let clicked = events.iter().any(|event| {
             &event.surface == surface.layer.wl_surface()
-                && matches!(event.kind, PointerEventKind::Press { button, .. } if button == LEFT_BUTTON)
+                && matches!(event.kind, PointerEventKind::Press { button, .. } if button == BTN_LEFT)
         });
         if clicked {
             let end_session = self.end_session;

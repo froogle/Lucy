@@ -1,11 +1,12 @@
-//! `lucy`'s full screen ([`menu`]): a list of sections, each a page that
-//! changes a few settings through [`settings`] or tests something inside
-//! lucyd. The screen is a model driven by key presses and drawn with
+//! `lucy`'s full screen ([`menu`]): a list of sections, each a page.
+//! A page changes a few settings through [`settings`] or tests something
+//! inside lucyd. The screen is a model driven by key presses and drawn with
 //! ratatui, so tests drive it with scripted keys. [`panel`] is what the
 //! Omarchy bar panel reads, through `lucy status --follow --json`.
 
 mod credentials;
 mod devices;
+mod input;
 pub mod menu;
 pub mod panel;
 mod piper;
@@ -17,7 +18,7 @@ pub mod ui;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use lucy_ipc::Client;
+use lucy_ipc::{Client, Role};
 
 /// Where `lucy` finds and puts things. [`Env::of_process`] reads them from
 /// the environment; tests give their own.
@@ -55,9 +56,22 @@ impl Env {
     }
 
     /// A client of lucyd.
+    ///
+    /// # Errors
+    ///
+    /// As [`Env::connect_as`].
     pub fn connect(&self) -> Result<Client, lucy_ipc::Error> {
-        // With no runtime dir there can be no socket, so lucyd isn't running.
+        self.connect_as(None)
+    }
+
+    /// A client of lucyd that claims `role`.
+    ///
+    /// # Errors
+    ///
+    /// `NotRunning` with no runtime dir, where there can be no socket, or when
+    /// lucyd doesn't answer on it.
+    pub fn connect_as(&self, role: Option<Role>) -> Result<Client, lucy_ipc::Error> {
         let path = self.socket.as_ref().ok_or(lucy_ipc::Error::NotRunning)?;
-        Client::connect(path, "lucy", None)
+        Client::connect(path, "lucy", role)
     }
 }

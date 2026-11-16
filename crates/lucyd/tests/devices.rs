@@ -1,5 +1,6 @@
-//! Pinned devices are re-resolved by name at each Session start, and a
-//! device lost mid-Session ends the Session.
+//! Pinned devices are re-resolved by name at each Session start.
+//! A device lost mid-Session ends the Session.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -42,7 +43,6 @@ fn a_missing_pinned_mic_falls_back_to_the_default_with_one_notification_and_keep
         PINNED
     );
 
-    // Back for the next Session.
     client.end_session().unwrap();
     lucyd.mic.plug_in(MIC);
     client.start_session().unwrap();
@@ -102,7 +102,6 @@ fn losing_the_mic_mid_session_ends_it_with_a_notification() {
     let shown = lucyd.notifier.next_notification();
     assert!(shown.summary.contains("microphone"), "{shown:?}");
 
-    // The next Session opens the microphone again.
     events.start_session().unwrap();
     assert_eq!(next_state(&mut events).state, State::Listening);
     lucyd.stt.script("hello");

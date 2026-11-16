@@ -1,15 +1,8 @@
-//! Entering a Plugin's credentials: the user types each one its Manifest
-//! declares, hidden. lucyd says which names it declares; the values go
-//! straight to the Secret Service, never to lucyd, the screen or the
-//! transcript. lucyd hands them to the Plugin when it next starts it.
-
 use lucy_config::credentials::CredentialStore;
 use ratatui::backend::Backend;
 
 use crate::ui::{Stop, Ui};
 
-/// Asks for each of `names`, the credentials `plugin` declares, and keeps
-/// what is typed in `store`.
 pub(crate) fn enter<B: Backend>(
     ui: &mut Ui<B>,
     store: &dyn CredentialStore,

@@ -5,6 +5,7 @@
 use lucy_config::credentials::CredentialStore;
 use ratatui::backend::Backend;
 
+use crate::input;
 use crate::sections::{self, Context, Opening, Section};
 use crate::ui::{back_is_fine, Pick, Rows, Stop, Ui};
 use crate::Env;
@@ -19,6 +20,8 @@ pub enum Open {
     /// `lucy credentials <plugin>`: the Plugins section, entering that
     /// Plugin's credentials.
     Credentials(String),
+    /// `lucy input`: the Input dialog alone, for one question.
+    Input,
 }
 
 /// Shows `lucy` until the user quits.
@@ -33,8 +36,12 @@ pub fn run<B: Backend>(
     open: Open,
 ) -> Result<(), String> {
     let context = Context { env, store };
-    match show(ui, &context, open) {
-        Ok(()) | Err(Stop::Quit | Stop::Back) => Ok(()),
+    let shown = match open {
+        Open::Input => input::page(ui, env),
+        open => show(ui, &context, open),
+    };
+    match shown {
+        Ok(()) | Err(Stop::Quit | Stop::Back | Stop::Closed) => Ok(()),
         Err(Stop::Io(e)) => Err(e.to_string()),
     }
 }
@@ -44,6 +51,7 @@ fn show<B: Backend>(ui: &mut Ui<B>, context: &Context, open: Open) -> Result<(),
     match open {
         Open::Lucy if context.env.config.exists() => {}
         Open::Lucy | Open::Setup => walk(ui, context)?,
+        Open::Input => unreachable!("the Input dialog has no sections"),
         Open::Credentials(plugin) => {
             selected = position(Section::Plugins);
             ui.screen.lines.clear();

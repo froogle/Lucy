@@ -1,5 +1,6 @@
-//! The Wake word opens a Session hands-free: a start sound, Listening, and
-//! the speech straight after it kept. A false wake ends after 8 s.
+//! The Wake word opens a Session hands-free.
+//! A start sound, Listening, and the speech straight after it kept. A false wake ends after 8 s.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -9,7 +10,6 @@ use harness::{next_state, Harness, SILENCE, SPEECH, WAKE};
 use lucy_ipc::State;
 use lucyd::adapters::Sound;
 
-/// Config whose wake-word model listens for "hey lucy".
 const HEY_LUCY: &str = "[wake_word]\nmodel = \"/models/hey_lucy.onnx\"\n";
 
 #[test]
@@ -31,7 +31,6 @@ fn the_wake_word_and_a_request_in_one_breath_send_only_the_request() {
     let mut events = lucyd.state_client();
     lucyd.stt.script("Hey Lucy, what's the time?");
 
-    // "Hey Lucy" and "what's the time" with no pause between them.
     lucyd.mic.feed(SILENCE, ms(1024));
     lucyd.mic.feed(WAKE, ms(512));
     lucyd.mic.feed(SPEECH, ms(1024));
@@ -39,9 +38,12 @@ fn the_wake_word_and_a_request_in_one_breath_send_only_the_request() {
 
     assert_eq!(next_state(&mut events).state, State::Listening);
     assert_eq!(lucyd.thinking.next_turn(), "what's the time?");
-    // The whole utterance, Wake word and pre-roll included, reached STT.
     let segments = lucyd.stt.segments();
-    assert_eq!(segments.len(), 1);
+    assert_eq!(
+        segments.len(),
+        1,
+        "the whole utterance, Wake word and pre-roll included, reached STT"
+    );
     let expected = ms(500 + 512 + 1024 + 700);
     assert!(segments[0].abs_diff(expected) <= ms(32), "{segments:?}");
 }
@@ -80,7 +82,6 @@ fn speech_under_way_holds_off_the_end_of_a_false_wake() {
     let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 3\n");
     let mut events = lucyd.state_client();
 
-    // The utterance starts before the Wake word in it is recognised.
     lucyd.start_speaking();
     lucyd.wake();
     assert_eq!(next_state(&mut events).state, State::Listening);
@@ -149,9 +150,6 @@ fn only_a_leading_wake_word_is_stripped() {
 
 #[test]
 fn the_wake_word_alone_is_no_speech() {
-    // A Plugin's question shows what was heard: the words, or "no answer"
-    // once the wait for one is over. That wait doesn't run while a reply
-    // is being transcribed, so the reply is always heard first.
     let lucyd = Harness::with_config(HEY_LUCY);
     lucyd.install_plugin(
         "asker",
@@ -186,8 +184,6 @@ fn the_wake_word_alone_is_no_speech() {
     assert_eq!(said, "no answer");
 }
 
-// Tickets 07 and 11 together: a Session the Wake word opens re-resolves a
-// pinned microphone too.
 #[test]
 fn a_wake_with_the_pinned_mic_missing_falls_back_with_one_notification() {
     let lucyd = Harness::hearing(&format!(

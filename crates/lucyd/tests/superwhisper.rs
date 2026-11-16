@@ -1,4 +1,5 @@
 //! The `superwhisper` STT Provider, against a fake `superwhisper` CLI.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -14,9 +15,6 @@ use lucyd::superwhisper::Superwhisper;
 
 const CHOSEN: &str = "[stt]\nkind = \"superwhisper\"\n";
 
-/// A fake `superwhisper` in `dir`. It logs each call to `calls`, keeps the
-/// file it is asked to transcribe as `heard.wav`, prints `started` for
-/// `transcribe`, and for `read` prints `previous` twice, then `result`.
 fn fake_superwhisper(dir: &Path, started: &str, result: &str) -> PathBuf {
     let d = dir.display();
     std::fs::write(dir.join("started"), started).unwrap();
@@ -37,7 +35,6 @@ fn fake_superwhisper(dir: &Path, started: &str, result: &str) -> PathBuf {
          esac\n"
     );
     let program = dir.join("superwhisper");
-    // Written from a child process, so no fd of ours leaks into it.
     let written = Command::new("/bin/sh")
         .args([
             "-c",
@@ -61,7 +58,6 @@ fn calls(dir: &Path) -> Vec<String> {
     calls.lines().map(str::to_owned).collect()
 }
 
-/// Superwhisper for an utterance in `dir`, with its fake CLI there too.
 fn superwhisper(dir: &Path, started: &str, result: &str) -> Superwhisper {
     let program = fake_superwhisper(dir, started, result);
     Superwhisper::new(program, dir.to_owned())
@@ -80,9 +76,7 @@ fn an_utterance_is_written_as_16_khz_mono_and_its_own_result_is_read() {
 
     let text = stt.transcribe(second_of_speech()).unwrap();
 
-    // The raw transcript, not the cleanup model's rewrite, and not the older
-    // dictation `read` showed first.
-    assert_eq!(text, "what time is it");
+    assert_eq!(text, "what time is it", "the raw transcript, not the cleanup model's rewrite, and not the older dictation `read` showed first");
     let wav = hound::WavReader::open(dir.path().join("heard.wav")).unwrap();
     assert_eq!(wav.spec().channels, 1);
     assert_eq!(wav.spec().sample_rate, 16_000);
@@ -159,8 +153,8 @@ fn chosen_in_config_superwhisper_hears_the_session() {
     events.start_session().unwrap();
     next_state(&mut events);
 
-    // What the fake Whisper would have heard; Superwhisper hears it instead.
-    lucyd.say("not this");
+    let what_whisper_would_have_heard = "not this";
+    lucyd.say(what_whisper_would_have_heard);
 
     assert_eq!(lucyd.thinking.next_turn(), "what time is it");
     assert!(

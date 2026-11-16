@@ -1,7 +1,9 @@
-//! The shipped news Plugin, run by lucyd: approved when lucyd scans it,
-//! offered to the model, and keeping its preferences across Sessions.
+//! The shipped news Plugin, run by lucyd.
+//! It is approved when lucyd scans it, offered to the model, and keeps its
+//! preferences across Sessions.
 //! Nothing here reaches the network; the Plugin's own tests cover briefings
 //! against recorded feeds.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -11,7 +13,6 @@ use harness::{next_state, Harness};
 use lucy_ipc::State;
 use serde_json::{json, Value};
 
-/// The `lucy-news` binary cargo builds beside the test binary.
 fn news_binary() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let binary = exe
@@ -22,15 +23,12 @@ fn news_binary() -> PathBuf {
     binary.expect("lucy-news not found; run `cargo build -p lucy-news` or `cargo test --workspace`")
 }
 
-/// Installs the news Plugin as Lucy ships it: its Manifest and executable.
 fn install_news(lucyd: &Harness) -> PathBuf {
     let manifest = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../lucy-news/manifest.toml"),
     )
     .unwrap();
     let folder = lucyd.install_shipped_plugin("news", &manifest);
-    // Copied by a child process, so this one holds no write fd on an
-    // executable another test's child could inherit ("Text file busy").
     let copied = std::process::Command::new("cp")
         .arg(news_binary())
         .arg(folder.join("lucy-news"))
@@ -67,11 +65,11 @@ fn the_shipped_news_plugin_is_offered_without_asking_and_keeps_a_swap_into_the_n
     assert!(tools.contains(&"news__briefing".into()), "{tools:?}");
     assert_eq!(lucyd.tts.sentences(), Vec::<String>::new());
 
-    // No Confirmation: the call answers straight away.
     let swapped = reply(&lucyd, json!({"drop": "Sky"}));
     assert_eq!(
         swapped["changed"],
-        json!(["Sky News is out; you won't hear from it again."])
+        json!(["Sky News is out; you won't hear from it again."]),
+        "no Confirmation: the call answers straight away"
     );
     events.end_session().unwrap();
 

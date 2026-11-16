@@ -1,12 +1,3 @@
-//! TTS playback through cpal, at the voice's native rate.
-//!
-//! The PipeWire host puts every cpal stream of the process in one
-//! `node.group`, so playback shares a driver with capture. The callback only
-//! moves samples between lock-free rings. A player thread feeds it, reports
-//! each sentence once it has played, sends the level about 30 times a second,
-//! and downsamples what actually played to the 16 kHz echo-cancellation
-//! reference.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
@@ -19,40 +10,31 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{Sound, Speaker, SpeakerEvent};
 use crate::audio;
+use crate::sync::Locked;
 
-/// Lucy's internal rate, which the echo canceller works at.
 pub const REFERENCE_RATE: u32 = 16_000;
 
-/// How often the level is reported while speaking: about 30 Hz.
 const LEVEL_PERIOD: Duration = Duration::from_millis(33);
 
-/// Seconds of audio the playback ring holds before the player keeps the rest.
 const RING_SECS: usize = 10;
 
-/// The rate cues are made at when nothing is open yet: that of the default
-/// voice, so the stream rarely has to reopen for speech.
-const SOUND_RATE: u32 = 22_050;
+const DEFAULT_VOICE_RATE: u32 = 22_050;
 
-/// The longest a cue keeps playing after the Speaker is dropped.
-const PLAY_OUT: Duration = Duration::from_secs(1);
+const CUE_PLAY_OUT: Duration = Duration::from_secs(1);
 
-/// Ducked playback is 12 dB down.
-const DUCKED_GAIN: f32 = 0.25;
+const DUCKED_GAIN_MINUS_12_DB: f32 = 0.25;
 
-/// One synthesised sentence: mono samples from -1.0 to 1.0.
+const FULL_VOLUME_BITS: u32 = 0;
+
 pub struct Pcm {
     pub sample_rate: u32,
     pub samples: Vec<f32>,
 }
 
-/// Turns a sentence into audio, or says why it couldn't.
 pub type Synthesise = Box<dyn FnMut(&str) -> Result<Pcm, String> + Send>;
 
-/// Where the 16 kHz copy of what Lucy played goes. Full means dropped.
 pub type Reference = Arc<Mutex<rtrb::Producer<f32>>>;
 
-/// Starts a Speaker that synthesises each sentence with `synthesise` and
-/// plays it on `device` (`"default"` or a pinned node name).
 pub fn speaker(
     mut synthesise: Synthesise,
     device: &str,
@@ -65,8 +47,8 @@ pub fn speaker(
     let synth_control = control.clone();
     std::thread::spawn(move || {
         for (epoch, request) in sentences_rx {
-            // Stopped before it was synthesised.
-            if epoch != synth_control.epoch.load(Ordering::Acquire) {
+            let stopped_before_synthesis = epoch != synth_control.epoch.load(Ordering::Acquire);
+            if stopped_before_synthesis {
                 continue;
             }
             let item = match request {
@@ -97,29 +79,22 @@ struct PlaybackSpeaker {
     control: Arc<Control>,
 }
 
-/// What the Speaker changes under the player and its callback.
 #[derive(Default)]
 struct Control {
-    /// Bumped by each stop. Requests and items from an older epoch are
-    /// dropped.
     epoch: AtomicU64,
-    /// The epoch the player has flushed up to. Until it catches up with
-    /// `epoch`, the callback throws away whatever is in its ring.
     flushed: AtomicU64,
-    /// The playback gain, as f32 bits; 0 means full volume.
     gain: AtomicU32,
 }
 
 impl Control {
     fn gain(&self) -> f32 {
         match self.gain.load(Ordering::Relaxed) {
-            0 => 1.0,
+            FULL_VOLUME_BITS => 1.0,
             bits => f32::from_bits(bits),
         }
     }
 }
 
-/// What the Speaker queues, in order.
 enum Request {
     Sentence(String),
     Sound(Sound),
@@ -142,7 +117,11 @@ impl Speaker for PlaybackSpeaker {
     }
 
     fn duck(&mut self, ducked: bool) {
-        let gain = if ducked { DUCKED_GAIN.to_bits() } else { 0 };
+        let gain = if ducked {
+            DUCKED_GAIN_MINUS_12_DB.to_bits()
+        } else {
+            FULL_VOLUME_BITS
+        };
         self.control.gain.store(gain, Ordering::Relaxed);
     }
 
@@ -153,46 +132,35 @@ impl Speaker for PlaybackSpeaker {
 }
 
 enum Item {
-    /// A sentence's audio, and its text in case it can't be played.
     Audio(Pcm, String),
     Failed(Failure),
     Sound(Sound),
 }
 
-/// A sentence that couldn't be synthesised or played, and why.
 struct Failure {
     sentence: String,
     reason: String,
 }
 
-/// The output stream and what the player shares with its callback.
 struct Output {
     _stream: cpal::Stream,
     sample_rate: u32,
     pcm: rtrb::Producer<f32>,
-    /// A copy of every sample the callback played.
     played: rtrb::Consumer<f32>,
     downsampler: Downsampler,
 }
 
 struct Player {
-    /// The output device's node name, or `"default"`.
     device: String,
     events: mpsc::UnboundedSender<SpeakerEvent>,
     reference: Reference,
     output: Option<Output>,
-    /// Samples that didn't fit in the ring yet.
     backlog: VecDeque<f32>,
-    /// Samples queued for playback so far.
-    written: u64,
-    /// Samples the callback has played so far.
+    queued: u64,
     consumed: Arc<AtomicU64>,
-    /// RMS of the callback's latest block, as f32 bits.
     rms: Arc<AtomicU32>,
-    /// Each sentence's end position, with its failure if it failed.
-    pending: VecDeque<(u64, Option<Failure>)>,
-    /// The last item queued was a cue.
-    sound_last: bool,
+    sentence_ends: VecDeque<(u64, Option<Failure>)>,
+    cue_last: bool,
     control: Arc<Control>,
 }
 
@@ -209,17 +177,15 @@ impl Player {
             reference,
             output: None,
             backlog: VecDeque::new(),
-            written: 0,
+            queued: 0,
             consumed: Arc::default(),
             rms: Arc::default(),
-            pending: VecDeque::new(),
-            sound_last: false,
+            sentence_ends: VecDeque::new(),
+            cue_last: false,
             control,
         }
     }
 
-    /// Plays until the Speaker is dropped, which stops playback at once,
-    /// unless the last thing queued was a cue: that plays out.
     fn run(mut self, items: std_mpsc::Receiver<(u64, Item)>) {
         let mut next_tick = Instant::now() + LEVEL_PERIOD;
         loop {
@@ -235,7 +201,7 @@ impl Player {
                     next_tick = Instant::now() + LEVEL_PERIOD;
                 }
                 Err(std_mpsc::RecvTimeoutError::Disconnected) => {
-                    if self.sound_last {
+                    if self.cue_last {
                         self.play_out();
                     }
                     return;
@@ -245,9 +211,9 @@ impl Player {
     }
 
     fn play_out(&mut self) {
-        let deadline = Instant::now() + PLAY_OUT;
+        let deadline = Instant::now() + CUE_PLAY_OUT;
         while self.output.is_some()
-            && self.consumed.load(Ordering::Acquire) < self.written
+            && self.consumed.load(Ordering::Acquire) < self.queued
             && Instant::now() < deadline
         {
             std::thread::sleep(LEVEL_PERIOD);
@@ -256,28 +222,31 @@ impl Player {
     }
 
     fn queue(&mut self, item: Item) {
-        self.sound_last = matches!(item, Item::Sound(_));
+        self.cue_last = matches!(item, Item::Sound(_));
         match item {
             Item::Audio(pcm, sentence) => match self.output_at(pcm.sample_rate) {
                 Ok(()) => {
-                    self.written += pcm.samples.len() as u64;
+                    self.queued += pcm.samples.len() as u64;
                     self.backlog.extend(pcm.samples);
-                    self.pending.push_back((self.written, None));
+                    self.sentence_ends.push_back((self.queued, None));
                 }
                 Err(e) => {
                     let reason = format!("can't play speech: {e}");
                     eprintln!("lucyd: {reason}");
                     let failure = Failure { sentence, reason };
-                    self.pending.push_back((self.written, Some(failure)));
+                    self.sentence_ends.push_back((self.queued, Some(failure)));
                 }
             },
-            Item::Failed(failure) => self.pending.push_back((self.written, Some(failure))),
+            Item::Failed(failure) => self.sentence_ends.push_back((self.queued, Some(failure))),
             Item::Sound(sound) => {
-                let rate = self.output.as_ref().map_or(SOUND_RATE, |o| o.sample_rate);
+                let rate = self
+                    .output
+                    .as_ref()
+                    .map_or(DEFAULT_VOICE_RATE, |o| o.sample_rate);
                 match self.output_at(rate) {
                     Ok(()) => {
                         let samples = cue(sound, rate);
-                        self.written += samples.len() as u64;
+                        self.queued += samples.len() as u64;
                         self.backlog.extend(samples);
                     }
                     Err(e) => eprintln!("lucyd: can't play a sound: {e}"),
@@ -287,10 +256,8 @@ impl Player {
         self.tick();
     }
 
-    /// Opens the output stream at `sample_rate`, unless it is already open.
-    /// A stream at another rate is reopened once it has played everything.
     fn output_at(&mut self, sample_rate: u32) -> Result<(), String> {
-        let idle = self.backlog.is_empty() && self.consumed.load(Ordering::Acquire) >= self.written;
+        let idle = self.backlog.is_empty() && self.consumed.load(Ordering::Acquire) >= self.queued;
         if let Some(output) = &self.output {
             if output.sample_rate == sample_rate {
                 return Ok(());
@@ -315,17 +282,15 @@ impl Player {
         Ok(())
     }
 
-    /// After a stop, drops everything not yet handed to the callback and
-    /// lets the callback know, without reporting any of it.
     fn flush_if_stopped(&mut self) {
         let epoch = self.control.epoch.load(Ordering::Acquire);
         if self.control.flushed.load(Ordering::Acquire) == epoch {
             return;
         }
-        self.written -= self.backlog.len() as u64;
+        self.queued -= self.backlog.len() as u64;
         self.backlog.clear();
-        self.pending.clear();
-        self.sound_last = false;
+        self.sentence_ends.clear();
+        self.cue_last = false;
         self.control.flushed.store(epoch, Ordering::Release);
     }
 
@@ -335,32 +300,30 @@ impl Player {
             self.report_finished();
             return;
         };
-        while !self.backlog.is_empty() && !output.pcm.is_full() {
-            let _ = output.pcm.push(self.backlog.pop_front().unwrap());
+        while !output.pcm.is_full() {
+            let Some(sample) = self.backlog.pop_front() else {
+                break;
+            };
+            let _ = output.pcm.push(sample);
         }
         let played: Vec<f32> = std::iter::from_fn(|| output.played.pop().ok()).collect();
-        let mut reference = self.reference.lock().unwrap();
+        let mut reference = self.reference.locked();
         output.downsampler.push(&played, |samples| {
             for &s in samples {
                 let _ = reference.push(s);
             }
         });
         drop(reference);
-        if self.consumed.load(Ordering::Acquire) < self.written {
+        if self.consumed.load(Ordering::Acquire) < self.queued {
             let rms = f32::from_bits(self.rms.load(Ordering::Relaxed));
             let _ = self.events.send(SpeakerEvent::Level(rms));
         }
         self.report_finished();
     }
 
-    /// Reports, in order, every sentence that has finished playing.
     fn report_finished(&mut self) {
         let consumed = self.consumed.load(Ordering::Acquire);
-        while let Some((end, _)) = self.pending.front() {
-            if *end > consumed {
-                return;
-            }
-            let (_, failed) = self.pending.pop_front().unwrap();
+        while let Some((_, failed)) = self.sentence_ends.pop_front_if(|(end, _)| *end <= consumed) {
             let _ = self.events.send(match failed {
                 None => SpeakerEvent::Played,
                 Some(Failure { sentence, reason }) => SpeakerEvent::Failed { sentence, reason },
@@ -369,8 +332,6 @@ impl Player {
     }
 }
 
-/// A cue as mono samples at `rate`: two short notes, rising to open a
-/// Session and falling, softer, to close one.
 fn cue(sound: Sound, rate: u32) -> Vec<f32> {
     let (notes, gain): (&[(f32, f32)], f32) = match sound {
         Sound::Start => (&[(660.0, 0.09), (880.0, 0.12)], 0.25),
@@ -382,16 +343,14 @@ fn cue(sound: Sound, rate: u32) -> Vec<f32> {
         .flat_map(|&(hz, secs)| {
             let len = (rate * secs) as usize;
             (0..len).map(move |i| {
-                // A sine envelope, so each note starts and ends without a click.
-                let envelope = (std::f32::consts::PI * i as f32 / len as f32).sin();
+                let click_free_envelope = (std::f32::consts::PI * i as f32 / len as f32).sin();
                 let phase = 2.0 * std::f32::consts::PI * hz * i as f32 / rate;
-                gain * envelope * phase.sin()
+                gain * click_free_envelope * phase.sin()
             })
         })
         .collect()
 }
 
-/// `events` hears `DeviceLost` if the device goes away.
 fn open_output(
     device: &str,
     sample_rate: u32,
@@ -413,28 +372,25 @@ fn open_output(
     let ring = sample_rate as usize * RING_SECS;
     let (pcm, mut source) = rtrb::RingBuffer::new(ring);
     let (mut played_tx, played) = rtrb::RingBuffer::new(ring);
-    // The epoch whose stop the callback has finished throwing away.
-    let mut dropped_epoch = 0;
+    let mut drained_epoch = 0;
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [f32], _| {
                 let (mut played_now, mut sum) = (0u64, 0.0f32);
                 let epoch = control.epoch.load(Ordering::Acquire);
-                if epoch != dropped_epoch {
-                    // Once the player has flushed, nothing stale reaches
-                    // the ring after this drain.
-                    let flushed = control.flushed.load(Ordering::Acquire) == epoch;
+                if epoch != drained_epoch {
+                    let player_flushed = control.flushed.load(Ordering::Acquire) == epoch;
                     let mut dropped = 0;
                     while source.pop().is_ok() {
                         dropped += 1;
                     }
                     consumed.fetch_add(dropped, Ordering::Release);
-                    if !flushed {
+                    if !player_flushed {
                         data.fill(0.0);
                         return;
                     }
-                    dropped_epoch = epoch;
+                    drained_epoch = epoch;
                 }
                 let gain = control.gain();
                 for frame in data.chunks_mut(channels as usize) {
@@ -475,10 +431,7 @@ fn open_output(
     })
 }
 
-/// Converts mono audio at a voice's rate to 16 kHz with rubato's FFT
-/// resampler, the only resampler Lucy runs herself.
 pub struct Downsampler {
-    /// None when the voice is already 16 kHz.
     resampler: Option<Fft<f32>>,
     input: Vec<f32>,
     output: Vec<f32>,
@@ -504,7 +457,6 @@ impl Downsampler {
         }
     }
 
-    /// Adds `samples` and hands every complete chunk of 16 kHz output to `out`.
     pub fn push(&mut self, samples: &[f32], mut out: impl FnMut(&[f32])) {
         let Some(resampler) = &mut self.resampler else {
             out(samples);
@@ -513,9 +465,11 @@ impl Downsampler {
         self.input.extend_from_slice(samples);
         let chunk = resampler.input_frames_next();
         while self.input.len() >= chunk {
-            let input = InterleavedSlice::new(&self.input[..chunk], 1, chunk).unwrap();
+            let input = InterleavedSlice::new(&self.input[..chunk], 1, chunk)
+                .expect("a mono slice of `chunk` samples holds `chunk` frames");
             let capacity = self.output.len();
-            let mut output = InterleavedSlice::new_mut(&mut self.output, 1, capacity).unwrap();
+            let mut output = InterleavedSlice::new_mut(&mut self.output, 1, capacity)
+                .expect("a mono buffer of `capacity` samples holds `capacity` frames");
             let (_, written) = resampler
                 .process_into_buffer(&input, &mut output, None)
                 .expect("buffers sized by the resampler");
@@ -535,10 +489,9 @@ mod tests {
             .collect()
     }
 
-    /// Rising zero crossings per second, after skipping the resampler's
-    /// start-up delay.
     fn frequency(samples: &[f32], rate: u32) -> f32 {
-        let samples = &samples[rate as usize / 10..];
+        let past_startup_delay = rate as usize / 10;
+        let samples = &samples[past_startup_delay..];
         let rising = samples.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0);
         rising.count() as f32 / (samples.len() as f32 / rate as f32)
     }
@@ -548,15 +501,14 @@ mod tests {
         let mut downsampler = Downsampler::new(22_050);
         let mut reference = Vec::new();
 
-        // Fed in uneven pieces, as the playback callback hands it over.
-        for piece in sine(440.0, 22_050, 2.0).chunks(333) {
+        let uneven_pieces = 333;
+        for piece in sine(440.0, 22_050, 2.0).chunks(uneven_pieces) {
             downsampler.push(piece, |out| reference.extend_from_slice(out));
         }
 
-        // Two seconds in, less what is still buffered: under one chunk.
         assert!(
             (30_000..=32_000).contains(&reference.len()),
-            "{}",
+            "two seconds in, less what is still buffered (under one chunk): {}",
             reference.len()
         );
         let hz = frequency(&reference, 16_000);

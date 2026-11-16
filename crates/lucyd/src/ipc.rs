@@ -1,15 +1,13 @@
-//! The public socket: newline-delimited JSON-RPC 2.0 (ADR 0006).
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use lucy_config::{Config, Tier};
 use lucy_ipc::{
-    error_code, Event, Hello, HelloResult, LevelEvent, MicLevel, PluginsChanged, ProviderCheck,
-    ProviderCheckResult, ProviderStatus, ProvidersStatus, RevokeApproval, Role, SessionStarted,
-    SetPluginEnabled, Status, Subscribe, Topic, VoicePreview, WakeWordTest, WakeWordTestResult,
-    PROTOCOL,
+    error_code, Event, Hello, HelloResult, InputAnswer, InputCancel, LevelEvent, MicLevel,
+    PluginsChanged, ProviderCheck, ProviderCheckResult, ProviderStatus, ProvidersStatus,
+    RevokeApproval, Role, SessionStarted, SetPluginEnabled, Status, Subscribe, Topic, VoicePreview,
+    WakeWordTest, WakeWordTestResult, PROTOCOL,
 };
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -18,16 +16,16 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::adapters::Thinking;
+use crate::input::{self, InputClaim};
 use crate::notifications::{IndicatorClaim, Indicators};
 use crate::plugins::{self, Host};
 use crate::runner::{self, Command, PreviewError, SetupTest, SetupTestError, WakeWordHeard};
 use crate::status::Buses;
+use crate::sync::or_pending;
 
-/// What `providers.status` and `provider.check` need.
 #[derive(Clone)]
 pub struct Providers {
     pub thinking: Arc<dyn Thinking>,
-    /// `config.toml`, read afresh for each request.
     pub config_path: PathBuf,
 }
 
@@ -64,14 +62,11 @@ struct Connection {
     providers: Providers,
     plugins: Arc<Host>,
     greeted: bool,
-    /// Held while this client holds the `indicator` role.
     indicator: Option<IndicatorClaim>,
+    input: Option<InputClaim>,
     state_subscribed: bool,
-    /// Every state change since subscribing, once subscribed.
     state_events: Option<mpsc::UnboundedReceiver<Status>>,
-    /// Playback levels, once subscribed.
     level_events: Option<broadcast::Receiver<f32>>,
-    /// A queue of `plugins.changed`, once subscribed.
     plugin_events: Option<mpsc::UnboundedReceiver<()>>,
 }
 
@@ -94,6 +89,7 @@ async fn connection(
         plugins,
         greeted: false,
         indicator: None,
+        input: None,
         state_subscribed: false,
         state_events: None,
         level_events: None,
@@ -109,9 +105,10 @@ async fn connection(
             Some(rms) = next_level(&mut conn.level_events) => {
                 conn.send_event(Event::Level(LevelEvent { rms })).await
             }
-            Some(()) = next_change(&mut conn.plugin_events) => {
+            Some(()) = or_pending(conn.plugin_events.as_mut().map(|changes| changes.recv())) => {
                 conn.send_event(Event::PluginsChanged(PluginsChanged {})).await
             }
+            Some(event) = or_pending(conn.input.as_mut().map(|input| input.events.recv())) => conn.send_event(event).await,
         };
         if sent.is_err() {
             return;
@@ -119,7 +116,6 @@ async fn connection(
     }
 }
 
-/// The next state change, or never if not subscribed.
 async fn next_state(state_events: &mut Option<mpsc::UnboundedReceiver<Status>>) -> Option<Status> {
     match state_events {
         Some(state_events) => state_events.recv().await,
@@ -127,8 +123,6 @@ async fn next_state(state_events: &mut Option<mpsc::UnboundedReceiver<Status>>) 
     }
 }
 
-/// The next playback level, or never if not subscribed. Levels a slow
-/// subscriber missed are skipped.
 async fn next_level(level_events: &mut Option<broadcast::Receiver<f32>>) -> Option<f32> {
     let Some(level_events) = level_events else {
         return std::future::pending().await;
@@ -142,15 +136,6 @@ async fn next_level(level_events: &mut Option<broadcast::Receiver<f32>>) -> Opti
     }
 }
 
-/// The next change, or never if not subscribed.
-async fn next_change(changes: &mut Option<mpsc::UnboundedReceiver<()>>) -> Option<()> {
-    match changes {
-        Some(changes) => changes.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-/// A JSON-RPC error to send back.
 struct RpcError {
     code: i64,
     message: String,
@@ -276,6 +261,18 @@ impl Connection {
                     .await?;
                 Ok(json!(WakeWordTestResult { heard, score }))
             }
+            "input.answer" => {
+                let InputAnswer { id, values } = parse_params(params)?;
+                self.input_holder()?
+                    .answer(&id, values)
+                    .map_err(dialog_error)?;
+                Ok(json!({}))
+            }
+            "input.cancel" => {
+                let InputCancel { id } = parse_params(params)?;
+                self.input_holder()?.cancel(&id).map_err(dialog_error)?;
+                Ok(json!({}))
+            }
             _ => Err(RpcError::new(
                 error_code::METHOD_NOT_FOUND,
                 format!("unknown method {method:?}"),
@@ -283,7 +280,15 @@ impl Connection {
         }
     }
 
-    /// Sends a command to the Session runner and waits for its reply.
+    fn input_holder(&self) -> Result<&InputClaim, RpcError> {
+        self.input.as_ref().ok_or_else(|| {
+            RpcError::new(
+                error_code::NOT_INPUT_HOLDER,
+                "only the client holding the input role answers the Input dialog",
+            )
+        })
+    }
+
     async fn ask<T>(
         &self,
         command: impl FnOnce(oneshot::Sender<T>) -> Command,
@@ -294,7 +299,6 @@ impl Connection {
         answer.await.map_err(|_| gone())
     }
 
-    /// Says `text` outside any Session, once it has been played.
     async fn voice_preview(&self, text: String, voice: Option<String>) -> Result<(), RpcError> {
         if text.trim().is_empty() {
             return Err(RpcError::new(
@@ -324,7 +328,6 @@ impl Connection {
         })
     }
 
-    /// Runs a setup test in the Session runner.
     async fn setup_test<T>(
         &self,
         test: impl FnOnce(oneshot::Sender<Result<T, SetupTestError>>) -> SetupTest,
@@ -354,7 +357,6 @@ impl Connection {
         })
     }
 
-    /// Health checks for every Provider in config, with no model call.
     async fn providers_status(&self) -> Result<ProvidersStatus, RpcError> {
         let config = self.config()?;
         let thinking = self.providers.thinking.clone();
@@ -382,7 +384,6 @@ impl Connection {
         Ok(ProvidersStatus { providers })
     }
 
-    /// A real "Reply OK" round trip through one Provider.
     async fn check_provider(&self, check: ProviderCheck) -> Result<ProviderCheckResult, RpcError> {
         let config = self.config()?;
         let Some(provider) = config.providers.get(&check.name).cloned() else {
@@ -413,11 +414,20 @@ impl Connection {
                 ),
             ));
         }
+        match hello.role {
+            Some(Role::Indicator) => self.indicator = Some(self.indicators.claim()),
+            Some(Role::Input) => {
+                let claim = self.buses.dialogs.claim().ok_or_else(|| {
+                    RpcError::new(
+                        error_code::ROLE_TAKEN,
+                        "another client holds the input role and draws the Input dialog",
+                    )
+                })?;
+                self.input = Some(claim);
+            }
+            None => {}
+        }
         self.greeted = true;
-        self.indicator = match hello.role {
-            Some(Role::Indicator) => Some(self.indicators.claim()),
-            None => None,
-        };
         Ok(json!(HelloResult {
             protocol: PROTOCOL,
             server: format!("lucyd {}", env!("CARGO_PKG_VERSION")),
@@ -447,7 +457,6 @@ impl Connection {
     }
 }
 
-/// Runs a blocking Provider call off the async runtime.
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, RpcError> {
@@ -466,6 +475,19 @@ fn plugin_error(e: plugins::Refusal) -> RpcError {
         _ => error_code::INTERNAL_ERROR,
     };
     RpcError::new(code, e.to_string())
+}
+
+fn dialog_error(e: input::Refusal) -> RpcError {
+    match e {
+        input::Refusal::NoDialog => RpcError::new(
+            error_code::NO_DIALOG,
+            "no Input dialog with that id is open; Lucy may have closed it",
+        ),
+        input::Refusal::WrongFields => RpcError::new(
+            error_code::INVALID_PARAMS,
+            "values must hold a value for each of the dialog's fields, and nothing else",
+        ),
+    }
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, RpcError> {

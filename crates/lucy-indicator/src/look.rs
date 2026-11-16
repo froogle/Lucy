@@ -1,22 +1,15 @@
-//! What the Indicator looks like in each state, drawn with tiny-skia. Pure:
-//! the caller passes the time, so it is testable without a compositor.
-
 use lucy_ipc::State;
 use tiny_skia::{Color, FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 
 use crate::theme::Palette;
 
-/// The marker is a square of this many pixels at scale 1.
 pub const SIZE: u32 = 48;
 
 pub struct Indicator {
     palette: Palette,
     state: State,
-    /// Lucy's voice level, as `level` RMS.
     level: f32,
-    /// When the red flash of an error ends.
     flash_until: Option<f32>,
-    /// An Authoring build is running: a dot in the corner.
     building: bool,
 }
 
@@ -31,44 +24,38 @@ impl Indicator {
         }
     }
 
-    /// The theme changed.
     pub fn set_palette(&mut self, palette: Palette) {
         self.palette = palette;
     }
 
-    /// lucyd published the voice level `rms`.
     pub fn on_level(&mut self, rms: f32) {
         self.level = rms;
     }
 
-    /// lucyd published whether an Authoring build is running.
     pub fn on_building(&mut self, building: bool) {
         self.building = building;
     }
 
-    /// lucyd published `state` at time `t`, in seconds.
-    /// An error flashes over whatever state follows it.
     pub fn on_state(&mut self, state: State, t: f32) {
         match state {
-            State::Error => self.flash_until = Some(t + FLASH),
+            State::Error => self.flash_until = Some(t + FLASH_SECS),
             _ => self.state = state,
         }
     }
 
-    /// The marker at time `t`, or `None` while it is hidden.
     pub fn draw(&self, t: f32) -> Option<Pixmap> {
         let mut canvas = Pixmap::new(SIZE, SIZE).expect("non-zero size");
         if let Some(until) = self.flash_until.filter(|&until| t < until) {
-            flash(&mut canvas, self.palette.error, (until - t) / FLASH);
+            flash(&mut canvas, self.palette.error, (until - t) / FLASH_SECS);
             return Some(canvas);
         }
         match self.state {
-            // An error is only ever drawn as the flash.
             State::Idle | State::Error => return None,
             State::Listening => listening(&mut canvas, self.palette.accent, t),
             State::Thinking => thinking(&mut canvas, self.palette.accent, t),
             State::Speaking => speaking(&mut canvas, self.palette.accent, self.level),
             State::Confirming => confirming(&mut canvas, self.palette.warning, t),
+            State::Typing => typing(&mut canvas, self.palette.accent, t),
         }
         if self.building {
             building(&mut canvas, self.palette.accent);
@@ -79,15 +66,12 @@ impl Indicator {
 
 const CENTRE: f32 = SIZE as f32 / 2.0;
 
-/// Seconds an error flashes for.
-const FLASH: f32 = 0.6;
+const FLASH_SECS: f32 = 0.6;
 
-/// A red disc that fades as `left` runs from 1 to 0.
-fn flash(canvas: &mut Pixmap, colour: Color, left: f32) {
-    disc(canvas, 16.0, with_alpha(colour, 0.4 + 0.6 * left));
+fn flash(canvas: &mut Pixmap, colour: Color, remaining: f32) {
+    disc(canvas, 16.0, with_alpha(colour, 0.4 + 0.6 * remaining));
 }
 
-/// The "building" mark: a dot in the top-right corner.
 fn building(canvas: &mut Pixmap, colour: Color) {
     let dot = PathBuilder::from_circle(SIZE as f32 - 5.0, 5.0, 4.0).expect("positive radius");
     canvas.fill_path(
@@ -99,20 +83,35 @@ fn building(canvas: &mut Pixmap, colour: Color) {
     );
 }
 
-/// A disc and ring that pulse once a second, quicker than Listening.
 fn confirming(canvas: &mut Pixmap, colour: Color, t: f32) {
-    let pulse = wave(t, 1.0);
+    let pulse = wave(t, CONFIRMING_PERIOD);
     disc(canvas, 8.0 + 4.0 * pulse, colour);
     ring(canvas, 18.0, 3.0, with_alpha(colour, 0.5 + 0.5 * pulse));
 }
 
-/// Five bars that rise with Lucy's voice level.
+fn typing(canvas: &mut Pixmap, colour: Color, t: f32) {
+    const GAP: f32 = 10.0;
+    let lit = (t.fract() * 3.0) as usize;
+    for i in 0..3 {
+        let x = CENTRE + (i as f32 - 1.0) * GAP;
+        let alpha = if i == lit { 1.0 } else { 0.35 };
+        let dot = PathBuilder::from_circle(x, CENTRE, 3.5).expect("positive radius");
+        canvas.fill_path(
+            &dot,
+            &paint(with_alpha(colour, alpha)),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
 fn speaking(canvas: &mut Pixmap, colour: Color, rms: f32) {
     const SHAPE: [f32; 5] = [0.5, 0.8, 1.0, 0.8, 0.5];
     const WIDTH: f32 = 4.0;
     const GAP: f32 = 3.0;
-    // Speech RMS rarely passes 0.3; that fills the meter.
-    let loudness = (rms / 0.3).clamp(0.0, 1.0);
+    const FULL_METER_RMS: f32 = 0.3;
+    let loudness = (rms / FULL_METER_RMS).clamp(0.0, 1.0);
     let left = CENTRE - (SHAPE.len() as f32 * (WIDTH + GAP) - GAP) / 2.0;
     for (i, shape) in SHAPE.iter().enumerate() {
         let height = 4.0 + 28.0 * loudness * shape;
@@ -122,14 +121,12 @@ fn speaking(canvas: &mut Pixmap, colour: Color, rms: f32) {
     }
 }
 
-/// An arc that orbits a faint track, one turn a second.
 fn thinking(canvas: &mut Pixmap, colour: Color, t: f32) {
     ring(canvas, 15.0, 4.0, with_alpha(colour, 0.2));
     let start = t.fract() * std::f32::consts::TAU;
     arc(canvas, 15.0, start, start + 1.8, 4.0, colour);
 }
 
-/// A ring that breathes slowly around a steady dot.
 fn listening(canvas: &mut Pixmap, colour: Color, t: f32) {
     let breath = wave(t, LISTENING_PERIOD);
     disc(canvas, 6.0, colour);
@@ -141,10 +138,10 @@ fn listening(canvas: &mut Pixmap, colour: Color, t: f32) {
     );
 }
 
-/// Seconds per breath while Listening.
 const LISTENING_PERIOD: f32 = 2.4;
 
-/// 0 → 1 → 0 once every `period` seconds.
+const CONFIRMING_PERIOD: f32 = 1.0;
+
 fn wave(t: f32, period: f32) -> f32 {
     0.5 - 0.5 * (t / period * std::f32::consts::TAU).cos()
 }
@@ -187,7 +184,6 @@ fn ring(canvas: &mut Pixmap, radius: f32, width: f32, colour: Color) {
     );
 }
 
-/// An arc from angle `from` to `to`, in radians clockwise from the right.
 fn arc(canvas: &mut Pixmap, radius: f32, from: f32, to: f32, width: f32, colour: Color) {
     const STEPS: u32 = 24;
     let point = |angle: f32| (CENTRE + radius * angle.cos(), CENTRE + radius * angle.sin());
@@ -219,8 +215,6 @@ mod tests {
         }
     }
 
-    /// The marker's visible pixels: how many, and the palette colour most of
-    /// them are closest to.
     struct Ink {
         pixels: usize,
         colour: &'static str,
@@ -301,12 +295,14 @@ mod tests {
 
     #[test]
     fn listening_pulses_slowly() {
-        // One breath takes 2.4 s.
-        assert!(pixels(State::Listening, 1.2) > pixels(State::Listening, 0.0) + 50);
-        assert_eq!(pixels(State::Listening, 2.4), pixels(State::Listening, 0.0));
+        let breath = 2.4;
+        assert!(pixels(State::Listening, breath / 2.0) > pixels(State::Listening, 0.0) + 50);
+        assert_eq!(
+            pixels(State::Listening, breath),
+            pixels(State::Listening, 0.0)
+        );
     }
 
-    /// Which way the ink leans from the centre: the mean (x, y) offset.
     fn lean(pixmap: &Pixmap) -> (f32, f32) {
         let (mut x, mut y, mut n) = (0.0, 0.0, 0.0);
         for (i, pixel) in pixmap.pixels().iter().enumerate() {
@@ -351,10 +347,10 @@ mod tests {
         let frame = at(State::Confirming, 0.0).expect("shown");
 
         assert_eq!(ink(&frame).colour, "warning");
-        // A pulse a second: quicker than Listening's breath.
-        assert!(pixels(State::Confirming, 0.5) > pixels(State::Confirming, 0.0) + 50);
+        let pulse = 1.0;
+        assert!(pixels(State::Confirming, pulse / 2.0) > pixels(State::Confirming, 0.0) + 50);
         assert_eq!(
-            pixels(State::Confirming, 1.0),
+            pixels(State::Confirming, pulse),
             pixels(State::Confirming, 0.0)
         );
     }

@@ -1,9 +1,5 @@
-//! What Lucy says when the subscription has hit a plan or usage limit.
-
 use crate::adapters::RateLimit;
 
-/// "You've reached your Claude five-hour usage limit. It resets at 3:05 PM.",
-/// in local time, with the day if it isn't today.
 pub fn spoken(limit: &RateLimit, provider: &str) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -14,19 +10,15 @@ pub fn spoken(limit: &RateLimit, provider: &str) -> String {
     phrase(limit.rate_limit_type.as_deref(), provider, reset)
 }
 
-/// A moment on the local clock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Local {
-    /// Years since 1900, and the day of that year, so moments compare by day.
-    year: i32,
+    years_since_1900: i32,
     day_of_year: i32,
-    /// 0 is Sunday.
-    weekday: i32,
+    days_since_sunday: i32,
     hour: i32,
     minute: i32,
 }
 
-/// `reset` is the reset time and now.
 fn phrase(window: Option<&str>, provider: &str, reset: Option<(Local, Local)>) -> String {
     let window = match window {
         Some("five_hour") => "five-hour ",
@@ -41,20 +33,21 @@ fn phrase(window: Option<&str>, provider: &str, reset: Option<(Local, Local)>) -
             12 => (12, "PM"),
             h => (h - 12, "PM"),
         };
-        let day = if (at.year, at.day_of_year) == (now.year, now.day_of_year) {
-            String::new()
-        } else {
-            const DAYS: [&str; 7] = [
-                "Sunday",
-                "Monday",
-                "Tuesday",
-                "Wednesday",
-                "Thursday",
-                "Friday",
-                "Saturday",
-            ];
-            format!("on {} ", DAYS[at.weekday.rem_euclid(7) as usize])
-        };
+        let day =
+            if (at.years_since_1900, at.day_of_year) == (now.years_since_1900, now.day_of_year) {
+                String::new()
+            } else {
+                const DAYS: [&str; 7] = [
+                    "Sunday",
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                ];
+                format!("on {} ", DAYS[at.days_since_sunday.rem_euclid(7) as usize])
+            };
         said.push_str(&format!(
             " It resets {day}at {hour}:{:02} {half}.",
             at.minute
@@ -63,7 +56,6 @@ fn phrase(window: Option<&str>, provider: &str, reset: Option<(Local, Local)>) -
     said
 }
 
-/// `secs` since the Unix epoch on the local clock, as `TZ` says.
 fn local(secs: u64) -> Option<Local> {
     let time = libc::time_t::try_from(secs).ok()?;
     // SAFETY: `tm` is plain data that localtime_r fills in; both pointers are
@@ -76,9 +68,9 @@ fn local(secs: u64) -> Option<Local> {
         tm
     };
     Some(Local {
-        year: tm.tm_year,
+        years_since_1900: tm.tm_year,
         day_of_year: tm.tm_yday,
-        weekday: tm.tm_wday,
+        days_since_sunday: tm.tm_wday,
         hour: tm.tm_hour,
         minute: tm.tm_min,
     })
@@ -88,11 +80,11 @@ fn local(secs: u64) -> Option<Local> {
 mod tests {
     use super::*;
 
-    fn at(day_of_year: i32, weekday: i32, hour: i32, minute: i32) -> Local {
+    fn at(day_of_year: i32, days_since_sunday: i32, hour: i32, minute: i32) -> Local {
         Local {
-            year: 126,
+            years_since_1900: 126,
             day_of_year,
-            weekday,
+            days_since_sunday,
             hour,
             minute,
         }

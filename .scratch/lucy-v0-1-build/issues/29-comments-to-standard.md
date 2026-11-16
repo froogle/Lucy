@@ -21,7 +21,7 @@ Spec: none; `CODING_STANDARDS.md`.
 
 **Seams:** none owned. Renames that reach another crate (anything in `lucy-ipc`'s schema, `lucy-config`'s config keys) are out of scope: those names are public contracts.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -38,3 +38,7 @@ Spec: none; `CODING_STANDARDS.md`.
 - [ ] Anything a deleted comment recorded that still matters is in the code, an ADR or `working-in-lucy.md`
 - [ ] `scripts/check-comments.sh` exists, runs in `scripts/check.sh`, and fails on a stray `//` comment
 - [ ] `scripts/check.sh` passes; no test changed except for its comments and names
+
+## Comments
+
+2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Two ADRs added (0009, 0010); `scripts/check-comments.sh` also allows `// sleep-ok:`, which `check-test-sleeps.sh` needs.

@@ -1,5 +1,6 @@
-//! With no client holding the `indicator` role, lucyd shows Session start,
-//! Confirming and end as desktop notifications instead.
+//! With no `indicator` role holder, lucyd shows desktop notifications instead.
+//! They cover Session start, Confirming and end.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -54,8 +55,6 @@ fn a_third_party_client_can_claim_the_indicator_role() {
     client.start_session().unwrap();
     client.end_session().unwrap();
 
-    // Once the Indicator goes, the next Session is notified. Had the first
-    // Session been notified too, its notifications would arrive first.
     drop(indicator);
     client.start_session().unwrap();
 

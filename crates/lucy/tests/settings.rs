@@ -1,5 +1,6 @@
-//! `lucy::settings`: what the TUI writes to `config.toml`, comments kept,
-//! and when lucyd takes each change up.
+//! `lucy::settings`: what the TUI writes to `config.toml`, comments kept.
+//! Also when lucyd takes each change up.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 use lucy::settings::{self, Applies, Change, Key};
 use lucy_config::Tier;

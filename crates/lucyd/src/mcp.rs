@@ -1,8 +1,3 @@
-//! Lucy's MCP tool server (ADR 0005), on a private socket beside the public
-//! one. A model process reaches it through `lucy mcp-relay`, which opens each
-//! connection with a line holding its per-spawn token. lucyd answers `ok` and
-//! then speaks MCP, or answers `refused` and hangs up.
-
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::PathBuf;
@@ -22,28 +17,23 @@ use tokio::sync::{mpsc, oneshot};
 use crate::adapters::Relay;
 use crate::authoring::{self, Authoring, Build};
 use crate::desktop::Desktop;
+use crate::input;
 use crate::persona::Persona;
 use crate::plugins::{self, SessionTools};
 use crate::runner::Command;
+use crate::sync::Locked;
 
-/// Who a token was issued to, and what it lets them reach. Each sees a
-/// different set of tools.
 #[derive(Clone)]
 pub enum Caller {
-    /// The model process of the open Session: the Built-in tools, the
-    /// Session's `plugins` and its `desktop` tools.
     SessionModel {
         plugins: Arc<SessionTools>,
         desktop: Desktop,
     },
-    /// The agent working on an Authoring build: only the Delegate tools.
     Delegate(Weak<Build>),
 }
 
-/// Issues relay commands, each with a fresh token for one caller.
 #[derive(Clone)]
 pub struct Relays {
-    /// The `lucy` binary.
     program: PathBuf,
     socket: PathBuf,
     tokens: Tokens,
@@ -58,16 +48,13 @@ impl Relays {
         }
     }
 
-    /// The `lucy` binary each relay runs.
     pub fn program(&self) -> PathBuf {
         self.program.clone()
     }
 
-    /// A relay command for `caller`. Its token works until the returned
-    /// `Token` is dropped.
     pub fn issue(&self, caller: Caller) -> (Relay, Token) {
         let value = random_token();
-        self.tokens.0.lock().unwrap().insert(value.clone(), caller);
+        self.tokens.0.locked().insert(value.clone(), caller);
         let relay = Relay {
             program: self.program.clone(),
             args: vec![
@@ -85,17 +72,15 @@ impl Relays {
     }
 }
 
-/// The tokens currently issued.
 #[derive(Clone, Default)]
 struct Tokens(Arc<Mutex<HashMap<String, Caller>>>);
 
 impl Tokens {
     fn grant(&self, token: &str) -> Option<Caller> {
-        self.0.lock().unwrap().get(token).cloned()
+        self.0.locked().get(token).cloned()
     }
 }
 
-/// An issued token. Dropping it revokes it.
 pub struct Token {
     value: String,
     tokens: Tokens,
@@ -103,11 +88,10 @@ pub struct Token {
 
 impl Drop for Token {
     fn drop(&mut self) {
-        self.tokens.0.lock().unwrap().remove(&self.value);
+        self.tokens.0.locked().remove(&self.value);
     }
 }
 
-/// 128 random bits, as hex.
 fn random_token() -> String {
     let mut bytes = [0u8; 16];
     std::fs::File::open("/dev/urandom")
@@ -171,7 +155,6 @@ async fn connection(
     }
 }
 
-/// Reads the token line byte by byte, so nothing after it is consumed.
 async fn read_token(stream: &mut UnixStream) -> Option<String> {
     let mut line = Vec::new();
     loop {
@@ -183,7 +166,6 @@ async fn read_token(stream: &mut UnixStream) -> Option<String> {
     }
 }
 
-/// The MCP server for one relay connection.
 struct Tools {
     token: String,
     tokens: Tokens,
@@ -193,8 +175,6 @@ struct Tools {
 }
 
 impl Tools {
-    /// Who is calling and what they may reach, or an error once the token
-    /// has been revoked.
     fn grant(&self) -> Result<Caller, ErrorData> {
         self.tokens.grant(&self.token).ok_or_else(revoked)
     }
@@ -208,7 +188,6 @@ impl Tools {
         }
     }
 
-    /// Needs no Approval: the Persona is the user's to shape by voice.
     fn update_persona(&self, request: &CallToolRequestParams) -> CallToolResult {
         let persona = request
             .arguments
@@ -268,7 +247,6 @@ fn update_persona_tool() -> Tool {
     )
 }
 
-/// A tool whose input schema is `schema`, a JSON object.
 pub fn tool(name: &'static str, description: &'static str, schema: Value) -> Tool {
     let Value::Object(schema) = schema else {
         unreachable!("a tool's input schema is an object")
@@ -276,12 +254,10 @@ pub fn tool(name: &'static str, description: &'static str, schema: Value) -> Too
     Tool::new(name, description, Arc::new(schema))
 }
 
-/// A tool result: `text` for the model.
 pub fn text(text: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(text.into())])
 }
 
-/// The text of a tool result.
 pub fn result_text(result: &CallToolResult) -> String {
     result
         .content
@@ -290,7 +266,6 @@ pub fn result_text(result: &CallToolResult) -> String {
         .collect()
 }
 
-/// A failed tool result: `text` tells the model why.
 pub fn error(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text.into())])
 }
@@ -317,6 +292,7 @@ impl ServerHandler for Tools {
                     update_persona_tool(),
                     plugins::manage_plugin_tool(),
                     authoring::request_plugin_tool(),
+                    input::ask_typed_tool(),
                 ],
                 Desktop::tools(),
                 plugins.list(),
@@ -346,6 +322,7 @@ impl ServerHandler for Tools {
             "update_persona" => Ok(self.update_persona(&request).into()),
             "manage_plugin" => Ok(plugins.manage(&arguments).await.into()),
             "request_plugin" => Ok(self.authoring.request(&arguments).into()),
+            "ask_typed" => Ok(input::ask_typed(&self.commands, &arguments).await.into()),
             name => {
                 if let Some(result) = desktop.call(name, &arguments).await {
                     return Ok(result.into());

@@ -1,8 +1,3 @@
-//! Managing installed Plugins: enable, disable, rollback and remove by
-//! voice through `manage_plugin`, and listing, enabling and revoking over
-//! the public socket. Each change applies to the open Session at once and is
-//! announced as `plugins.changed`.
-
 use std::fmt;
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -19,6 +14,7 @@ use crate::adapters::{Notification, NotificationKind};
 use crate::mcp;
 use crate::runner;
 use crate::session::{Answer, Expects, Question};
+use crate::sync::Locked;
 
 /// Why a Plugin couldn't be changed.
 #[derive(Debug)]
@@ -101,7 +97,6 @@ pub fn manage_plugin_tool() -> Tool {
 }
 
 impl SessionTools {
-    /// `manage_plugin`, called by the Session's model.
     pub async fn manage(&self, arguments: &JsonObject) -> CallToolResult {
         let plugin = arguments.get("plugin").and_then(|v| v.as_str());
         let action = arguments.get("action").and_then(|v| v.as_str());
@@ -140,7 +135,6 @@ impl SessionTools {
 }
 
 impl Host {
-    /// `plugins.list`.
     pub fn list(&self) -> PluginsList {
         let disabled = self.prefs().disabled;
         let plugins = self
@@ -159,6 +153,9 @@ impl Host {
                         PluginStatus::AwaitingApproval,
                         None,
                     ),
+                    Ok(Scanned::NotForThisDesktop(manifest)) => {
+                        (Some(manifest), PluginStatus::NotForThisDesktop, None)
+                    }
                     Err(reason) => (None, PluginStatus::Broken, Some(reason)),
                 };
                 PluginInfo {
@@ -183,7 +180,6 @@ impl Host {
         PluginsList { plugins }
     }
 
-    /// `approvals.list`.
     pub fn approval_list(&self) -> Result<ApprovalsList, Refusal> {
         let approvals = self
             .approvals()
@@ -199,8 +195,6 @@ impl Host {
         Ok(ApprovalsList { approvals })
     }
 
-    /// Leaves the Plugin `name` out of selection, keeping its files and
-    /// Approval, or brings it back.
     pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<(), Refusal> {
         self.edit(name, || {
             self.folder(name)?;
@@ -215,9 +209,6 @@ impl Host {
         .await
     }
 
-    /// Withdraws the current Approval of the Plugin `name`, so it awaits
-    /// Approval again. Its previous approved version is kept, to roll back
-    /// to once it is approved again.
     pub async fn revoke(&self, name: &str) -> Result<(), Refusal> {
         self.edit(name, || {
             let mut approvals = self.approvals().map_err(Refusal::Records)?;
@@ -238,9 +229,6 @@ impl Host {
         .await
     }
 
-    /// Puts back the Plugin's previous approved version and its Approval,
-    /// with no new Approval: that exact content was approved before. Lucy
-    /// changes only her own Plugins.
     async fn rollback(&self, name: &str) -> Result<(), Refusal> {
         self.edit(name, || {
             let folder = self.folder(name)?;
@@ -269,8 +257,8 @@ impl Host {
                 .ok_or_else(damaged)?;
             let manifest = Manifest::parse(&text, name).map_err(|_| damaged())?;
             let restore = || -> std::io::Result<()> {
-                replace_file(&folder.join(manifest.executable()), &executable, 0o755)?;
-                replace_file(&folder.join("manifest.toml"), text.as_bytes(), 0o644)
+                replace_file_from_child(&folder.join(manifest.executable()), &executable, 0o755)?;
+                replace_file_from_child(&folder.join("manifest.toml"), text.as_bytes(), 0o644)
             };
             restore().map_err(|e| Refusal::NotRestored(name.to_owned(), e))?;
             previous.previous = Some(Box::new(approval));
@@ -280,8 +268,6 @@ impl Host {
         .await
     }
 
-    /// Whether the Plugin `name` can be removed: it exists and wasn't
-    /// shipped with Lucy.
     fn removable(&self, name: &str) -> Result<(), Refusal> {
         if self.is_shipped(&self.folder(name)?) {
             return Err(Refusal::Shipped(name.to_owned()));
@@ -289,7 +275,6 @@ impl Host {
         Ok(())
     }
 
-    /// Asks the user's spoken yes to removing the Plugin `name`.
     async fn confirm_removal(&self, name: &str) -> bool {
         let question = Question {
             prompt: format!(
@@ -306,8 +291,6 @@ impl Host {
         runner::ask(&self.commands, question, Some(shown)).await == Some(Answer::Yes)
     }
 
-    /// Deletes the Plugin's folder, its Approval and what Lucy remembers
-    /// of it.
     async fn remove(&self, name: &str) -> Result<(), Refusal> {
         self.edit(name, || {
             self.removable(name)?;
@@ -328,30 +311,25 @@ impl Host {
         .await
     }
 
-    /// Makes `change` to the Plugin `name` while holding the editing lock,
-    /// then announces it and applies it to the open Session.
     async fn edit(
         &self,
         name: &str,
         change: impl FnOnce() -> Result<(), Refusal>,
     ) -> Result<(), Refusal> {
         {
-            let _editing = self.editing.lock().unwrap();
+            let _editing = self.editing.locked();
             change()?;
         }
         self.changed(name).await;
         Ok(())
     }
 
-    /// The folder of the Plugin `name`.
     fn folder(&self, name: &str) -> Result<PathBuf, Refusal> {
         self.folders()
             .remove(name)
             .ok_or_else(|| Refusal::NoSuchPlugin(name.to_owned()))
     }
 
-    /// Keeps a copy of an approved version of the Plugin `name`, to roll
-    /// back to.
     pub(super) fn keep_version(
         &self,
         name: &str,
@@ -368,7 +346,6 @@ impl Host {
         std::fs::write(dir.join("executable"), executable)
     }
 
-    /// Deletes every kept version of the Plugin `name` but those in `keep`.
     pub(super) fn prune_versions(&self, name: &str, keep: &[&str]) {
         let Ok(entries) = std::fs::read_dir(self.paths.versions(name)) else {
             return;
@@ -380,11 +357,9 @@ impl Host {
         }
     }
 
-    /// Announces a change to the Plugin `name`, and brings the open
-    /// Session's tools in line with it.
     async fn changed(&self, name: &str) {
         self.changes.publish();
-        let Some(session) = self.session.lock().unwrap().upgrade() else {
+        let Some(session) = self.session.locked().upgrade() else {
             return;
         };
         match self.usable(name).await {
@@ -393,7 +368,6 @@ impl Host {
         }
     }
 
-    /// The Plugin `name`, if it is enabled, approved and works.
     async fn usable(&self, name: &str) -> Option<Usable> {
         if self.prefs().disabled.contains(name) {
             return None;
@@ -407,11 +381,7 @@ impl Host {
     }
 }
 
-/// Writes `bytes` to `path` with `mode`, replacing it all at once, so a
-/// running copy of it is never written to. A child process writes it: a
-/// write fd held here could leak into a Plugin lucyd forks meanwhile and
-/// make running the file fail with "Text file busy".
-fn replace_file(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+fn replace_file_from_child(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

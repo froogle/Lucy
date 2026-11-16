@@ -1,7 +1,8 @@
-//! Authoring: when no Plugin fits, the model calls `request_plugin` and
+//! Authoring: when no Plugin fits, the model calls `request_plugin`.
 //! lucyd hands the goal to an advanced-tier Delegate. The Delegate here is
 //! scripted: the test writes the Plugin into its workspace and calls the
 //! Delegate tools through its real relay.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -22,8 +23,6 @@ const QUEUED: &str = "I'm already building the photos Plugin. I'll do this one a
 const BUILD_STOPPED: &str = "Okay, I've stopped the build.";
 const KEEP_WORKING: &str = "I'll keep working on the Plugin, and let you know when it's ready.";
 
-/// The Plugin the scripted Delegate writes: the fixture Plugin's `echo`,
-/// handling `handles`.
 fn photos_manifest(handles: &str) -> String {
     format!(
         "name = \"photos\"\n\
@@ -53,10 +52,6 @@ fn ok(result: Result<CallToolResult, String>) -> String {
     said
 }
 
-/// Opens a Session in which the user asks for something no Plugin does,
-/// and the model calls `request_plugin` for it. Returns the state client,
-/// with Lucy's line about the wait heard and the model's Turn ended, so
-/// Lucy is back in Listening.
 fn request_photos(lucyd: &Harness) -> Client {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
@@ -74,7 +69,6 @@ fn request_photos(lucyd: &Harness) -> Client {
         }),
     ));
     assert_eq!(lucyd.tts.next_sentence(), A_FEW_MINUTES);
-    // The building mark may arrive before or with Speaking.
     until_state(&mut events, State::Speaking);
     lucyd.thinking.turn_end();
     lucyd.tts.finish_playing();
@@ -82,13 +76,10 @@ fn request_photos(lucyd: &Harness) -> Client {
     events
 }
 
-/// Reads state events until `state`.
 fn until_state(events: &mut Client, state: State) {
     while next_state(events).state != state {}
 }
 
-/// Ends the Session by the Indicator or `lucy end` while a build runs:
-/// Lucy can't say she'll keep working on it, so she shows it.
 fn end_mid_build(lucyd: &Harness) {
     lucyd.client().end_session().unwrap();
     let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
@@ -209,7 +200,6 @@ fn the_delegate_sees_only_the_delegate_tools_and_the_model_none_of_them() {
     }
 }
 
-/// The model asks for a music Plugin.
 fn request_music(lucyd: &Harness) -> CallToolResult {
     lucyd
         .thinking
@@ -313,7 +303,6 @@ fn progress_notifications_can_be_switched_off() {
         json!({"reason": "no API", "fallback": "open the website"}),
     ));
 
-    // Everything shown up to the build's last word.
     loop {
         let shown = lucyd.notifier.next_notification();
         assert_ne!(shown.body, "Writing the photo search", "{shown:?}");
@@ -511,7 +500,6 @@ fn a_kept_question_is_shown_once_however_many_sessions_end_before_it_is_asked() 
     let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
     assert!(shown.body.contains(QUESTION), "{shown:?}");
 
-    // The user is still speaking, so it isn't asked before this Session ends.
     lucyd.start_speaking();
     lucyd.client().start_session().unwrap();
     lucyd.client().end_session().unwrap();
@@ -544,7 +532,6 @@ fn a_question_parked_with_no_session_open_is_shown_then_asked_at_the_next_sessio
         shown.body.contains("Which folder are your photos in?"),
         "{shown:?}"
     );
-    // The budget doesn't count while the question waits.
     lucyd.clock.advance(Duration::from_secs(3600));
     delegate.assert_no_turn();
 
@@ -586,10 +573,12 @@ fn cannot_has_lucy_state_the_limit_and_offer_the_fallback_and_ends_the_build() {
         turn.contains("open Google Photos search for Mount Rainier"),
         "{turn}"
     );
-    // The Delegate's token is revoked once the build is over.
-    assert!(delegate
-        .call_tool_with("report_progress", json!({"text": "hi"}))
-        .is_err());
+    assert!(
+        delegate
+            .call_tool_with("report_progress", json!({"text": "hi"}))
+            .is_err(),
+        "the Delegate's token is revoked once the build is over"
+    );
 }
 
 #[test]
@@ -598,7 +587,6 @@ fn ask_user_waits_until_neither_side_is_speaking_and_the_answer_goes_to_the_dele
     let mut events = request_photos(&lucyd);
     let delegate = &lucyd.thinking.delegate;
     delegate.next_turn();
-    // Lucy is answering something else, and still speaking.
     lucyd.say("what's the weather?");
     lucyd.thinking.next_turn();
     assert_eq!(next_state(&mut events).state, State::Thinking);
@@ -679,8 +667,6 @@ fn a_mismatched_manifest_fails_the_submit() {
     assert!(text(&result).contains("echo"), "{}", text(&result));
 }
 
-/// The Delegate submits the Plugin in `dir`, handling `handles`, and it
-/// passes.
 fn submit(lucyd: &Harness, dir: &Path, handles: &str) {
     stage_plugin(dir, &photos_manifest(handles), "exit 0", "exit 0");
     ok(lucyd
@@ -690,8 +676,6 @@ fn submit(lucyd: &Harness, dir: &Path, handles: &str) {
     lucyd.thinking.delegate.turn_end();
 }
 
-/// The user approves, the model answers the original request with the new
-/// Plugin, and Lucy asks whether that was the one.
 fn approve_and_answer(lucyd: &Harness, events: &mut Client, approval: &str) {
     until_state(events, State::Confirming);
     let asked = lucyd.tts.next_sentence();
@@ -747,10 +731,12 @@ fn a_passing_build_is_approved_answered_and_a_no_to_is_that_the_one_is_fixed() {
 
     lucyd.barrier();
     delegate.assert_no_turn();
-    // The build is over: its token is revoked.
-    assert!(delegate
-        .call_tool_with("report_progress", json!({"text": "hi"}))
-        .is_err());
+    assert!(
+        delegate
+            .call_tool_with("report_progress", json!({"text": "hi"}))
+            .is_err(),
+        "the build is over: its token is revoked"
+    );
 }
 
 #[test]
@@ -765,7 +751,6 @@ fn an_approval_whose_session_ends_before_the_answer_is_shown_plainly_then_answer
     lucyd.tts.next_sentence();
     lucyd.tts.finish_playing();
 
-    // The user goes on speaking, so the answer waits; then the Session ends.
     lucyd.say_and_go_on("yes");
     until_state(&mut events, State::Listening);
     lucyd.client().end_session().unwrap();
@@ -796,7 +781,6 @@ fn an_approval_whose_session_ends_before_the_answer_is_shown_plainly_then_answer
     lucyd.tts.finish_playing();
     lucyd.say("yes");
 
-    // A yes ends the build, as it does in the Session it was approved in.
     let delegate = &lucyd.thinking.delegate;
     wait_until("the build to end", || {
         delegate
@@ -827,7 +811,6 @@ fn a_build_that_passes_after_the_session_ended_is_notified_and_offered_at_the_ne
     submit(&lucyd, &dir, "find photos by place");
     let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
     assert_eq!(shown.summary, "The photos Plugin is ready");
-    // It waits on the user, so the mark is off.
     wait_until("the building mark to go", || {
         (!lucyd.client().status().unwrap().building).then_some(())
     });
@@ -843,7 +826,6 @@ fn a_build_that_passes_after_the_session_ended_is_notified_and_offered_at_the_ne
         (!lucyd.client().status().unwrap().building).then_some(())
     });
 
-    // Offered once: the next Session doesn't ask again.
     lucyd.client().end_session().unwrap();
     lucyd.client().start_session().unwrap();
     lucyd.barrier();

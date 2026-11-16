@@ -1,148 +1,101 @@
-//! The Session state machine: pure and I/O-free. The runner feeds it inputs
-//! and carries out the outputs it returns.
-
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use lucy_ipc::State;
 
 use crate::adapters::ThinkingEvent;
 use crate::authoring::Building;
+use crate::input::Dialog;
 use crate::model_text::INTERRUPTED;
 
 pub enum Input {
-    /// Lucy speaks first: start a Turn with these instructions.
     Opening(String),
-    /// The user started an utterance (true), or it was cut or dropped
-    /// (false).
     Speaking(bool),
-    /// The VAD cut an utterance.
     Speech,
-    /// STT finished the utterance it was given.
     Transcript(String),
-    /// STT failed on the utterance it was given.
     TranscribeFailed,
     Thinking(ThinkingEvent),
-    /// TTS finished playing one sentence.
     Played,
-    /// The model called `end_session`.
     EndRequested,
-    /// The Wake word was heard during the Session.
     WakeWord,
-    /// The user has kept talking over Lucy long enough to cut her off.
     BargeIn,
-    /// A tool call waits on the user: say the question, then hear one
-    /// utterance (Confirming).
     Ask(Question),
-    /// The question went unanswered for too long.
     AnswerTimedOut,
-    /// The question is no longer asked; nothing is said.
     Withdrawn,
-    /// Lucy says this herself, after any reply text so far.
     Say(String),
-    /// What Authoring is doing now. While a build works, the Session stays
-    /// open in Listening.
     Building(Building),
+    Typed(Answer),
+    Unshown(String),
 }
 
-/// Something Lucy asks the user in the middle of a tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
-    /// What she says.
     pub prompt: String,
     pub expects: Expects,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expects {
-    /// A yes: one of the yes-phrases. Anything else is a no.
     Yes,
-    /// Any words: a mid-call question from a Plugin.
     Words,
-    /// A yes, as one of the yes-phrases, or else any words.
     YesOrWords,
+    Typed(Dialog),
 }
 
-/// How the user answered a `Question`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Yes,
     No,
-    /// What they said, to a question that expects words.
     Said(String),
-    /// Nothing, to a question that expects words.
     Silence,
+    Typed(BTreeMap<String, String>),
+    Cancelled,
+    TimedOut,
 }
 
-/// Said after any answer to a Confirmation but a yes.
 pub const DECLINED: &str = "Okay, I won't.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Output {
-    /// Transcribe the utterance that was just cut.
     Transcribe,
     SendTurn(String),
     Speak(String),
-    /// Start the silence timer over.
     ResetSilenceTimer,
-    /// Something went wrong: flash the transient error state.
     Error,
-    /// End the Session.
     End,
-    /// The question asked is answered.
     Answered(Answer),
-    /// Stop playback and drop everything queued.
     StopSpeaking,
-    /// Stop the model's Turn, and the tool calls it made that the user
-    /// hasn't confirmed.
     Interrupt,
-    /// The user said "cancel it": stop the Authoring build.
     CancelBuild,
 }
 
 const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
 
-/// What stops an Authoring build, as the whole utterance.
 const CANCEL_IT: &str = "cancel it";
 
-/// Said when the user stops a build.
 pub const BUILD_STOPPED: &str = "Okay, I've stopped the build.";
 
-/// Said when the Session ends by `end_session` while a build runs.
 pub const KEEP_WORKING: &str = "I'll keep working on the Plugin, and let you know when it's ready.";
 
-/// An open Session.
 #[derive(Default)]
 pub struct Session {
     transcribing: bool,
-    /// The user is in the middle of an utterance.
     speaking: bool,
     turn_in_progress: bool,
-    /// Sentences handed to TTS that haven't finished playing, oldest first.
     queued: VecDeque<String>,
-    /// The sentences of the current reply that have finished playing.
     heard: String,
-    /// What the user heard of the reply they cut off, until the next Turn
-    /// tells the model.
     interrupted: Option<String>,
-    /// Speech, not only the Wake word, can barge in.
     speech_barges_in: bool,
-    /// Reply text not yet handed to TTS.
     sentence: String,
-    /// `end_session` was called; end once back in Listening.
     closing: bool,
-    /// STT failed on the last utterance.
     stt_failed: bool,
-    /// What started the current or last Turn.
     turn: String,
-    /// What the question being asked expects, while Confirming.
     asking: Option<Expects>,
     yes_phrases: Vec<String>,
-    /// What Authoring is doing.
+    cancel_phrases: Vec<String>,
     building: Building,
 }
 
 impl Session {
-    /// A Session that hears `yes_phrases` as a yes.
     pub fn new(yes_phrases: Vec<String>) -> Self {
         Session {
             yes_phrases,
@@ -150,13 +103,18 @@ impl Session {
         }
     }
 
-    /// Lets speech, not only the Wake word, barge in.
     pub fn barge_in_by_speech(&mut self, on: bool) {
         self.speech_barges_in = on;
     }
 
+    pub fn hear_cancel_phrases(&mut self, phrases: Vec<String>) {
+        self.cancel_phrases = phrases;
+    }
+
     pub fn state(&self) -> State {
-        if self.asking.is_some() {
+        if matches!(self.asking, Some(Expects::Typed(_))) {
+            State::Typing
+        } else if self.asking.is_some() {
             State::Confirming
         } else if !self.queued.is_empty() {
             State::Speaking
@@ -167,28 +125,26 @@ impl Session {
         }
     }
 
-    /// What started the Turn in progress, if there is one.
     pub fn pending_turn(&self) -> Option<&str> {
         self.turn_in_progress.then_some(self.turn.as_str())
     }
 
-    /// The silence timer counts only while Lucy is listening and the user
-    /// isn't speaking, including while an utterance is being transcribed,
-    /// and no Authoring build is running.
     pub fn silence_timer_runs(&self) -> bool {
         self.state() == State::Listening && !self.speaking && self.building != Building::Working
     }
 
-    /// Neither Lucy nor the user is speaking, and nothing they said is
-    /// still being heard or answered.
     pub fn quiet(&self) -> bool {
         self.state() == State::Listening && !self.speaking && !self.transcribing
     }
 
-    /// The wait for an answer counts once the question has been said, and
-    /// not while the user is speaking or their reply is being transcribed.
+    pub fn box_line_said(&self) -> bool {
+        self.state() == State::Typing && self.queued.is_empty()
+    }
+
     pub fn answer_timer_runs(&self) -> bool {
-        self.asking.is_some() && self.queued.is_empty() && !self.transcribing && !self.speaking
+        let said = self.asking.is_some() && self.queued.is_empty();
+        let typed = self.state() == State::Typing;
+        said && (typed || !self.transcribing && !self.speaking)
     }
 
     pub fn handle(&mut self, input: Input) -> Vec<Output> {
@@ -201,16 +157,16 @@ impl Session {
             }
             Input::Speaking(speaking) => {
                 self.speaking = speaking;
-                // The rest of the utterance arrives as `Speech`.
                 if speaking && self.speech_barges_in && self.state() == State::Thinking {
                     return self.barge_in();
                 }
                 vec![]
             }
-            // While Confirming, a reply spoken over the question counts.
             Input::Speech
-                if matches!(self.state(), State::Listening | State::Confirming)
-                    && !self.transcribing =>
+                if matches!(
+                    self.state(),
+                    State::Listening | State::Confirming | State::Typing
+                ) && !self.transcribing =>
             {
                 self.transcribing = true;
                 vec![Output::Transcribe]
@@ -225,28 +181,32 @@ impl Session {
                 outputs.push(Output::Transcribe);
                 outputs
             }
-            // Lucy's own echo, or the user talking over her without cutting
-            // her off.
             Input::Speech => vec![],
             Input::Transcript(text) => {
                 self.transcribing = false;
                 self.stt_failed = false;
                 let text = text.trim();
+                let nothing_recognised = text.is_empty();
                 if let Some(expects) = &self.asking {
-                    // No speech recognised: keep waiting for the answer.
-                    if text.is_empty() {
+                    if nothing_recognised {
                         return vec![];
                     }
-                    let yes = is_yes(text, &self.yes_phrases);
+                    if let Expects::Typed(_) = expects {
+                        if is_one_of(text, &self.cancel_phrases) {
+                            return self.answered(Answer::Cancelled);
+                        }
+                        return vec![];
+                    }
+                    let yes = is_one_of(text, &self.yes_phrases);
                     let answer = match expects {
                         Expects::Yes | Expects::YesOrWords if yes => Answer::Yes,
                         Expects::Yes => Answer::No,
                         Expects::Words | Expects::YesOrWords => Answer::Said(text.to_owned()),
+                        Expects::Typed(_) => unreachable!("handled above"),
                     };
                     return self.answered(answer);
                 }
-                if text.is_empty() {
-                    // No speech recognised: keep listening, timer not reset.
+                if nothing_recognised {
                     return vec![];
                 }
                 if self.building != Building::No && is_phrase(text, CANCEL_IT) {
@@ -258,7 +218,6 @@ impl Session {
                 self.turn_in_progress = true;
                 self.heard.clear();
                 self.turn = match self.interrupted.take() {
-                    // Cut off before anything played.
                     Some(heard) if heard.is_empty() => format!("{INTERRUPTED}]\n{text}"),
                     Some(heard) => {
                         format!("{INTERRUPTED}; the user heard up to: \"{heard}\"]\n{text}")
@@ -267,16 +226,18 @@ impl Session {
                 };
                 vec![Output::SendTurn(self.turn.clone())]
             }
-            // Say sorry; a second failure in a row ends the Session.
             Input::TranscribeFailed => {
                 self.transcribing = false;
-                // An answer that couldn't be heard isn't a yes.
+                if self.state() == State::Typing {
+                    return vec![];
+                }
                 if let Some(answer) = self.unheard() {
                     let mut outputs = vec![Output::Error];
                     outputs.extend(self.answered(answer));
                     return outputs;
                 }
-                self.closing |= std::mem::replace(&mut self.stt_failed, true);
+                let failed_twice_running = std::mem::replace(&mut self.stt_failed, true);
+                self.closing |= failed_twice_running;
                 self.sentence = DIDNT_CATCH_THAT.to_owned();
                 let mut outputs = vec![Output::Error];
                 outputs.extend(self.speak_sentence());
@@ -295,11 +256,8 @@ impl Session {
                 outputs.extend(self.turn_finished());
                 outputs
             }
-            // A limit that has been hit arrives as `Unavailable`.
             Input::Thinking(ThinkingEvent::RateLimit(_)) => vec![],
-            // The runner opens the model again, or says it's lost.
             Input::Thinking(ThinkingEvent::Died) => vec![],
-            // Say why, instead of any reply in progress, then end.
             Input::Thinking(ThinkingEvent::Unavailable(reason)) => {
                 self.sentence = reason;
                 self.turn_in_progress = false;
@@ -325,20 +283,17 @@ impl Session {
                 outputs.extend(self.turn_finished());
                 outputs
             }
-            // Cuts Lucy off at once, whatever `barge_in` says.
             Input::WakeWord if matches!(self.state(), State::Speaking | State::Thinking) => {
                 self.barge_in()
             }
-            // Ordinary speech: its utterance arrives as `Speech`.
             Input::WakeWord => vec![],
-            // The gate also runs a little past the end of Lucy's speech.
             Input::BargeIn if matches!(self.state(), State::Speaking | State::Thinking) => {
                 self.barge_in()
             }
             Input::BargeIn => vec![],
             Input::Ask(question) => {
-                // Any reply text so far is said before the question.
-                let mut outputs: Vec<Output> = self.speak_sentence().into_iter().collect();
+                let reply_so_far = self.speak_sentence();
+                let mut outputs: Vec<Output> = reply_so_far.into_iter().collect();
                 self.sentence = question.prompt;
                 outputs.extend(self.speak_sentence());
                 self.asking = Some(question.expects);
@@ -362,12 +317,19 @@ impl Session {
                 self.building = building;
                 vec![]
             }
+            Input::Typed(answer) if self.state() == State::Typing => self.answered(answer),
+            Input::Typed(_) => vec![],
+            Input::Unshown(why) if self.state() == State::Typing => {
+                self.asking = None;
+                self.sentence = why;
+                let mut outputs: Vec<Output> = self.speak_sentence().into_iter().collect();
+                outputs.push(Output::Answered(Answer::Cancelled));
+                outputs
+            }
+            Input::Unshown(_) => vec![],
         }
     }
 
-    /// The user cuts in: Lucy stops speaking and the model stops its Turn,
-    /// and she listens. The next Turn says what the user heard: the reply's
-    /// sentences up to and including the one cut off.
     fn barge_in(&mut self) -> Vec<Output> {
         let mut outputs = vec![];
         if let Some(playing) = self.queued.front() {
@@ -385,18 +347,15 @@ impl Session {
         outputs
     }
 
-    /// The answer to the question being asked, if any, when no answer was
-    /// heard.
     fn unheard(&self) -> Option<Answer> {
         match self.asking {
             Some(Expects::Yes) => Some(Answer::No),
             Some(Expects::Words | Expects::YesOrWords) => Some(Answer::Silence),
+            Some(Expects::Typed(_)) => Some(Answer::TimedOut),
             None => None,
         }
     }
 
-    /// The question is answered: a Confirmation that isn't a yes is
-    /// declined out loud.
     fn answered(&mut self, answer: Answer) -> Vec<Output> {
         self.asking = None;
         let mut outputs = vec![];
@@ -419,8 +378,6 @@ impl Session {
         Some(Output::Speak(sentence.to_owned()))
     }
 
-    /// Back to Listening once the Turn is over and its speech has played,
-    /// unless the Session is closing.
     fn turn_finished(&self) -> Option<Output> {
         match self.state() {
             State::Listening if self.closing => Some(Output::End),
@@ -430,7 +387,6 @@ impl Session {
     }
 }
 
-/// Adds `sentence` to the reply text in `heard`.
 fn push_sentence(heard: &mut String, sentence: &str) {
     if !heard.is_empty() {
         heard.push(' ');
@@ -438,13 +394,10 @@ fn push_sentence(heard: &mut String, sentence: &str) {
     heard.push_str(sentence);
 }
 
-/// Whether `reply` is a clear yes: one of `phrases`.
-fn is_yes(reply: &str, phrases: &[String]) -> bool {
+fn is_one_of(reply: &str, phrases: &[String]) -> bool {
     phrases.iter().any(|phrase| is_phrase(reply, phrase))
 }
 
-/// Whether the whole of `utterance` is `phrase`, ignoring case,
-/// punctuation and spacing.
 fn is_phrase(utterance: &str, phrase: &str) -> bool {
     let words = |text: &str| -> Vec<String> {
         text.split(|c: char| !c.is_alphanumeric() && c != '\'')
@@ -503,16 +456,16 @@ mod tests {
 
     #[test]
     fn a_yes_phrase_counts_whatever_its_case_and_punctuation() {
-        assert!(is_yes("Yes.", &yes_phrases()));
-        assert!(is_yes("  Go ahead!", &yes_phrases()));
-        assert!(is_yes("yep", &yes_phrases()));
+        assert!(is_one_of("Yes.", &yes_phrases()));
+        assert!(is_one_of("  Go ahead!", &yes_phrases()));
+        assert!(is_one_of("yep", &yes_phrases()));
     }
 
     #[test]
     fn anything_but_a_whole_yes_phrase_is_not_a_yes() {
-        assert!(!is_yes("yes but not to Bob", &yes_phrases()));
-        assert!(!is_yes("no", &yes_phrases()));
-        assert!(!is_yes("yesterday", &yes_phrases()));
-        assert!(!is_yes("...", &yes_phrases()));
+        assert!(!is_one_of("yes but not to Bob", &yes_phrases()));
+        assert!(!is_one_of("no", &yes_phrases()));
+        assert!(!is_one_of("yesterday", &yes_phrases()));
+        assert!(!is_one_of("...", &yes_phrases()));
     }
 }

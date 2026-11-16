@@ -1,5 +1,7 @@
-//! Plugin credentials: declared by name in the Manifest, kept in the Secret
-//! Service, and handed to the approved Plugin as env vars when it starts.
+//! Plugin credentials: declared by name in the Manifest.
+//! They are kept in the Secret Service, and handed to the approved Plugin
+//! as env vars when it starts.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -7,8 +9,6 @@ use harness::Harness;
 use lucy_ipc::PluginStatus;
 use serde_json::json;
 
-/// A Manifest for the fixture Plugin offering the `env` tool, declaring
-/// `credentials`.
 fn manifest(name: &str, credentials: &[&str]) -> String {
     let credentials: Vec<String> = credentials.iter().map(|c| format!("\"{c}\"")).collect();
     format!(
@@ -34,7 +34,6 @@ fn text(result: &rmcp::model::CallToolResult) -> String {
         .collect()
 }
 
-/// The environment the Plugin `name` ran its last `env` call in, by name.
 fn plugin_env(lucyd: &Harness, name: &str) -> std::collections::BTreeMap<String, String> {
     let path = lucyd.state_dir().join("plugins").join(name).join("env");
     std::fs::read_to_string(path)
@@ -53,7 +52,6 @@ fn a_plugin_gets_its_declared_credentials_as_env_vars_and_nothing_more() {
     lucyd.install_plugin("weather", &manifest("weather", &["WEATHER_KEY"]));
     lucyd.approve("weather");
     lucyd.credentials.enter("weather", "WEATHER_KEY", "w-123");
-    // Not declared by it, or another Plugin's.
     lucyd.credentials.enter("weather", "OTHER_KEY", "o-456");
     lucyd.credentials.enter("mail", "WEATHER_KEY", "m-789");
     lucyd.client().start_session().unwrap();
@@ -105,7 +103,6 @@ fn a_missing_credential_is_reported_plainly_with_where_to_enter_it() {
     assert!(said.contains("lucy credentials weather"), "{said}");
     assert!(!said.contains("broken"), "{said}");
 
-    // Not broken: once it's entered, the next call works.
     lucyd.credentials.enter("weather", "WEATHER_KEY", "w-123");
     let result = lucyd
         .thinking
@@ -162,7 +159,6 @@ fn credential_values_never_reach_the_bus_or_the_model() {
     assert_eq!(plugin_env(&lucyd, "weather")["WEATHER_KEY"], "w-secret-123");
     assert!(!text(&result).contains("w-secret-123"));
     assert!(!lucyd.thinking.instructions().contains("w-secret-123"));
-    // The harness counts every entered credential value as private.
     lucyd.assert_nothing_private_on_bus();
     let config = std::fs::read_to_string(lucyd.config_path()).unwrap_or_default();
     assert!(!config.contains("w-secret-123"));

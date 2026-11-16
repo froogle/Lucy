@@ -1,13 +1,3 @@
-//! The subscription guard's checks on `claude` (ADR 0001). Each failure is
-//! a reason ready to speak, with the fix.
-//!
-//! - Health, with no model call: the binary runs, and unless the Provider
-//!   opts out, `auth status` shows a claude.ai login.
-//! - Verification, a real "Reply OK" turn: unless the Provider opts out, it
-//!   must show `apiKeySource: "none"` and a `rate_limit_event`. It runs before
-//!   a Session whenever `claude --version` differs from the last version that
-//!   passed, and on every explicit check.
-
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -19,7 +9,6 @@ use serde_json::Value;
 
 use super::Claude;
 
-/// How long the "Reply OK" turn may take.
 const ROUND_TRIP_WAIT: Duration = Duration::from_secs(60);
 
 const VERIFY_PROMPT: &str = "Reply with just OK.";
@@ -27,7 +16,6 @@ const VERIFY_PROMPT: &str = "Reply with just OK.";
 const OPT_OUT: &str = "or set allow_api_key = true for this Provider in config.toml";
 
 impl Claude {
-    /// Before a Session: healthy, and verified if the version is new.
     pub(super) fn prepare(&self, provider: &Provider) -> Result<(), String> {
         let version = self.signed_in(provider)?;
         if provider.allow_api_key || self.verified_version().as_deref() == Some(&version) {
@@ -36,7 +24,6 @@ impl Claude {
         self.verify(provider)
     }
 
-    /// The health checks and a "Reply OK" turn, whatever the version.
     pub(super) fn verify(&self, provider: &Provider) -> Result<(), String> {
         let version = self.signed_in(provider)?;
         self.round_trip(provider)?;
@@ -46,7 +33,6 @@ impl Claude {
         Ok(())
     }
 
-    /// The health checks. Returns the version.
     pub(super) fn signed_in(&self, provider: &Provider) -> Result<String, String> {
         let version = self.version(provider)?;
         if provider.allow_api_key {
@@ -76,7 +62,6 @@ impl Claude {
         }
     }
 
-    /// `claude --version`, which also shows the binary is there.
     fn version(&self, provider: &Provider) -> Result<String, String> {
         let output = std::fs::create_dir_all(&self.work_dir).and_then(|()| {
             self.base_command(provider)
@@ -100,7 +85,6 @@ impl Claude {
         }
     }
 
-    /// Sends one real turn and checks how it was billed.
     fn round_trip(&self, provider: &Provider) -> Result<(), String> {
         let reply = self.reply_ok(provider)?;
         match reply.result {
@@ -133,7 +117,6 @@ impl Claude {
     fn reply_ok(&self, provider: &Provider) -> Result<Reply, String> {
         let mut child = self
             .command(provider, None, "", &[], None)
-            // Never resumed, so not kept.
             .arg("--no-session-persistence")
             .spawn()
             .map_err(|e| format!("I couldn't start Claude Code: {e}."))?;
@@ -142,8 +125,7 @@ impl Claude {
         let message = serde_json::json!(
             {"type": "user", "message": {"role": "user", "content": VERIFY_PROMPT}}
         );
-        // A write error shows up as a missing result.
-        let _ = writeln!(stdin, "{message}");
+        let _shows_as_a_missing_result = writeln!(stdin, "{message}");
         drop(stdin);
         let (lines_tx, lines) = std_mpsc::channel();
         std::thread::spawn(move || {
@@ -167,7 +149,6 @@ impl Claude {
         Ok(reply)
     }
 
-    /// The last version that passed verification.
     fn verified_version(&self) -> Option<String> {
         std::fs::read_to_string(self.verified_path()).ok()
     }
@@ -183,12 +164,10 @@ impl Claude {
     }
 }
 
-/// What the "Reply OK" turn showed.
 #[derive(Default)]
 struct Reply {
     api_key_source: Option<String>,
     rate_limited: bool,
-    /// The turn's outcome, once its `result` arrives.
     result: Option<Result<(), String>>,
 }
 

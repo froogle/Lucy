@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (`requires`
 
 **Seams:** owns the `requires` Manifest field and the Omarchy Plugin crate (extended by 45, and by lucy-v0-2 06 and 07 with screen tools). Uses the Plugin host, shipped-Plugin Approval and Landlock as they are.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -34,3 +34,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (`requires`
 ## Comments
 
 2026-11-16: the user widened the scope. It should ship with Lucy, cover anything you'd want done to an Omarchy machine (not just windows), and be the model for Plugins for other Linux desktops.
+
+2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand checks left, on Omarchy: move to workspace 3, full-screen, polite close, force-kill yes/no, workspace rename and layout change under Landlock. The `kill` and `rename` Lua argument forms are unverified.

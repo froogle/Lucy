@@ -65,7 +65,6 @@ mod tests {
     use super::*;
     use crate::adapters::InertSessionModel;
 
-    /// An adapter whose every check fails with its name.
     struct Named(&'static str);
 
     impl Thinking for Named {

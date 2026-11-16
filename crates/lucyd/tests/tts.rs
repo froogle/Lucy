@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 mod harness;
 
 use harness::{next_state, Harness};
@@ -30,7 +31,6 @@ fn playback_level_goes_only_to_level_subscribers() {
 
     lucyd.tts.finish_playing();
     events.end_session().unwrap();
-    // `next_state` fails on any event other than `state`.
     let states: Vec<State> = (0..4).map(|_| next_state(&mut events).state).collect();
     assert_eq!(
         states,
@@ -48,8 +48,7 @@ fn playback_level_goes_only_to_level_subscribers() {
 #[test]
 fn when_tts_fails_the_reply_becomes_notification_text_and_the_session_continues() {
     let lucyd = Harness::start();
-    // An Indicator keeps the notification fallback quiet.
-    let _indicator = lucyd.indicator("lucy-indicator");
+    let _keeps_notifications_quiet = lucyd.indicator("lucy-indicator");
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
@@ -62,15 +61,14 @@ fn when_tts_fails_the_reply_becomes_notification_text_and_the_session_continues(
     lucyd.thinking.delta(" Time for tea");
     lucyd.thinking.turn_end();
 
-    // The whole reply, in one notification.
     assert_eq!(
         lucyd.notifier.next_notification().body,
-        "It's three o'clock. Time for tea"
+        "It's three o'clock. Time for tea",
+        "the whole reply, in one notification"
     );
     while next_state(&mut events).state != State::Listening {}
     lucyd.notifier.assert_no_notification();
 
-    // The Session carries on with the next Turn.
     lucyd.say("thanks");
     assert_eq!(lucyd.thinking.next_turn(), "thanks");
     events.end_session().unwrap();

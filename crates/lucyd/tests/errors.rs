@@ -1,4 +1,5 @@
 //! Failures are spoken plainly and never hang a Session.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
@@ -21,9 +22,8 @@ fn an_stt_failure_is_apologised_for_and_the_session_carries_on() {
     lucyd.tts.finish_playing();
     assert_eq!(next_state(&mut events).state, State::Listening);
 
-    // A good utterance in between means the next failure isn't a second in
-    // a row.
-    lucyd.say("hello");
+    let a_good_utterance_in_between = "hello";
+    lucyd.say(a_good_utterance_in_between);
     assert_eq!(lucyd.thinking.next_turn(), "hello");
     lucyd.thinking.turn_end();
     assert_eq!(next_state(&mut events).state, State::Thinking);
@@ -60,8 +60,7 @@ fn two_stt_failures_in_a_row_end_the_session() {
 #[test]
 fn a_dead_thinking_process_is_respawned_silently_and_the_turn_resent() {
     let lucyd = Harness::start();
-    // An Indicator keeps the notification fallback quiet.
-    let _indicator = lucyd.indicator("lucy-indicator");
+    let _keeps_notifications_quiet = lucyd.indicator("lucy-indicator");
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
     next_state(&mut events);
@@ -82,7 +81,6 @@ fn a_dead_thinking_process_is_respawned_silently_and_the_turn_resent() {
     assert_eq!(states, [State::Thinking, State::Speaking, State::Listening]);
     lucyd.notifier.assert_no_notification();
 
-    // Recovered: a later death gets a respawn of its own.
     lucyd.say("and tomorrow");
     lucyd.thinking.next_turn();
     lucyd.thinking.dies();
@@ -116,10 +114,9 @@ fn when_the_respawned_thinking_process_dies_too_she_says_so_notifies_and_ends() 
         states,
         [State::Thinking, State::Error, State::Speaking, State::Idle]
     );
-    // Never another Provider.
     let opened = lucyd.thinking.opened();
     assert_eq!(opened.len(), 2);
-    assert_eq!(opened[0], opened[1]);
+    assert_eq!(opened[0], opened[1], "never another Provider");
 }
 
 #[test]

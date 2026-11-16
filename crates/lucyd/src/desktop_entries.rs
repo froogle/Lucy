@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// An installed app, from its `.desktop` file.
 #[derive(Debug, Clone)]
 pub struct DesktopEntry {
     pub path: PathBuf,
@@ -30,9 +29,6 @@ pub fn xdg_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The apps shown to the user from the entries in `dirs`. An entry in an
-/// earlier dir replaces one with the same file name in a later dir, even
-/// when the earlier one is hidden.
 pub fn read_all(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
@@ -50,7 +46,6 @@ pub fn read_all(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
     entries
 }
 
-/// The entry at `path`, if it is an app the user can see.
 fn parse(path: &Path) -> Option<DesktopEntry> {
     let text = std::fs::read_to_string(path).ok()?;
     let mut in_entry = false;
@@ -98,16 +93,12 @@ fn parse(path: &Path) -> Option<DesktopEntry> {
     })
 }
 
-/// What a spoken name matched.
 pub enum Found<'a> {
     One(&'a DesktopEntry),
     Several(Vec<&'a DesktopEntry>),
     None,
 }
 
-/// The entries `spoken` names. An app's own name beats a generic name or
-/// keyword, so "Firefox" isn't ambiguous just because another app lists
-/// "firefox" as a keyword.
 pub fn find<'a>(entries: &'a [DesktopEntry], spoken: &str) -> Found<'a> {
     let spoken = spoken.trim().to_lowercase();
     let is = |text: &str| text.to_lowercase() == spoken;

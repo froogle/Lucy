@@ -1,7 +1,3 @@
-//! The real Launcher: starts apps and opens URLs as the user's own launcher
-//! would, through uwsm when it is running so that they get their own
-//! systemd scope rather than living in lucyd's.
-
 use std::io;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -18,7 +14,7 @@ impl Launcher for SystemLauncher {
             vec!["xdg-open"]
         };
         command.push(url);
-        spawn(&command)
+        spawn_detached(&command)
     }
 
     fn launch(&self, entry: &Path, launcher: Option<&[String]>) -> io::Result<()> {
@@ -31,7 +27,17 @@ impl Launcher for SystemLauncher {
             .to_str()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path isn't UTF-8"))?;
         command.push(entry);
-        spawn(&command)
+        spawn_detached(&command)
+    }
+
+    fn open_terminal(&self, command: &[String]) -> io::Result<()> {
+        let mut terminal = if uwsm_is_running() {
+            vec!["uwsm", "app", "--", "xdg-terminal-exec"]
+        } else {
+            vec!["xdg-terminal-exec"]
+        };
+        terminal.extend(command.iter().map(String::as_str));
+        spawn_detached(&terminal)
     }
 }
 
@@ -45,9 +51,7 @@ fn uwsm_is_running() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Starts `command` without waiting for it: an app runs for as long as the
-/// user keeps it open. A thread reaps it when it exits.
-fn spawn(command: &[&str]) -> io::Result<()> {
+fn spawn_detached(command: &[&str]) -> io::Result<()> {
     let [program, args @ ..] = command else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

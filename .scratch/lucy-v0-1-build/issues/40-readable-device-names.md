@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Audio pipeline (Dev
 
 **Seams:** owns the description in the device list both callers use. The panel snapshot gains a label for each option; `key`/`current`/`options` keep node names.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -32,3 +32,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Audio pipeline (Dev
 Found during ticket 36's desktop hand check (2026-11-15). The user wants it grilled later.
 
 2026-11-16: settled in a grilling session.
+
+2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand check left: the panel and the TUI show "ATH-M50xSTS-USB Mono" for the headset mic.

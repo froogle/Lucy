@@ -1,6 +1,7 @@
 //! The real wake-word engine, LiveKit WakeWord v2 on tract, with the bundled
 //! "Hey Lucy" model. `positive.wav` is the maintainer saying "Hey Lucy";
 //! `negative.wav` comes from livekit-wakeword's own fixtures (Apache-2.0).
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 use std::path::{Path, PathBuf};
 
@@ -48,8 +49,6 @@ fn a_file_that_is_not_a_wake_word_model_is_refused_with_its_path() {
     assert!(err.to_string().contains("hey_lucy.onnx"), "{err}");
 }
 
-/// How many times `wake_word` heard its phrase in `audio`, fed in 10 ms
-/// frames as the DSP thread does, with a second of silence after.
 fn heard(wake_word: &mut LiveKit, audio: &[f32]) -> usize {
     let mut audio = audio.to_vec();
     audio.extend(vec![0.0; 16_000]);

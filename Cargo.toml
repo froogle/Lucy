@@ -49,3 +49,6 @@ opt-level = 3
 
 [profile.dev.package."tract-data"]
 opt-level = 3
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
