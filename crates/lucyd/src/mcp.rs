@@ -291,6 +291,7 @@ impl ServerHandler for Tools {
                     end_session_tool(),
                     update_persona_tool(),
                     plugins::manage_plugin_tool(),
+                    plugins::approve_plugin_tool(),
                     authoring::request_plugin_tool(),
                     input::ask_typed_tool(),
                 ],
@@ -321,6 +322,7 @@ impl ServerHandler for Tools {
             "end_session" => Ok(self.end_session().await.into()),
             "update_persona" => Ok(self.update_persona(&request).into()),
             "manage_plugin" => Ok(plugins.manage(&arguments).await.into()),
+            "approve_plugin" => Ok(plugins.approve(&arguments).await.into()),
             "request_plugin" => Ok(self.authoring.request(&arguments).into()),
             "ask_typed" => Ok(input::ask_typed(&self.commands, &arguments).await.into()),
             name => {
