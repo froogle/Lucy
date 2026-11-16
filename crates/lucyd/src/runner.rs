@@ -20,7 +20,7 @@ use crate::adapters::{
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
 use crate::authoring::{Authoring, Building};
-use crate::input::{Dialog, OpenDialog, Typed};
+use crate::input::{Dialog, OpenDialog, Opened, Typed};
 use crate::limits;
 use crate::mcp::Relays;
 use crate::notifications;
@@ -604,13 +604,15 @@ impl Runner {
     }
 
     fn open_dialog(&self, typed: Dialog) -> Result<Showing, String> {
-        let (dialog, held) = self.buses.dialogs.open(typed);
-        if held {
-            return Ok(Showing {
-                dialog,
-                claim_wait: None,
-            });
-        }
+        let dialog = match self.buses.dialogs.open(typed) {
+            Opened::Held(dialog) => {
+                return Ok(Showing {
+                    dialog,
+                    claim_wait: None,
+                })
+            }
+            Opened::Unheld(dialog) => dialog,
+        };
         match self
             .adapters
             .launcher

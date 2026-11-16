@@ -125,7 +125,7 @@ impl Dialogs {
         })
     }
 
-    pub fn open(&self, dialog: Dialog) -> (OpenDialog, bool) {
+    pub fn open(&self, dialog: Dialog) -> Opened {
         let mut inner = self.inner.locked();
         inner.opened += 1;
         let id = DialogId(inner.opened);
@@ -137,13 +137,15 @@ impl Dialogs {
         let (reply, typed) = oneshot::channel();
         inner.send(Event::InputOpen(request.clone()));
         inner.open = Some(Open { id, request, reply });
-        let held = inner.holder.is_some();
         let open = OpenDialog {
             id,
             dialogs: self.clone(),
             typed,
         };
-        (open, held)
+        match inner.holder {
+            Some(_) => Opened::Held(open),
+            None => Opened::Unheld(open),
+        }
     }
 
     fn release(&self) {
@@ -155,6 +157,11 @@ impl Dialogs {
             let _ = open.reply.send(Typed::Cancelled);
         }
     }
+}
+
+pub enum Opened {
+    Held(OpenDialog),
+    Unheld(OpenDialog),
 }
 
 pub struct InputClaim {
