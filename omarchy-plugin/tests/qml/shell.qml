@@ -252,6 +252,13 @@ ShellRoot {
         check("its own close closes it", lucy.dialog, null)
         check("and the panel", barPanel.opened, false)
 
+        console.log("the Input dialog: over the settings the user opened")
+        barPanel.open()
+        ask("over-1", "Which page shall I open?", [{ name: "url", kind: "url" }])
+        lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.close", params: { id: "over-1" } }))
+        check("lucyd's close leaves the panel open", barPanel.opened, true)
+        barPanel.close()
+
         console.log("the Input dialog: text, number and choice")
         ask("kinds-1", "Tell me about the cat", [
           { name: "name", kind: "text" },

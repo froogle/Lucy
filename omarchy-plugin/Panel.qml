@@ -49,9 +49,18 @@ Panel {
   readonly property var dialog: lucy.dialog
   readonly property bool asking: dialog !== null
   property string inputProblem: ""
+  property bool openedToAsk: false
 
   onOpenedChanged: if (!opened) openList = ""
-  onAskingChanged: asking ? root.open() : root.close()
+  onAskingChanged: {
+    if (asking) {
+      openedToAsk = !opened
+      root.open()
+    } else if (openedToAsk) {
+      openedToAsk = false
+      root.close()
+    }
+  }
   onDialogChanged: {
     inputProblem = ""
     if (dialog !== null) Qt.callLater(inputBox.focusFirst)
