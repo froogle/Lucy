@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 
 use tokio::process::Command;
 
-pub async fn run(path: &OsStr, command: &str, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn run(path: &OsStr, command: &str, args: &[&str]) -> Result<String, String> {
     let output = Command::new(command)
         .args(args)
         .env("PATH", path)

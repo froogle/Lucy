@@ -14,19 +14,22 @@ const CAPTURE_SCREENSHOT: &str = "omarchy-capture-screenshot";
 const LOCK: &str = "omarchy-system-lock";
 const TOGGLE_IDLE: &str = "omarchy-toggle-idle";
 
-const BAR_SHOWN: &str = "off";
-const BAR_HIDDEN: &str = "on";
+pub(crate) trait Named: Copy + 'static {
+    const ALL: &'static [Self];
+
+    fn as_str(self) -> &'static str;
+}
 
 #[derive(Clone, Copy)]
-pub enum Theme {
+pub(crate) enum Theme {
     List,
     Set,
 }
 
-impl Theme {
-    pub const ALL: [Theme; 2] = [Theme::List, Theme::Set];
+impl Named for Theme {
+    const ALL: &'static [Theme] = &[Theme::List, Theme::Set];
 
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Theme::List => "list",
             Theme::Set => "set",
@@ -34,13 +37,13 @@ impl Theme {
     }
 }
 
-pub async fn themes(path: &OsStr) -> Result<Value, String> {
+pub(crate) async fn themes(path: &OsStr) -> Result<Value, String> {
     let installed = installed_themes(path).await?;
     let current = run(path, CURRENT_THEME, &[]).await?;
     Ok(json!({"themes": installed, "current": current.trim()}))
 }
 
-pub async fn set_theme(path: &OsStr, name: &str) -> Result<String, String> {
+pub(crate) async fn set_theme(path: &OsStr, name: &str) -> Result<String, String> {
     let installed = installed_themes(path).await?;
     let theme = installed
         .iter()
@@ -66,16 +69,16 @@ async fn installed_themes(path: &OsStr) -> Result<Vec<String>, String> {
 }
 
 #[derive(Clone, Copy)]
-pub enum Bar {
+pub(crate) enum Bar {
     Show,
     Hide,
     Toggle,
 }
 
-impl Bar {
-    pub const ALL: [Bar; 3] = [Bar::Show, Bar::Hide, Bar::Toggle];
+impl Named for Bar {
+    const ALL: &'static [Bar] = &[Bar::Show, Bar::Hide, Bar::Toggle];
 
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Bar::Show => "show",
             Bar::Hide => "hide",
@@ -84,27 +87,36 @@ impl Bar {
     }
 }
 
-pub async fn bar(path: &OsStr, action: Bar) -> Result<&'static str, String> {
-    let (arg, done) = match action {
-        Bar::Show => (BAR_SHOWN, "shown"),
-        Bar::Hide => (BAR_HIDDEN, "hidden"),
-        Bar::Toggle => ("toggle", "toggled"),
-    };
-    run(path, TOGGLE_BAR, &[arg]).await?;
-    Ok(done)
+impl Bar {
+    fn toggle_bar_arg(self) -> &'static str {
+        match self {
+            Bar::Show => "off",
+            Bar::Hide => "on",
+            Bar::Toggle => "toggle",
+        }
+    }
+}
+
+pub(crate) async fn bar(path: &OsStr, action: Bar) -> Result<&'static str, String> {
+    run(path, TOGGLE_BAR, &[action.toggle_bar_arg()]).await?;
+    Ok(match action {
+        Bar::Show => "shown",
+        Bar::Hide => "hidden",
+        Bar::Toggle => "toggled",
+    })
 }
 
 #[derive(Clone, Copy)]
-pub enum NightLight {
+pub(crate) enum NightLight {
     On,
     Off,
     Toggle,
 }
 
-impl NightLight {
-    pub const ALL: [NightLight; 3] = [NightLight::On, NightLight::Off, NightLight::Toggle];
+impl Named for NightLight {
+    const ALL: &'static [NightLight] = &[NightLight::On, NightLight::Off, NightLight::Toggle];
 
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             NightLight::On => "on",
             NightLight::Off => "off",
@@ -114,23 +126,26 @@ impl NightLight {
 }
 
 #[derive(Clone, Copy)]
-pub enum Screenshot {
+pub(crate) enum Screenshot {
     Screen,
     Region,
     Window,
 }
 
-impl Screenshot {
-    pub const ALL: [Screenshot; 3] = [Screenshot::Screen, Screenshot::Region, Screenshot::Window];
+impl Named for Screenshot {
+    const ALL: &'static [Screenshot] =
+        &[Screenshot::Screen, Screenshot::Region, Screenshot::Window];
 
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Screenshot::Screen => "screen",
             Screenshot::Region => "region",
             Screenshot::Window => "window",
         }
     }
+}
 
+impl Screenshot {
     fn mode(self) -> &'static str {
         match self {
             Screenshot::Screen => "fullscreen",
@@ -140,22 +155,22 @@ impl Screenshot {
     }
 }
 
-pub async fn screenshot(path: &OsStr, action: Screenshot) -> Result<&'static str, String> {
+pub(crate) async fn screenshot(path: &OsStr, action: Screenshot) -> Result<&'static str, String> {
     run(path, CAPTURE_SCREENSHOT, &[action.mode(), "save"]).await?;
     Ok("saved; Omarchy shows a notification to open or edit it")
 }
 
 #[derive(Clone, Copy)]
-pub enum IdleLock {
+pub(crate) enum IdleLock {
     Lock,
     StayAwake,
     AllowIdle,
 }
 
-impl IdleLock {
-    pub const ALL: [IdleLock; 3] = [IdleLock::Lock, IdleLock::StayAwake, IdleLock::AllowIdle];
+impl Named for IdleLock {
+    const ALL: &'static [IdleLock] = &[IdleLock::Lock, IdleLock::StayAwake, IdleLock::AllowIdle];
 
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             IdleLock::Lock => "lock",
             IdleLock::StayAwake => "stay_awake",
@@ -164,7 +179,7 @@ impl IdleLock {
     }
 }
 
-pub async fn idle_lock(path: &OsStr, action: IdleLock) -> Result<&'static str, String> {
+pub(crate) async fn idle_lock(path: &OsStr, action: IdleLock) -> Result<&'static str, String> {
     match action {
         IdleLock::Lock => {
             run(path, LOCK, &[]).await?;
@@ -186,7 +201,7 @@ struct NightLightStatus {
     enabled: bool,
 }
 
-pub async fn night_light(path: &OsStr, action: NightLight) -> Result<&'static str, String> {
+pub(crate) async fn night_light(path: &OsStr, action: NightLight) -> Result<&'static str, String> {
     let status = run(path, TOGGLE_NIGHT_LIGHT, &["--status"]).await?;
     let status: NightLightStatus = serde_json::from_str(&status)
         .map_err(|e| format!("{TOGGLE_NIGHT_LIGHT} --status said {status:?}: {e}"))?;

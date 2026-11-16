@@ -27,6 +27,7 @@ use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{json, Value};
 
 use hyprland::{Address, Hyprland, Window};
+use settings::Named;
 
 /// Where the Plugin reaches the desktop.
 pub struct Desktop {
@@ -246,7 +247,7 @@ impl Omarchy {
     }
 
     async fn theme(&self, args: &JsonObject) -> Result<Value, String> {
-        match choice(args, &settings::Theme::ALL, settings::Theme::as_str)? {
+        match choice::<settings::Theme>(args)? {
             settings::Theme::List => settings::themes(&self.path).await,
             settings::Theme::Set => {
                 let name = string(args, "name")?.ok_or("set needs the theme's name")?;
@@ -316,31 +317,25 @@ fn lua_workspace(args: &JsonObject) -> Result<String, String> {
     Ok(lua_string(&workspace))
 }
 
-async fn setting<T: Copy, F, Done>(
+async fn setting<T: Named, Done>(
     args: &JsonObject,
-    all: &[T],
-    as_str: fn(T) -> &'static str,
-    change: F,
+    change: impl FnOnce(T) -> Done,
 ) -> Result<Value, String>
 where
-    F: FnOnce(T) -> Done,
     Done: Future<Output = Result<&'static str, String>>,
 {
-    let done = change(choice(args, all, as_str)?).await?;
+    let done = change(choice(args)?).await?;
     Ok(json!({"done": done}))
 }
 
-fn choice<T: Copy>(
-    args: &JsonObject,
-    all: &[T],
-    as_str: fn(T) -> &'static str,
-) -> Result<T, String> {
+fn choice<T: Named>(args: &JsonObject) -> Result<T, String> {
     let named = string(args, "action")?;
-    all.iter()
+    T::ALL
+        .iter()
         .copied()
-        .find(|action| Some(as_str(*action)) == named)
+        .find(|action| Some(action.as_str()) == named)
         .ok_or_else(|| {
-            let names: Vec<&str> = all.iter().map(|action| as_str(*action)).collect();
+            let names: Vec<&str> = T::ALL.iter().map(|action| action.as_str()).collect();
             format!("action is {}", one_of(&names))
         })
 }
@@ -381,9 +376,9 @@ fn schema(properties: Value, required: &[&str]) -> std::sync::Arc<JsonObject> {
     std::sync::Arc::new(serde_json::from_value(schema).expect("built as an object"))
 }
 
-fn action<T: Copy>(all: &[T], as_str: fn(T) -> &'static str) -> Value {
-    let names: Vec<&str> = all.iter().map(|action| as_str(*action)).collect();
-    json!({"action": {"type": "string", "enum": names}})
+fn action<T: Named>() -> Value {
+    let names: Vec<&str> = T::ALL.iter().map(|action| action.as_str()).collect();
+    json!({"type": "string", "enum": names})
 }
 
 fn tools() -> Vec<Tool> {
@@ -449,7 +444,7 @@ fn tools() -> Vec<Tool> {
              installed theme by its name.",
             schema(
                 json!({
-                    "action": {"type": "string", "enum": settings::Theme::ALL.map(settings::Theme::as_str)},
+                    "action": action::<settings::Theme>(),
                     "name": {"type": "string", "description": "The theme's name, for set, as list gives it."},
                 }),
                 &["action"],
@@ -458,16 +453,13 @@ fn tools() -> Vec<Tool> {
         Tool::new(
             "bar",
             "Shows, hides or toggles Omarchy's bar.",
-            schema(
-                action(&settings::Bar::ALL, settings::Bar::as_str),
-                &["action"],
-            ),
+            schema(json!({"action": action::<settings::Bar>()}), &["action"]),
         ),
         Tool::new(
             "night_light",
             "Turns Omarchy's night light (a warmer screen) on or off, or toggles it.",
             schema(
-                action(&settings::NightLight::ALL, settings::NightLight::as_str),
+                json!({"action": action::<settings::NightLight>()}),
                 &["action"],
             ),
         ),
@@ -476,7 +468,7 @@ fn tools() -> Vec<Tool> {
             "Takes a screenshot and saves it: the whole screen, or a region or window the \
              user then picks with the mouse.",
             schema(
-                action(&settings::Screenshot::ALL, settings::Screenshot::as_str),
+                json!({"action": action::<settings::Screenshot>()}),
                 &["action"],
             ),
         ),
@@ -485,7 +477,7 @@ fn tools() -> Vec<Tool> {
             "Locks the screen now, or keeps the computer awake (no idle lock or screensaver) \
              until idling is allowed again.",
             schema(
-                action(&settings::IdleLock::ALL, settings::IdleLock::as_str),
+                json!({"action": action::<settings::IdleLock>()}),
                 &["action"],
             ),
         ),
@@ -527,42 +519,12 @@ impl ServerHandler for Omarchy {
             "workspace" => self.workspace(&args).await,
             "layout" => self.layout(&args).await,
             "theme" => self.theme(&args).await,
-            "bar" => {
-                setting(
-                    &args,
-                    &settings::Bar::ALL,
-                    settings::Bar::as_str,
-                    |action| settings::bar(&self.path, action),
-                )
-                .await
-            }
+            "bar" => setting(&args, |action| settings::bar(&self.path, action)).await,
             "night_light" => {
-                setting(
-                    &args,
-                    &settings::NightLight::ALL,
-                    settings::NightLight::as_str,
-                    |action| settings::night_light(&self.path, action),
-                )
-                .await
+                setting(&args, |action| settings::night_light(&self.path, action)).await
             }
-            "screenshot" => {
-                setting(
-                    &args,
-                    &settings::Screenshot::ALL,
-                    settings::Screenshot::as_str,
-                    |action| settings::screenshot(&self.path, action),
-                )
-                .await
-            }
-            "idle_lock" => {
-                setting(
-                    &args,
-                    &settings::IdleLock::ALL,
-                    settings::IdleLock::as_str,
-                    |action| settings::idle_lock(&self.path, action),
-                )
-                .await
-            }
+            "screenshot" => setting(&args, |action| settings::screenshot(&self.path, action)).await,
+            "idle_lock" => setting(&args, |action| settings::idle_lock(&self.path, action)).await,
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };
         Ok(answer(outcome).into())
