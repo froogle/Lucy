@@ -55,6 +55,7 @@ impl Home {
                 shipped: self.dir.path().join("shipped"),
                 state: self.state(),
             },
+            plugin_env: lucyd::plugins::Environment::from_process(),
         })
         .unwrap()
     }

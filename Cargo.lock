@@ -1696,6 +1696,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lucy-omarchy"
+version = "0.1.0"
+dependencies = [
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "lucyd"
 version = "0.1.0"
 dependencies = [

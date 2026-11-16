@@ -330,6 +330,11 @@
           "const": "broken",
           "description": "It can't be used; `problem` says why.",
           "type": "string"
+        },
+        {
+          "const": "not_for_this_desktop",
+          "description": "Its Manifest's `requires` isn't met here, so it is left out quietly.",
+          "type": "string"
         }
       ]
     },

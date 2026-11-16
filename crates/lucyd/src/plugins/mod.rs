@@ -4,6 +4,7 @@
 
 mod approval;
 mod authored;
+mod environment;
 mod manage;
 mod manifest;
 pub(crate) mod sandbox;
@@ -33,6 +34,7 @@ use crate::model_text::CALL_FINISHED;
 use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
+pub use environment::Environment;
 pub use manage::{manage_plugin_tool, Refusal};
 use manifest::{Manifest, ToolEntry};
 
@@ -149,6 +151,7 @@ pub struct Host {
     editing: Mutex<()>,
     /// Where the credentials Plugins declare are kept.
     credentials: Arc<dyn CredentialStore>,
+    environment: Environment,
 }
 
 /// A Plugin's Manifest and executable as they are now.
@@ -181,6 +184,8 @@ enum Scanned {
     Approved(Usable),
     /// New or changed since its last Approval.
     Awaiting(Contents),
+    /// Its `requires` isn't met here.
+    NotForThisDesktop(Manifest),
 }
 
 /// An approved Plugin, ready to start.
@@ -198,6 +203,7 @@ impl Host {
         commands: mpsc::UnboundedSender<Command>,
         changes: ChangeBus,
         credentials: Arc<dyn CredentialStore>,
+        environment: Environment,
     ) -> Arc<Host> {
         Arc::new(Host {
             paths,
@@ -207,6 +213,7 @@ impl Host {
             changes,
             editing: Mutex::default(),
             credentials,
+            environment,
         })
     }
 
@@ -230,6 +237,7 @@ impl Host {
                     }
                 }
                 Ok(Scanned::Awaiting(contents)) => awaiting.push((name, contents)),
+                Ok(Scanned::NotForThisDesktop(_)) => {}
                 Err(reason) => broken.push(broken_message(&name, &reason)),
             }
         }
@@ -344,6 +352,9 @@ impl Host {
             executable,
             hash,
         } = Contents::read(name, &folder)?;
+        if !self.environment.meets(&manifest.requires) {
+            return Err(format!("the {name} Plugin isn't for this desktop"));
+        }
         let previous = match self.approvals()?.plugins.remove(name) {
             Some(approval) if approval.hash == hash => {
                 return Err(format!("the {name} Plugin is already approved"))
@@ -510,6 +521,9 @@ impl Host {
     /// The Plugin as it is now: usable if its exact content is approved.
     fn scan(&self, name: &str, folder: &Path) -> Result<Scanned, String> {
         let contents = Contents::read(name, folder)?;
+        if !self.environment.meets(&contents.manifest.requires) {
+            return Ok(Scanned::NotForThisDesktop(contents.manifest));
+        }
         let approvals = self.approvals()?;
         let Some(approval) = approvals
             .plugins
@@ -639,8 +653,9 @@ impl Host {
             .current_dir(&plugin.folder)
             .env_clear()
             .env("LUCY_PLUGIN_STATE_DIR", &state_dir);
-        for var in ["PATH", "HOME", "LANG"] {
-            if let Some(value) = std::env::var_os(var) {
+        let required = plugin.manifest.requires.env.iter().map(String::as_str);
+        for var in ["PATH", "HOME", "LANG"].into_iter().chain(required) {
+            if let Some(value) = self.environment.var(var) {
                 command.env(var, value);
             }
         }

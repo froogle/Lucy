@@ -1,6 +1,6 @@
 //! What Lucy says, and shows, when she asks the user's Approval of a Plugin.
 
-use super::manifest::{Access, Manifest, ToolEntry};
+use super::manifest::{Manifest, ToolEntry};
 
 /// The full spoken summary of a new Plugin: what it handles, what it can
 /// access and what it asks before doing.
@@ -11,7 +11,7 @@ pub fn summary(manifest: &Manifest) -> String {
         manifest.name,
         and(&handles)
     )];
-    let access: Vec<String> = kinds(&manifest.access)
+    let access: Vec<String> = kinds(manifest)
         .into_iter()
         .filter(|(_, items)| !items.is_empty())
         .map(|(verb, items)| format!("{verb} {}", and(items)))
@@ -69,7 +69,7 @@ pub fn changes(old: &Manifest, new: &Manifest) -> String {
             said.push(format!("It no longer handles {}.", tool.handles));
         }
     }
-    for ((verb, before), (_, after)) in kinds(&old.access).into_iter().zip(kinds(&new.access)) {
+    for ((verb, before), (_, after)) in kinds(old).into_iter().zip(kinds(new)) {
         let added: Vec<&str> = after
             .iter()
             .filter(|item| !before.contains(item))
@@ -103,13 +103,15 @@ fn find<'a>(manifest: &'a Manifest, name: &str) -> Option<&'a ToolEntry> {
 
 /// Each kind of access, as what the Plugin can do: "read", "write to" and
 /// so on, with its items.
-fn kinds(access: &Access) -> [(&'static str, &[String]); 5] {
+fn kinds(manifest: &Manifest) -> [(&'static str, &[String]); 6] {
+    let access = &manifest.access;
     [
         ("read", &access.read),
         ("write to", &access.write),
         ("reach", &access.network),
         ("use the credentials", &access.credentials),
         ("run", &access.commands),
+        ("see the environment variables", &manifest.requires.env),
     ]
 }
 

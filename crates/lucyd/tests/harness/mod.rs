@@ -22,6 +22,7 @@ use lucyd::adapters::{
     SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
     ThinkingEvent, Timer, Tts, Workspace,
 };
+use lucyd::plugins::Environment;
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
@@ -78,6 +79,13 @@ impl Harness {
     /// for a user who already has a Persona.
     pub fn start() -> Harness {
         Harness::launch(None, Some(PERSONA), None, None, None)
+    }
+
+    /// Starts lucyd with only `vars` in the environment its Plugins are
+    /// checked against and start with.
+    pub fn with_env(vars: &[(&str, &str)]) -> Harness {
+        let env = Environment::new(vars.iter().copied());
+        Harness::launch_in(env, None, Some(PERSONA), None, None, None)
     }
 
     /// Starts lucyd with `config` as its `config.toml`.
@@ -139,8 +147,21 @@ impl Harness {
         Harness::launch(Some(config), Some(PERSONA), None, ears, None)
     }
 
-    /// `ears` is what lucyd hears through instead of `say`.
     fn launch(
+        config: Option<&str>,
+        persona: Option<&str>,
+        real_thinking: Option<Arc<dyn Thinking>>,
+        ears: Option<(lucyd::audio::Ears, FakeMic, FakeEchoCanceller)>,
+        superwhisper: Option<Arc<dyn Stt>>,
+    ) -> Harness {
+        let env = Environment::from_process();
+        Harness::launch_in(env, config, persona, real_thinking, ears, superwhisper)
+    }
+
+    /// `ears` is what lucyd hears through instead of `say`; `env` is what
+    /// its Plugins are checked against and start with.
+    fn launch_in(
+        env: Environment,
         config: Option<&str>,
         persona: Option<&str>,
         real_thinking: Option<Arc<dyn Thinking>>,
@@ -212,6 +233,7 @@ impl Harness {
             persona_path: persona_path.clone(),
             lucy_program: lucy_binary(),
             plugin_paths: plugin_paths.clone(),
+            plugin_env: env,
             adapters: Adapters {
                 speech: speech_rx,
                 wake_word: wake_word_rx,

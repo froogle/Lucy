@@ -53,6 +53,9 @@ pub struct Options {
     pub adapters: adapters::Adapters,
     /// Where Plugins and Lucy's state live; normally `plugins::Paths::from_env()`.
     pub plugin_paths: plugins::Paths,
+    /// What Plugins are checked against and start with; normally
+    /// `plugins::Environment::from_process()`.
+    pub plugin_env: plugins::Environment,
 }
 
 /// A running lucyd. Dropping it stops lucyd and removes its sockets.
@@ -76,6 +79,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         lucy_program,
         adapters,
         plugin_paths,
+        plugin_env,
     } = options;
     let persona = persona::Persona::new(persona_path);
     let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
@@ -108,6 +112,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         sessions.clone(),
         buses.plugins.clone(),
         adapters.credentials.clone(),
+        plugin_env,
     );
     let thinking = adapters.thinking.clone();
     let authoring = authoring::Authoring::new(
