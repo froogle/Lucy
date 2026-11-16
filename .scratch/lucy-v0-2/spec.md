@@ -69,6 +69,14 @@ The second is anything that needs her to see the screen. She can open YouTube an
 42. As a user, I want text on the screen treated as untrusted, so that a web page can't steer her.
 43. As a Plugin author, I want the screen tools to live in the desktop Plugin, so that a GNOME or KDE Plugin can provide them its own way.
 
+### Finding files
+
+44. As a user, I want to say "show me my naval conference files in Documents" and have Lucy find them by name, so that I don't have to remember exact file names or paths.
+45. As a user, I want my words matched in any order and any case, so that "naval conference" finds "1921 Naval Conference".
+46. As a user, I want Lucy to open the file manager with what she found highlighted, so that I can see it at once.
+47. As a user, I want to say "open the second one" and have it open in its default app, so that I can go straight to a file.
+48. As a user, I want hidden and build folders left out of the search, and the roots and skip list configurable, so that results are relevant and fast.
+
 ## Implementation Decisions
 
 ### Hand-off (ADR 0007)
@@ -114,6 +122,16 @@ The second is anything that needs her to see the screen. She can open YouTube an
 - **Core: password fields.** `type` is refused when the focused element is a password field, by AT-SPI role where available. The refusal tells the model to use `ask_typed` or the Plugin's credential path instead.
 - **How Plugins mark these tools:** screen tools are marked in the Manifest so the core knows which calls count as a look and which `click` gets the risk check. The Manifest shape for that mark is settled when ticket 06 is built: one new hash-covered field, owned by that ticket.
 - AT-SPI for exact targets and the risk check is a later addition. v0.2 starts with screenshots only.
+
+### Finding files
+
+- **New Built-in tools, with no Confirmation:**
+  - `find_files {words, near?}` matches names only, containing every word, case-insensitive. `near` ranks matches inside a matching folder first. Folders rank before files, then newest first. At most 20 results, with a total count.
+  - `show_files {paths}` highlights the items in the file manager over the `org.freedesktop.FileManager1.ShowItems` D-Bus call, or opens the parent folder with `xdg-open` if nothing answers.
+  - `open_file {path}` opens a file with `xdg-open`, refusing executables, `.desktop` files and paths outside the roots.
+- **The walk:** in lucyd, with the `ignore` crate, so there's no external dependency. `[files] roots` (default `~`) and `[files] skip` (default `node_modules`, `target`, `.cache`, `.git`, `venv`, `__pycache__`). Hidden folders are always skipped.
+- **Privacy:** paths go to the Thinking Provider only, never to the bus, notifications or logs.
+- Contents search is out of scope.
 
 ## Testing Decisions
 
