@@ -96,6 +96,7 @@ fn value<B: Backend>(ui: &mut Ui<B>, field: &Field) -> Result<String, Stop> {
         FieldKind::Url => "URL:",
         FieldKind::Number => "Number:",
         FieldKind::Choice { .. } => "Pick one:",
+        FieldKind::Secret => "Secret:",
     });
     if let FieldKind::Choice { choices } = &field.kind {
         let choices = choices.as_slice();
@@ -106,7 +107,10 @@ fn value<B: Backend>(ui: &mut Ui<B>, field: &Field) -> Result<String, Stop> {
         return Ok(picked.clone());
     }
     loop {
-        let typed = ui.ask(label, "")?;
+        let typed = match field.kind {
+            FieldKind::Secret => ui.secret(label)?,
+            _ => ui.ask(label, "")?,
+        };
         let typed = typed.trim();
         if typed.is_empty() {
             ui.say("Type an answer, or Esc to close the box.")?;

@@ -371,8 +371,16 @@ impl Harness {
     }
 
     pub fn answer_input(&self, holder: &mut Client, id: &str, value: &str) {
-        self.typed.lock().unwrap().push(value.to_owned());
-        let values = std::collections::BTreeMap::from([("answer".to_owned(), value.to_owned())]);
+        self.answer_fields(holder, id, &[("answer", value)]);
+    }
+
+    pub fn answer_fields(&self, holder: &mut Client, id: &str, fields: &[(&str, &str)]) {
+        let mut typed = self.typed.lock().unwrap();
+        typed.extend(fields.iter().map(|(_, value)| (*value).to_owned()));
+        let values = fields
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
         holder
             .answer_input(id, values)
             .expect("the answer is taken");

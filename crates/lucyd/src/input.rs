@@ -277,25 +277,49 @@ pub async fn ask(
     question: &str,
     kind: FieldKind,
 ) -> TypedAnswer {
-    let prompt = format!("I've put a box on screen for {}.", what(&kind));
-    let dialog = Dialog {
-        message: question.to_owned(),
-        fields: vec![Field {
-            name: ANSWER.to_owned(),
-            description: None,
-            kind,
-        }],
+    let field = Field {
+        name: ANSWER.to_owned(),
+        description: None,
+        kind,
     };
-    let question = Question {
-        prompt,
-        expects: Expects::Typed(dialog),
-    };
-    match runner::ask(commands, question, None).await {
-        Some(Answer::Typed(mut values)) => {
+    match fill(commands, question, vec![field]).await {
+        Filled::Values(mut values) => {
             TypedAnswer::Answer(values.remove(ANSWER).unwrap_or_default())
         }
-        Some(Answer::TimedOut) => TypedAnswer::TimedOut,
-        _ => TypedAnswer::Cancelled,
+        Filled::Cancelled => TypedAnswer::Cancelled,
+        Filled::TimedOut => TypedAnswer::TimedOut,
+    }
+}
+
+/// How the Input dialog was filled in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Filled {
+    /// Each field's value, by its name.
+    Values(BTreeMap<String, String>),
+    Cancelled,
+    TimedOut,
+}
+
+pub async fn fill(
+    commands: &mpsc::UnboundedSender<Command>,
+    message: &str,
+    fields: Vec<Field>,
+) -> Filled {
+    let what = match &*fields {
+        [field] => what(&field.kind),
+        _ => "your answers",
+    };
+    let question = Question {
+        prompt: format!("I've put a box on screen for {what}."),
+        expects: Expects::Typed(Dialog {
+            message: message.to_owned(),
+            fields,
+        }),
+    };
+    match runner::ask(commands, question, None).await {
+        Some(Answer::Typed(values)) => Filled::Values(values),
+        Some(Answer::TimedOut) => Filled::TimedOut,
+        _ => Filled::Cancelled,
     }
 }
 
@@ -319,5 +343,6 @@ fn what(kind: &FieldKind) -> &'static str {
         FieldKind::Url => "the URL",
         FieldKind::Number => "the number",
         FieldKind::Choice { .. } => "your choice",
+        FieldKind::Secret => "your secret",
     }
 }
