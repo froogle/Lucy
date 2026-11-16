@@ -69,6 +69,7 @@ impl Indicator {
             State::Thinking => thinking(&mut canvas, self.palette.accent, t),
             State::Speaking => speaking(&mut canvas, self.palette.accent, self.level),
             State::Confirming => confirming(&mut canvas, self.palette.warning, t),
+            State::Typing => typing(&mut canvas, self.palette.accent, t),
         }
         if self.building {
             building(&mut canvas, self.palette.accent);
@@ -104,6 +105,24 @@ fn confirming(canvas: &mut Pixmap, colour: Color, t: f32) {
     let pulse = wave(t, 1.0);
     disc(canvas, 8.0 + 4.0 * pulse, colour);
     ring(canvas, 18.0, 3.0, with_alpha(colour, 0.5 + 0.5 * pulse));
+}
+
+/// The "typing" mark: three dots that light in turn, as a cursor waits.
+fn typing(canvas: &mut Pixmap, colour: Color, t: f32) {
+    const GAP: f32 = 10.0;
+    let lit = (t.fract() * 3.0) as usize;
+    for i in 0..3 {
+        let x = CENTRE + (i as f32 - 1.0) * GAP;
+        let alpha = if i == lit { 1.0 } else { 0.35 };
+        let dot = PathBuilder::from_circle(x, CENTRE, 3.5).expect("positive radius");
+        canvas.fill_path(
+            &dot,
+            &paint(with_alpha(colour, alpha)),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
 }
 
 /// Five bars that rise with Lucy's voice level.

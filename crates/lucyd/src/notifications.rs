@@ -111,6 +111,8 @@ fn on_change(previous: State, next: State) -> Option<Notification> {
         (_, State::Idle) => Some(ended()),
         (State::Confirming, State::Confirming) => None,
         (_, State::Confirming) => Some(confirming()),
+        (State::Typing, State::Typing) => None,
+        (_, State::Typing) => Some(typing()),
         _ => None,
     }
 }
@@ -121,6 +123,7 @@ fn on_indicator_lost(state: State) -> Option<Notification> {
     match state {
         State::Idle => None,
         State::Confirming => Some(confirming()),
+        State::Typing => Some(typing()),
         _ => Some(listening()),
     }
 }
@@ -138,6 +141,15 @@ pub fn confirming() -> Notification {
     Notification {
         summary: "Lucy is waiting for your yes".into(),
         body: "Say yes to go ahead, or End to decline.".into(),
+        action: Some(NotificationAction::EndSession),
+        kind: NotificationKind::Status,
+    }
+}
+
+pub fn typing() -> Notification {
+    Notification {
+        summary: "Lucy is waiting for you to type".into(),
+        body: "Type in the box she put on screen, or End to close it.".into(),
         action: Some(NotificationAction::EndSession),
         kind: NotificationKind::Status,
     }
@@ -226,6 +238,14 @@ mod tests {
         let shown = on_change(State::Thinking, State::Confirming).expect("a notification");
 
         assert_eq!(shown.summary, "Lucy is waiting for your yes");
+        assert_eq!(shown.action, Some(NotificationAction::EndSession));
+    }
+
+    #[test]
+    fn typing_without_an_indicator_is_notified_with_an_end_action() {
+        let shown = on_change(State::Speaking, State::Typing).expect("a notification");
+
+        assert_eq!(shown.summary, "Lucy is waiting for you to type");
         assert_eq!(shown.action, Some(NotificationAction::EndSession));
     }
 

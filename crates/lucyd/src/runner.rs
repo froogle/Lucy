@@ -21,12 +21,13 @@ use crate::adapters::{
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
 use crate::authoring::{Authoring, Building};
+use crate::input::{Dialog, OpenDialog, Typed};
 use crate::limits;
 use crate::mcp::Relays;
 use crate::notifications;
 use crate::persona;
 use crate::plugins;
-use crate::session::{Answer, Input, Output, Question, Session};
+use crate::session::{Answer, Expects, Input, Output, Question, Session};
 use crate::status::Buses;
 use crate::wake;
 pub use preview::{PreviewError, VoicePreview};
@@ -340,6 +341,7 @@ impl Runner {
         let silence_timeout = settings.session.silence_timeout_secs;
         let wake_word = settings.wake_word.word();
         let confirmation = settings.confirmation;
+        let typing_timeout = Duration::from_secs_f64(settings.input.timeout_secs);
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
         let mut speaker =
             self.adapters
@@ -349,6 +351,7 @@ impl Runner {
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();
         let mut session = Session::new(confirmation.yes_phrases);
+        session.hear_cancel_phrases(settings.input.cancel_phrases);
         session.barge_in_by_speech(devices.speech_barge_in);
         // An utterance may have started before the Session opened, as one
         // with the Wake word in it does.
@@ -368,10 +371,10 @@ impl Runner {
         // being asked goes.
         let mut questions: VecDeque<Ask> = VecDeque::new();
         let mut answer_to = None;
-        let mut answer_timer = SilenceTimer::new(
-            Duration::from_secs_f64(confirmation.timeout_secs),
-            clock.clone(),
-        );
+        let answer_timeout = Duration::from_secs_f64(confirmation.timeout_secs);
+        let mut answer_timer = SilenceTimer::new(answer_timeout, clock.clone());
+        // The Input dialog, while Typing.
+        let mut dialog: Option<OpenDialog> = None;
 
         // Sent before anything the user says. The first run lasts until the
         // introduction's Turn has ended, so a Provider that can't be used
@@ -405,9 +408,26 @@ impl Runner {
                         if let Some(shown) = ask.shown {
                             self.notify(shown);
                         }
-                        answer_to = Some(ask.reply);
-                        answer_timer.reset();
-                        Input::Ask(ask.question)
+                        let opened = match &ask.question.expects {
+                            Expects::Typed(typed) => Some(self.open_dialog(typed.clone())),
+                            _ => None,
+                        };
+                        match opened {
+                            Some(Err(why)) => {
+                                let _ = ask.reply.send(Answer::Cancelled);
+                                Input::Say(why)
+                            }
+                            opened => {
+                                dialog = opened.and_then(Result::ok);
+                                let timeout = match dialog {
+                                    Some(_) => typing_timeout,
+                                    None => answer_timeout,
+                                };
+                                answer_to = Some(ask.reply);
+                                answer_timer.reset_to(timeout);
+                                Input::Ask(ask.question)
+                            }
+                        }
                     }
                     Parked::Turn(text, _) => Input::Opening(text),
                 }
@@ -533,6 +553,7 @@ impl Runner {
                 () = answer_timer.fired() => {
                     Input::AnswerTimedOut
                 }
+                typed = typed(&mut dialog) => Input::Typed(typed),
                 }
             };
             let input = match input {
@@ -620,6 +641,9 @@ impl Runner {
                     }
                 }
             }
+            if session.state() != State::Typing {
+                dialog = None;
+            }
             silence.set_running(session.silence_timer_runs());
             answer_timer.set_running(session.answer_timer_runs());
             // Before it is published, so the gate is open by the time anyone
@@ -628,6 +652,26 @@ impl Runner {
                 hearing.lucy_speaking(session.state() == State::Speaking);
             }
             self.publish(session.state(), Some(id));
+        }
+    }
+
+    /// Opens the Input dialog: on the `input` holder, or else as `lucy
+    /// input` in a terminal. If no terminal opens, what Lucy says instead.
+    fn open_dialog(&self, typed: Dialog) -> Result<OpenDialog, String> {
+        let (opened, held) = self.buses.dialogs.open(typed);
+        if held {
+            return Ok(opened);
+        }
+        match self
+            .adapters
+            .launcher
+            .open_terminal(self.buses.dialogs.page())
+        {
+            Ok(()) => Ok(opened),
+            Err(e) => {
+                eprintln!("lucyd: can't open lucy input in a terminal: {e}");
+                Err(NO_TERMINAL.to_owned())
+            }
         }
     }
 
@@ -661,6 +705,18 @@ impl Runner {
             session_id: session_id.map(|id| id.to_string()),
             building: *self.building.borrow() == Building::Working,
         });
+    }
+}
+
+/// Said when the Input dialog can't be shown.
+const NO_TERMINAL: &str =
+    "I couldn't put a box on screen: no terminal opened, and nothing else can show one.";
+
+/// What the Input dialog's holder sends back, while it is open.
+async fn typed(dialog: &mut Option<OpenDialog>) -> Typed {
+    match dialog {
+        Some(dialog) => dialog.typed().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -731,6 +787,12 @@ impl SilenceTimer {
     fn first_timeout(&mut self, timeout: Duration) {
         self.remaining = timeout;
         self.timer.set(self.deadline());
+    }
+
+    /// Starts over, counting down from `timeout` from now on.
+    fn reset_to(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+        self.reset();
     }
 
     fn reset(&mut self) {

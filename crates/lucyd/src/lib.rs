@@ -9,6 +9,7 @@ pub mod claude;
 pub mod codex;
 mod desktop;
 pub mod desktop_entries;
+mod input;
 mod ipc;
 pub mod launcher;
 mod limits;
@@ -37,6 +38,9 @@ use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 
+pub use input::TypedAnswer;
+pub use lucy_ipc::FieldKind;
+
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
     pub socket_path: PathBuf,
@@ -62,6 +66,7 @@ pub struct Daemon {
     plugins: std::sync::Arc<plugins::Host>,
     /// Ended first on shutdown, so no model process outlives lucyd.
     thinking: std::sync::Arc<dyn adapters::Thinking>,
+    sessions: mpsc::UnboundedSender<runner::Command>,
 }
 
 /// Starts lucyd on its own runtime and returns once its sockets are
@@ -84,11 +89,18 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
 
     let listener = runtime.block_on(async { bind(&socket_path) })?;
     let mcp_listener = runtime.block_on(async { bind(&mcp_socket_path) })?;
+    let page = [
+        lucy_program.display().to_string(),
+        "input".to_owned(),
+        "--socket".to_owned(),
+        socket_path.display().to_string(),
+    ];
     let relays = mcp::Relays::new(lucy_program, mcp_socket_path.clone());
     let buses = status::Buses {
         status: status::StatusBus::new(),
         levels: status::LevelBus::new(),
         plugins: status::ChangeBus::default(),
+        dialogs: input::Dialogs::new(page.to_vec()),
     };
     let (sessions, commands) = mpsc::unbounded_channel();
     let (indicators, fallback) =
@@ -141,7 +153,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         listener,
         buses,
         indicators,
-        sessions,
+        sessions.clone(),
         providers,
         plugin_host.clone(),
     ));
@@ -152,6 +164,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         runtime: Some(runtime),
         plugins: plugin_host,
         thinking,
+        sessions,
     })
 }
 
@@ -176,6 +189,25 @@ impl Daemon {
         let runtime = self.runtime.as_ref().expect("runtime lives until drop");
         runtime.spawn(async move {
             let _ = reply.send(host.request_approval(&plugin).await);
+        });
+        answer
+    }
+
+    /// Asks `question` in the Input dialog, in the open Session, as the
+    /// `ask_typed` tool does: one field of `kind`, with `choices` for a
+    /// choice. With no Session open, it is cancelled.
+    pub fn ask_typed(
+        &self,
+        question: &str,
+        kind: FieldKind,
+        choices: Vec<String>,
+    ) -> oneshot::Receiver<TypedAnswer> {
+        let (reply, answer) = oneshot::channel();
+        let sessions = self.sessions.clone();
+        let question = question.to_owned();
+        let runtime = self.runtime.as_ref().expect("runtime lives until drop");
+        runtime.spawn(async move {
+            let _ = reply.send(input::ask(&sessions, &question, kind, choices).await);
         });
         answer
     }

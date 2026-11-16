@@ -60,6 +60,23 @@ impl Home {
         .unwrap()
     }
 
+    /// Opens a Session and asks `question` in the Input dialog, as the
+    /// model's `ask_typed` does, with one field of `kind`. The answer
+    /// arrives on the returned channel.
+    pub fn ask_typed(
+        &self,
+        question: &str,
+        kind: lucyd::FieldKind,
+        choices: Vec<String>,
+    ) -> std::sync::mpsc::Receiver<lucyd::TypedAnswer> {
+        self.env().connect().unwrap().start_session().unwrap();
+        let daemon = self._lucyd.as_ref().expect("lucyd runs in this home");
+        let answer = daemon.ask_typed(question, kind, choices);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || tx.send(answer.blocking_recv().expect("lucyd answers")));
+        rx
+    }
+
     /// A home where lucyd hears a microphone that stays at `level` (RMS),
     /// with nothing else that hears or speaks.
     pub fn with_mic(level: f32) -> Home {
@@ -128,6 +145,38 @@ impl Home {
             })
             .unwrap();
         assert!(status.success());
+    }
+
+    /// Puts a fake `pactl` on `PATH` listing `sources` and `sinks` as
+    /// (node name, description), with these default source and sink.
+    pub fn fake_pactl(
+        &self,
+        sources: &[(&str, &str)],
+        sinks: &[(&str, &str)],
+        defaults: (&str, &str),
+    ) {
+        let json = |devices: &[(&str, &str)]| {
+            let listed: Vec<_> = devices
+                .iter()
+                .map(|(name, description)| {
+                    serde_json::json!({"index": 1, "name": name, "description": description})
+                })
+                .collect();
+            serde_json::to_string(&listed).unwrap()
+        };
+        let (sources, sinks) = (json(sources), json(sinks));
+        let (source, sink) = defaults;
+        self.fake(
+            "pactl",
+            &format!(
+                "case \"$*\" in \
+                 '-f json list sources') printf '%s' '{sources}';; \
+                 '-f json list sinks') printf '%s' '{sinks}';; \
+                 get-default-source) echo '{source}';; \
+                 get-default-sink) echo '{sink}';; \
+                 esac"
+            ),
+        );
     }
 
     /// Each run of the fake `name`, as its arguments.

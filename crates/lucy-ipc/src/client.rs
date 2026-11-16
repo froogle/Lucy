@@ -1,6 +1,6 @@
 //! A small blocking client for lucyd's public socket.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -11,9 +11,10 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use crate::{
-    ApprovalsList, Event, Hello, HelloResult, MicLevel, PluginsList, ProviderCheck,
-    ProviderCheckResult, ProvidersStatus, RevokeApproval, Role, SessionStarted, SetPluginEnabled,
-    Status, Subscribe, Topic, VoicePreview, WakeWordTest, WakeWordTestResult, PROTOCOL,
+    ApprovalsList, Event, Hello, HelloResult, InputAnswer, InputCancel, MicLevel, PluginsList,
+    ProviderCheck, ProviderCheckResult, ProvidersStatus, RevokeApproval, Role, SessionStarted,
+    SetPluginEnabled, Status, Subscribe, Topic, VoicePreview, WakeWordTest, WakeWordTestResult,
+    PROTOCOL,
 };
 
 pub struct Client {
@@ -141,6 +142,28 @@ impl Client {
     /// Listens for the Wake word for up to `timeout_secs`, opening no Session.
     pub fn test_wake_word(&mut self, timeout_secs: f64) -> Result<WakeWordTestResult, Error> {
         self.call("test.wake_word", json!(WakeWordTest { timeout_secs }))
+    }
+
+    /// Answers the Input dialog `id` with each field's value. Only the
+    /// `input` holder may.
+    pub fn answer_input(
+        &mut self,
+        id: &str,
+        values: BTreeMap<String, String>,
+    ) -> Result<(), Error> {
+        let params = InputAnswer {
+            id: id.to_owned(),
+            values,
+        };
+        let _: Value = self.call("input.answer", json!(params))?;
+        Ok(())
+    }
+
+    /// Closes the Input dialog `id` unanswered. Only the `input` holder may.
+    pub fn cancel_input(&mut self, id: &str) -> Result<(), Error> {
+        let params = InputCancel { id: id.to_owned() };
+        let _: Value = self.call("input.cancel", json!(params))?;
+        Ok(())
     }
 
     /// The next event, exactly as lucyd sent it (one NDJSON line, no newline).

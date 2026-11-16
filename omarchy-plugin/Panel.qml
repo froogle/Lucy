@@ -36,6 +36,11 @@ Panel {
     return value === null ? strings.t("stt.auto") : strings.t("option." + value, String(value))
   }
 
+  function deviceLabel(choice, value) {
+    var at = choice.options.indexOf(value)
+    return at >= 0 && choice.labels ? choice.labels[at] : String(value)
+  }
+
   function moreSettings() {
     lucy.openLucy()
     root.close()
@@ -308,7 +313,7 @@ Panel {
           textFormat: Text.PlainText
           Layout.fillWidth: true
           horizontalAlignment: Text.AlignRight
-          text: device.choice ? root.label(lucy.current(device.choice)) : ""
+          text: device.choice ? root.deviceLabel(device.choice, lucy.current(device.choice)) : ""
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -355,7 +360,7 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           anchors.leftMargin: Style.space(24)
           anchors.rightMargin: Style.space(10)
-          text: root.label(option.modelData)
+          text: root.deviceLabel(device.choice, option.modelData)
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall

@@ -28,6 +28,7 @@ pub struct Config {
     pub piper: Piper,
     pub wake_word: WakeWord,
     pub confirmation: Confirmation,
+    pub input: Input,
     pub barge_in: BargeIn,
     pub authoring: Authoring,
 }
@@ -54,6 +55,7 @@ impl Default for Config {
             piper: Piper::default(),
             wake_word: WakeWord::default(),
             confirmation: Confirmation::default(),
+            input: Input::default(),
             barge_in: BargeIn::default(),
             authoring: Authoring::default(),
         }
@@ -506,6 +508,29 @@ impl Default for Confirmation {
     }
 }
 
+/// `[input]`: the Input dialog, the box Lucy puts on screen for the user to
+/// type in.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Input {
+    /// What closes the box by voice. The whole utterance must be one of
+    /// these, ignoring case and punctuation; anything else said is ignored.
+    pub cancel_phrases: Vec<String>,
+    /// Seconds the box stays open, unanswered, before Lucy gives up.
+    pub timeout_secs: f64,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Input {
+            cancel_phrases: ["cancel", "never mind", "forget it"]
+                .map(str::to_owned)
+                .to_vec(),
+            timeout_secs: 120.0,
+        }
+    }
+}
+
 /// `[authoring]`: how Lucy builds Plugins.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -793,6 +818,21 @@ mod tests {
 
         assert_eq!(config.confirmation.yes_phrases, ["go for it"]);
         assert_eq!(config.confirmation.timeout_secs, 8.0);
+    }
+
+    #[test]
+    fn the_input_dialog_gives_up_after_two_minutes_and_its_cancel_phrases_can_be_replaced() {
+        let defaults = Config::default().input;
+        assert_eq!(
+            defaults.cancel_phrases,
+            ["cancel", "never mind", "forget it"]
+        );
+        assert_eq!(defaults.timeout_secs, 120.0);
+
+        let config = parse("[input]\ncancel_phrases = [\"stop\"]\ntimeout_secs = 30\n");
+
+        assert_eq!(config.input.cancel_phrases, ["stop"]);
+        assert_eq!(config.input.timeout_secs, 30.0);
     }
 
     #[test]

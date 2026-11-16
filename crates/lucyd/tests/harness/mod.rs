@@ -63,6 +63,8 @@ pub struct Harness {
     applications: [PathBuf; 2],
     /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
+    /// Every value typed into an Input dialog through `answer_input`.
+    typed: Mutex<Vec<String>>,
     config_path: PathBuf,
     plugin_paths: lucyd::plugins::Paths,
     persona_path: PathBuf,
@@ -266,6 +268,7 @@ impl Harness {
             clock,
             applications,
             bus: Arc::default(),
+            typed: Mutex::default(),
             config_path,
             plugin_paths,
             persona_path,
@@ -421,6 +424,25 @@ impl Harness {
         client
     }
 
+    /// A client that claims the `input` role, as the bar plugin or `lucy
+    /// input` would, to draw the Input dialog.
+    pub fn input(&self, name: &str) -> Client {
+        let client = Client::connect(self.socket_path(), name, Some(lucy_ipc::Role::Input))
+            .expect("hello succeeds");
+        client.set_read_timeout(Some(WAIT)).unwrap();
+        client
+    }
+
+    /// The user types `value` into the Input dialog `id`'s one field, which
+    /// `holder` draws. The value counts as private.
+    pub fn answer_input(&self, holder: &mut Client, id: &str, value: &str) {
+        self.typed.lock().unwrap().push(value.to_owned());
+        let values = std::collections::BTreeMap::from([("answer".to_owned(), value.to_owned())]);
+        holder
+            .answer_input(id, values)
+            .expect("the answer is taken");
+    }
+
     /// A client subscribed to `state`, with the initial state event consumed.
     pub fn state_client(&self) -> Client {
         let mut client = self.client();
@@ -537,8 +559,8 @@ impl Harness {
     }
 
     /// The "never on the bus" rule: no transcript the STT produced, no text
-    /// the Thinking Provider streamed or TTS spoke, and no credential value
-    /// appears in any IPC message. Call it once a Session has ended.
+    /// the Thinking Provider streamed or TTS spoke, no credential value and
+    /// nothing typed into an Input dialog appears in any IPC message. Call it once a Session has ended.
     pub fn assert_nothing_private_on_bus(&self) {
         let deadline = Instant::now() + WAIT;
         while !self.bus_is_idle() {
@@ -552,6 +574,7 @@ impl Harness {
             self.thinking.streamed(),
             self.tts.sentences(),
             self.credentials.values(),
+            self.typed.lock().unwrap().clone(),
         ]
         .concat()
         .into_iter()
@@ -1510,6 +1533,10 @@ pub struct FakeLauncher {
     launched: Arc<Mutex<Vec<PathBuf>>>,
     /// The configured launcher command of each launch.
     launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
+    /// Each command run in a terminal.
+    terminals: Arc<Mutex<Vec<Vec<String>>>>,
+    /// No terminal opens.
+    no_terminal: Arc<AtomicBool>,
 }
 
 impl FakeLauncher {
@@ -1521,6 +1548,16 @@ impl FakeLauncher {
     /// The desktop entry of every app launched so far.
     pub fn launched(&self) -> Vec<PathBuf> {
         self.launched.lock().unwrap().clone()
+    }
+
+    /// Each command run in a terminal so far.
+    pub fn terminals(&self) -> Vec<Vec<String>> {
+        self.terminals.lock().unwrap().clone()
+    }
+
+    /// From now on, no terminal opens: the user has none.
+    pub fn no_terminal(&self) {
+        self.no_terminal.store(true, Ordering::SeqCst);
     }
 
     /// The `[desktop] launcher` command each app was launched through, in
@@ -1540,6 +1577,17 @@ impl Launcher for FakeLauncher {
         self.launched.lock().unwrap().push(entry.to_owned());
         let launcher = launcher.map(<[String]>::to_vec);
         self.launched_through.lock().unwrap().push(launcher);
+        Ok(())
+    }
+
+    fn open_terminal(&self, command: &[String]) -> std::io::Result<()> {
+        if self.no_terminal.load(Ordering::SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "xdg-terminal-exec isn't installed",
+            ));
+        }
+        self.terminals.lock().unwrap().push(command.to_vec());
         Ok(())
     }
 }
