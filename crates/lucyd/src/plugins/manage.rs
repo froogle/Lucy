@@ -8,11 +8,12 @@ use rmcp::model::{CallToolResult, JsonObject, Tool};
 
 use super::manifest::{Author, Manifest};
 use super::{
-    broken_message, content_hash, Contents, Host, Scanned, SessionTools, Usable, DECLINED,
+    broken_message, content_hash, Contents, Host, Scanned, SessionTools, Usable, Verdict, DECLINED,
 };
 use crate::adapters::{Notification, NotificationKind};
 use crate::mcp;
-use crate::runner;
+use crate::model_text::NOT_APPROVABLE;
+use crate::runner::{self, When};
 use crate::session::{Answer, Expects, Question};
 use crate::sync::Locked;
 
@@ -96,7 +97,48 @@ pub fn manage_plugin_tool() -> Tool {
     )
 }
 
+pub fn approve_plugin_tool() -> Tool {
+    mcp::tool(
+        "approve_plugin",
+        "Start the user's spoken Approval of a Plugin awaiting it, when they want to approve it \
+         or agree to go through it. Lucy speaks what it can do and hears their yes or no \
+         herself; you can't answer for them. Returns approved (its tools are yours now), \
+         declined or timed_out.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The Plugin's name"},
+            },
+            "required": ["name"],
+        }),
+    )
+}
+
 impl SessionTools {
+    pub async fn approve(&self, arguments: &JsonObject) -> CallToolResult {
+        let name = arguments.get("name").and_then(|v| v.as_str());
+        let name = name.unwrap_or_default();
+        let shipped = self
+            .host
+            .folders()
+            .get(name)
+            .is_some_and(|folder| self.host.is_shipped(folder));
+        let verdict = if shipped {
+            Err(format!(
+                "the {name} Plugin was shipped with Lucy and needs no Approval"
+            ))
+        } else {
+            self.host.ask_approval(name, When::Now).await
+        };
+        let result = match verdict {
+            Ok(Verdict::Approved) => "approved",
+            Ok(Verdict::Declined) => "declined",
+            Ok(Verdict::TimedOut) => "timed_out",
+            Err(reason) => return mcp::error(format!("{NOT_APPROVABLE} {reason}.]")),
+        };
+        CallToolResult::structured(serde_json::json!({ "result": result }))
+    }
+
     pub async fn manage(&self, arguments: &JsonObject) -> CallToolResult {
         let plugin = arguments.get("plugin").and_then(|v| v.as_str());
         let action = arguments.get("action").and_then(|v| v.as_str());

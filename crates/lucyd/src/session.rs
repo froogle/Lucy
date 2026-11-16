@@ -349,17 +349,17 @@ impl Session {
 
     fn unheard(&self) -> Option<Answer> {
         match self.asking {
-            Some(Expects::Yes) => Some(Answer::No),
+            Some(Expects::Yes | Expects::Typed(_)) => Some(Answer::TimedOut),
             Some(Expects::Words | Expects::YesOrWords) => Some(Answer::Silence),
-            Some(Expects::Typed(_)) => Some(Answer::TimedOut),
             None => None,
         }
     }
 
     fn answered(&mut self, answer: Answer) -> Vec<Output> {
-        self.asking = None;
+        let asked = self.asking.take();
         let mut outputs = vec![];
-        if answer == Answer::No {
+        let unheard_yes = matches!(asked, Some(Expects::Yes)) && answer == Answer::TimedOut;
+        if answer == Answer::No || unheard_yes {
             self.sentence = DECLINED.to_owned();
             outputs.extend(self.speak_sentence());
         }

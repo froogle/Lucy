@@ -39,7 +39,7 @@ use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
 use crate::sync::{Locked, POISONED};
 pub use environment::Environment;
-pub use manage::{manage_plugin_tool, Refusal};
+pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
 use manifest::{Manifest, ToolEntry};
 
 const MAX_QUESTIONS: usize = 10;
@@ -237,7 +237,8 @@ impl Host {
     }
 
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
-        self.ask_approval(name, When::Now).await
+        let verdict = self.ask_approval(name, When::Now).await?;
+        Ok(verdict == Verdict::Approved)
     }
 
     pub async fn request_approval_when_quiet(
@@ -245,11 +246,13 @@ impl Host {
         name: &str,
         kept: Notification,
     ) -> Result<bool, String> {
-        self.ask_approval(name, When::QuietOrNextSession(kept))
-            .await
+        let verdict = self
+            .ask_approval(name, When::QuietOrNextSession(kept))
+            .await?;
+        Ok(verdict == Verdict::Approved)
     }
 
-    async fn ask_approval(&self, name: &str, when: When) -> Result<bool, String> {
+    async fn ask_approval(&self, name: &str, when: When) -> Result<Verdict, String> {
         const NO_SESSION: &str = "no Session is open to ask in";
         if !when.keeps() && self.session.locked().upgrade().is_none() {
             return Err(NO_SESSION.into());
@@ -279,12 +282,13 @@ impl Host {
         let answer = runner::ask_at(&self.commands, question, shown, when).await;
         match answer {
             Some(Answer::Yes) => {}
-            Some(_) => return Ok(false),
+            Some(Answer::TimedOut) => return Ok(Verdict::TimedOut),
+            Some(_) => return Ok(Verdict::Declined),
             None => return Err(NO_SESSION.into()),
         }
         self.record(&candidate)?;
         self.offer(candidate.plugin).await;
-        Ok(true)
+        Ok(Verdict::Approved)
     }
 
     async fn approve_shipped(&self, name: &str) -> Result<Usable, String> {
@@ -697,6 +701,13 @@ fn unentered(plugin: &str, name: &str, why: &str) -> String {
     )
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum Verdict {
+    Approved,
+    Declined,
+    TimedOut,
+}
+
 struct Candidate {
     plugin: Usable,
     text: String,
@@ -783,7 +794,10 @@ impl SessionTools {
         }
         if !self.awaiting.is_empty() {
             sections.push(format!(
-                "## Plugins awaiting Approval (not part of your Persona)\n\n{}",
+                "## Plugins awaiting Approval (not part of your Persona)\n\n{}\n\nOffer to go \
+                 through one with the user. If they want to, call approve_plugin with its name: \
+                 Lucy reads it out and hears their yes or no herself. There is no other way to \
+                 approve one.",
                 self.awaiting.join("\n")
             ));
         }

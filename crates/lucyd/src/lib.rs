@@ -186,8 +186,8 @@ impl Daemon {
     ///
     /// It is asked in the open Session (setup approves shipped Plugins this
     /// way). The answer is `Ok(true)` once they said yes and it is recorded,
-    /// or why they couldn't be asked. No IPC request or model tool reaches it
-    /// (ADR 0005).
+    /// or why they couldn't be asked. No IPC request reaches it, and the
+    /// model's `approve_plugin` tool can only start it (ADR 0005).
     ///
     /// # Panics
     ///
