@@ -1,22 +1,15 @@
-//! The Indicator's colours, from the Omarchy theme when there is one.
-
 use std::path::{Path, PathBuf};
 
 use tiny_skia::Color;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
-    /// Listening, Thinking and Speaking.
     pub accent: Color,
-    /// Confirming.
     pub warning: Color,
-    /// The error flash.
     pub error: Color,
 }
 
 impl Palette {
-    /// The palette from an Omarchy `colors.toml`. Keys it lacks, or a file
-    /// that can't be read, keep the built-in colours.
     pub fn load(path: &Path) -> Palette {
         let text = std::fs::read_to_string(path).unwrap_or_default();
         Palette::from_colors_toml(&text)
@@ -50,14 +43,11 @@ impl Default for Palette {
     }
 }
 
-/// The current Omarchy theme's colours:
-/// `~/.local/state/omarchy/current/theme/colors.toml`.
 pub fn omarchy_colors_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").filter(|home| !home.is_empty())?;
     Some(PathBuf::from(home).join(".local/state/omarchy/current/theme/colors.toml"))
 }
 
-/// `#rrggbb`.
 fn parse_hex(text: &str) -> Option<Color> {
     let hex = text.strip_prefix('#')?;
     if hex.len() != 6 {

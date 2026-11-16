@@ -1,7 +1,7 @@
-//! The Indicator: a separate client of lucyd's public socket that claims the
-//! `indicator` role and draws Lucy's state in the bottom-right corner.
-//! Clicking it ends the Session. Without layer-shell it exits cleanly, and
-//! lucyd falls back to notifications.
+//! The Indicator: draws Lucy's state in the bottom-right corner of the screen.
+//! It is a separate client of lucyd's public socket, holding the `indicator`
+//! role. Clicking it ends the Session. Without layer-shell it exits cleanly,
+//! and lucyd falls back to notifications.
 
 mod look;
 mod theme;
@@ -47,7 +47,6 @@ fn main() -> ExitCode {
                 building: status.building,
             },
             Ok(Event::Level(level)) => Update::Level(level.rms),
-            // Not subscribed to, or for the `input` role only.
             Ok(Event::PluginsChanged(_) | Event::InputOpen(_) | Event::InputClose(_)) => continue,
             Err(e) => Update::Lost(e.to_string()),
         };
@@ -62,7 +61,6 @@ fn main() -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The marker was clicked: end the Session, from any state.
 fn end_session() {
     let Some(socket_path) = lucy_ipc::default_socket_path() else {
         return;
