@@ -102,6 +102,19 @@
             "choices"
           ],
           "type": "object"
+        },
+        {
+          "description": "A password or key: hidden as it is typed.",
+          "properties": {
+            "kind": {
+              "const": "secret",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
