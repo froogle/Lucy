@@ -217,7 +217,7 @@ pub enum Prompt {
     Rows(Rows),
 }
 
-/// A list a page shows: a note, its rows and the letters that act on them.
+/// A page's list: a note, its rows and the letters that act on them.
 /// The note is never picked; each letter says what it does, for the footer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
