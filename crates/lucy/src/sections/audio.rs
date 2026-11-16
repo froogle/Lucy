@@ -17,9 +17,17 @@ const METER_EVERY: Duration = Duration::from_millis(100);
 
 pub(super) fn page(context: &Context) -> Page {
     let audio = context.config().audio;
+    let label = |kind, pinned: &str| {
+        devices::list(context.env, kind)
+            .choices(pinned)
+            .into_iter()
+            .find(|device| device.name == pinned)
+            .expect("the choices hold the pinned device")
+            .label
+    };
     Page::new(vec![
-        format!("Microphone: {}", audio.mic),
-        format!("Speaker: {}", audio.speaker),
+        format!("Microphone: {}", label(Kind::Mic, &audio.mic)),
+        format!("Speaker: {}", label(Kind::Speaker, &audio.speaker)),
     ])
     .needing_lucyd()
 }
@@ -36,17 +44,22 @@ fn pick_device<B: Backend>(
     context: &Context,
     title: &str,
     kind: Kind,
+    pinned: &str,
 ) -> Result<String, Stop> {
-    let mut names = vec!["default".to_owned()];
-    names.extend(devices::names(context.env, kind));
-    let mut labels = names.clone();
-    labels[0] = "default: whatever the system uses".to_owned();
-    Ok(names.swap_remove(ui.choose(title, &labels)?))
+    let mut choices = devices::list(context.env, kind).choices(pinned);
+    let labels: Vec<String> = choices.iter().map(|device| device.label.clone()).collect();
+    Ok(choices.swap_remove(ui.choose(title, &labels)?).name)
 }
 
 fn mic<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
-        let mic = pick_device(ui, context, "Microphone:", Kind::Mic)?;
+        let mic = pick_device(
+            ui,
+            context,
+            "Microphone:",
+            Kind::Mic,
+            &context.config().audio.mic,
+        )?;
         context.save(ui, &[Change::Set(Key::Mic, mic)])?;
         let Some(mut client) = context.lucyd(ui, "and the level meter needs it")? else {
             return Ok(());
@@ -96,7 +109,13 @@ fn on_log_scale(rms: f32) -> f64 {
 
 fn speaker<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
     loop {
-        let speaker = pick_device(ui, context, "Speaker:", Kind::Speaker)?;
+        let speaker = pick_device(
+            ui,
+            context,
+            "Speaker:",
+            Kind::Speaker,
+            &context.config().audio.speaker,
+        )?;
         context.save(ui, &[Change::Set(Key::Speaker, speaker)])?;
         let Some(mut client) = context.lucyd(ui, "so Lucy can't speak on it")? else {
             return Ok(());

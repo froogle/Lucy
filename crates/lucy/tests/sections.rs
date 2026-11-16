@@ -303,9 +303,10 @@ fn a_mic_lucy_can_barely_hear_is_flagged_and_not_kept_by_default() {
 fn a_mic_at_a_normal_level_is_kept_by_default_with_no_warning() {
     // About −20 dBFS.
     let home = Home::with_mic(0.1);
-    home.fake(
-        "pactl",
-        "[ \"$3\" = sources ] && printf '1\\talsa_input.usb-Yeti\\tPipeWire\\n'",
+    home.fake_pactl(
+        &[("alsa_input.usb-Yeti", "Yeti Analog Stereo")],
+        &[],
+        ("", ""),
     );
     configured(&home);
 
@@ -317,6 +318,46 @@ fn a_mic_at_a_normal_level_is_kept_by_default_with_no_warning() {
     assert_eq!(
         lucy_config::load(&home.config_path()).unwrap().audio.mic,
         "alsa_input.usb-Yeti"
+    );
+}
+
+#[test]
+fn audio_devices_shows_descriptions_and_writes_the_chosen_node_name() {
+    let home = Home::with_lucyd();
+    home.fake_pactl(
+        &[
+            ("alsa_input.usb-B", "USB Mic Mono"),
+            ("alsa_input.usb-A", "USB Mic Mono"),
+        ],
+        &[("alsa_output.usb-Pebble", "Pebble V3 Analog Stereo")],
+        ("alsa_input.usb-A", "alsa_output.usb-Pebble"),
+    );
+    std::fs::write(
+        home.config_path(),
+        "[audio]\nspeaker = \"alsa_output.usb-Gone\"\n",
+    )
+    .unwrap();
+
+    // The speaker row; the second choice, Pebble; heard; then back.
+    let keys = open(AUDIO).down(1).enter().down(1).enter().enter();
+    let tui = home.tui(Open::Lucy, leave(keys));
+
+    assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    for label in [
+        "Microphone: Default (USB Mic Mono (1))",
+        "Speaker: alsa_output.usb-Gone (not connected)",
+        "Default (Pebble V3 Analog Stereo)",
+        "Pebble V3 Analog Stereo",
+        "Speaker: Pebble V3 Analog Stereo",
+    ] {
+        assert!(tui.shown.contains(label), "{label}:\n{}", tui.shown);
+    }
+    assert_eq!(
+        lucy_config::load(&home.config_path())
+            .unwrap()
+            .audio
+            .speaker,
+        "alsa_output.usb-Pebble"
     );
 }
 

@@ -129,6 +129,38 @@ impl Home {
         assert!(status.success());
     }
 
+    /// Puts a fake `pactl` on `PATH` listing `sources` and `sinks` as
+    /// (node name, description), with these default source and sink.
+    pub fn fake_pactl(
+        &self,
+        sources: &[(&str, &str)],
+        sinks: &[(&str, &str)],
+        defaults: (&str, &str),
+    ) {
+        let json = |devices: &[(&str, &str)]| {
+            let listed: Vec<_> = devices
+                .iter()
+                .map(|(name, description)| {
+                    serde_json::json!({"index": 1, "name": name, "description": description})
+                })
+                .collect();
+            serde_json::to_string(&listed).unwrap()
+        };
+        let (sources, sinks) = (json(sources), json(sinks));
+        let (source, sink) = defaults;
+        self.fake(
+            "pactl",
+            &format!(
+                "case \"$*\" in \
+                 '-f json list sources') printf '%s' '{sources}';; \
+                 '-f json list sinks') printf '%s' '{sinks}';; \
+                 get-default-source) echo '{source}';; \
+                 get-default-sink) echo '{sink}';; \
+                 esac"
+            ),
+        );
+    }
+
     /// Each run of the fake `name`, as its arguments.
     pub fn calls(&self, name: &str) -> Vec<String> {
         std::fs::read_to_string(self.bin().join(format!("{name}.log")))
