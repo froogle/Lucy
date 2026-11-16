@@ -2,7 +2,9 @@
 
 Status: ready-for-agent
 
-Synthesised from [map.md](map.md), resolved tickets 01–22, `GLOSSARY.md` and ADRs 0001–0006. Vocabulary follows the glossary (Session, Turn, Barge-in, Wake word, Closing phrase, Indicator, Provider, Model tier, Plugin, Manifest, Approval, Confirmation, Built-in tool, Delegate, Authoring, Persona, Source).
+Synthesised from [map.md](map.md), resolved tickets 01–22, `GLOSSARY.md` and ADRs 0001–0006. Vocabulary follows the glossary (Session, Turn, Barge-in, Wake word, Closing phrase, Indicator, Provider, Model tier, Plugin, Manifest, Approval, Confirmation, Input dialog, Built-in tool, Delegate, Authoring, Persona, Source).
+
+Amended 2026-11-16 after a grilling session on build tickets 34, 35, 38 and 41: the Input dialog (build tickets 34 and 42) and the shipped Omarchy Plugin (build ticket 35) join v0.1. Hand-off (38) and screen access (41) moved to [v0.2](../lucy-v0-2/spec.md).
 
 ## Problem Statement
 
@@ -140,7 +142,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 92. As a Plugin author, I want a template folder (a minimal MCP stdio server, a Manifest skeleton, a fixtures test harness), so that I can start quickly.
 93. As a Plugin author, I want the news Plugin as a worked reference, so that I can copy a real example.
 94. As a Plugin author, I want each Plugin to get a private writable state folder, so that it can keep preferences and tokens.
-95. As a Plugin author, I want credentials my Plugin declares by name to arrive as environment variables, stored in the system keyring and entered by the user in the TUI or a desktop prompt, so that my Plugin never handles the user's secrets in plain files.
+95. As a Plugin author, I want credentials my Plugin declares by name to arrive as environment variables, stored in the system keyring and entered by the user in the TUI or an Input dialog, so that my Plugin never handles the user's secrets in plain files.
 96. As a user, I want a Plugin tool to be able to ask me something mid-call, so that it can confirm details as it goes.
 
 ### Authoring
@@ -214,6 +216,33 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 151. As a maintainer, I want the vendor terms and the Source catalogue's AI-summary flags re-checked before each release, so that Lucy stays within the rules.
 152. As a user, I want Lucy never to call herself a vendor product or imply endorsement, so that it's clear what she is.
 
+### Typed input
+
+153. As a user, I want Lucy to put a box on screen when she needs something I shouldn't say aloud, such as a password or an API key, so that nobody hears it and the model never sees it.
+154. As a user, I want her to ask me to type things that are hard to say, such as a long URL or an exact spelling, so that she gets them right.
+155. As a user, I want her to say a short line when the box opens ("I've put a box on screen for your Linear API key"), so that I know to look.
+156. As a user, I want a Plugin that is missing a credential to ask me for it in the box there and then, and carry on with my request, so that I don't have to go to a terminal.
+157. As a user, I want any Confirmation asked before the box, so that I never type a key for an action I then decline.
+158. As a user, I want to say "cancel" or "never mind" to close the box, so that I can back out by voice.
+159. As a user, I want talking to someone else while the box is open to be ignored, so that the room doesn't derail it.
+160. As a user, I want the box to give up after two minutes (configurable) and the silence timer paused while it is open, so that neither of us waits forever and the Session doesn't end under me.
+161. As a user, I want clicking the Indicator, or the Session ending, to close the box, so that the off switch still works.
+162. As a user, I want the Indicator to show that she is waiting for me to type, so that I know why she has gone quiet.
+163. As an Omarchy user, I want the box drawn in my bar's style by the Lucy bar plugin, so that it matches my desktop.
+164. As a user without the bar plugin running, I want the box opened as a page in my terminal instead, so that it still works on any desktop.
+165. As a user, I want secrets I type never written to transcripts, logs, the public socket or model traffic, so that typing them is safe.
+166. As a widget author, I want to draw the box myself by holding the `input` role on the socket, so that I can build my own.
+
+### Controlling the desktop
+
+167. As an Omarchy user, I want to ask Lucy to close, focus, move, float, pin or full-screen a window, so that I can manage windows by voice.
+168. As an Omarchy user, I want to ask her to switch or rename workspaces and change the tiling layout, so that I can arrange my desktop by voice.
+169. As an Omarchy user, I want to ask her to change my theme, toggle the bar or night light, take a screenshot, or lock the screen, so that Omarchy's own settings are a sentence away.
+170. As a user, I want force-killing a window to need my spoken yes, so that I don't lose unsaved work by accident.
+171. As a user, I want Lucy unable to log me out, reboot or shut down, so that a mishearing can't end my session.
+172. As a user of another desktop, I want the Omarchy Plugin quietly left out, never reported as broken, so that I don't hear about something that doesn't apply to me.
+173. As a Plugin author, I want the Omarchy Plugin to be the pattern for desktop Plugins, with a `requires` Manifest field saying where it applies, so that I can write one for GNOME or KDE.
+
 ## Implementation Decisions
 
 ### Processes and crates (ADR 0006)
@@ -230,9 +259,10 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 
 - A Unix socket in `$XDG_RUNTIME_DIR/lucy/` (mode 0600), carrying newline-delimited JSON-RPC 2.0.
 - Handshake `hello {protocol: 1, client, role}`. A major-version mismatch is refused with a clear error. Fields are only added within a major version.
-- Requests: `status`, `subscribe {topics}`, `session.start`, `session.end`, `providers.status`, `provider.check`, `plugins.list`, `plugins.set_enabled`, `approvals.list`, `approvals.revoke`, `test.mic_level`, `test.wake_word`, `test.voice_preview`.
-- Events: `state {state, session_id}` (Idle, Listening, Thinking, Speaking, Confirming, plus transient `error`), `level {rms}` at about 30 Hz for `level` subscribers only, `plugins.changed`, `notice {text}`.
+- Requests: `status`, `subscribe {topics}`, `input.answer {id, values}`, `input.cancel {id}` (both from the `input` role only), `session.start`, `session.end`, `providers.status`, `provider.check`, `plugins.list`, `plugins.set_enabled`, `approvals.list`, `approvals.revoke`, `test.mic_level`, `test.wake_word`, `test.voice_preview`.
+- Events: `state {state, session_id}` (Idle, Listening, Thinking, Speaking, Confirming, Typing, plus transient `error`), `input.open {id, message, fields}` and `input.close {id}` (to the `input` role only), `level {rms}` at about 30 Hz for `level` subscribers only, `plugins.changed`, `notice {text}`.
 - Never sent to a client: transcripts, spoken text, tool arguments. A client may send text in, for `test.voice_preview` to speak. There is no request that grants an Approval or answers a Confirmation.
+- **Roles:** `indicator` (as before) and `input`, which draws the Input dialog. One client holds each role, the first to claim it. Any process the user runs can reach the 0600 socket and could claim `input`. The same processes can already read the unlocked Secret Service, so this is the documented threat model, with no peer checks. The question's text (`message`, written by the requesting tool or Plugin, never the user's speech) and the field descriptions go to the `input` holder; answers come back only on `input.answer` from that holder.
 - TUI setup tests run inside lucyd over this socket. The TUI writes `config.toml` directly.
 
 ### MCP tool server (ADR 0005)
@@ -251,9 +281,11 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
   | `manage_plugin` | `plugin`, `action` ∈ enable, disable, rollback, remove → result | remove only |
   | `update_persona` | `persona` (full new text of `persona.md`) → saved; applies in full from the next Session | no |
   | `end_session` | → ends the Session after current speech | no |
+  | `ask_typed` | `question`, `kind` ∈ text, url, number, choice (+ `choices`) → `{answer}` / `cancelled` / `timed_out` | no |
 
 - `launch_app` matches XDG desktop entries by name, generic name and keywords. It launches through `uwsm app --` when uwsm is running and `gio launch` otherwise (config override). There is no fallback to `request_plugin`.
 - **Delegate tools** (Delegate callers only; no Plugin or Built-in tools): `report_progress{text}`, `ask_user{question}`, `submit_plugin{}`, `cannot{reason, fallback}`.
+- `ask_typed` opens the Input dialog for the model's own question. It never takes `secret`: the model can't ask for a secret for itself.
 - Not in v0.1: `speak`, `read_page`, Memory tools, raw shell.
 
 ### Confirmation and Approval are runtime-owned
@@ -265,12 +297,14 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 
 ### Session state machine
 
-- States: Idle, Listening, Thinking, Speaking, Confirming. Speaking means TTS audio is queued or playing. Thinking means a Turn is in progress and nothing is playing (tool calls included). One Turn may alternate Thinking ↔ Speaking.
+- States: Idle, Listening, Thinking, Speaking, Confirming, Typing. Speaking means TTS audio is queued or playing. Thinking means a Turn is in progress and nothing is playing (tool calls included). One Turn may alternate Thinking ↔ Speaking.
 - **Start:** on the Wake word, play a start sound, show the Indicator in Listening and pre-spawn the thinking process. Audio straight after the Wake word is kept. With no speech at all, end after 8 s.
 - **Wake word inside a Session:** while Listening it is ordinary speech, and a leading wake phrase is stripped. During Speaking it is an instant Barge-in.
 - **Barge-in:** during Speaking, sustained speech passes the VAD gate (below), or the Wake word fires. Configured in a `[barge_in]` table: `mode = "speech" | "wake_word"` (default `speech`); `force = true` turns Barge-in by speech on under PulseAudio or ALSA (default `false`); and the gate values from the Audio pipeline, `threshold` (0.7), `sustain_ms` (300), `unconverged_threshold` (0.85), `unconverged_sustain_ms` (500), `converged_erle_db` (10), `warm_up_ms` (2000) and `tail_ms` (300). On Barge-in: stop and flush TTS; send the stream-json control interrupt if the model is generating (fall back to SIGINT plus respawn if feature detection fails); go to Listening. The next utterance is sent prefixed with `[You were interrupted; the user heard up to: "…"]`, or `[You were interrupted]` if nothing had played yet. An empty transcript returns silently to Listening. Speech during Thinking is also a Barge-in.
 - **Tools on Barge-in:** unconfirmed in-flight calls get an MCP cancellation. Confirmed calls run to completion and are reported in the next Turn.
 - **Confirming:** described above. An Indicator click declines and ends the Session.
+- **Typing:** the Input dialog is open. Lucy first speaks a short fixed line built from the request ("I've put a box on screen for your {what}"). The silence timer is paused, and the Indicator shows a "typing" mark. Speech is matched locally against a configurable list of cancel phrases (`[input] cancel_phrases`: "cancel", "never mind", "forget it"); a match closes the dialog, and everything else said is ignored. Cancel or the timeout (`[input] timeout_secs`, default 120) returns `cancelled` or `timed_out` to the requester. A Barge-in doesn't close it. An Indicator click or the Session ending closes it and ends the Session as usual.
+- **Input dialog fallback:** with no `input` holder, lucyd opens `lucy input` (a `lucy` page that claims the role for one dialog) in the user's terminal through `xdg-terminal-exec`. If no terminal opens, the requester gets `cancelled` and Lucy says why.
 - **End:** an Indicator click ends from any state, immediately. A Closing phrase ends only via `end_session`, after the current speech. A silence timeout (~20 s, configurable) runs only in Listening, and ends with a soft sound and nothing spoken.
 - **While an Authoring build runs:** the Session sits in Listening with the silence timer paused, and the Indicator adds a "building" mark.
 - **Errors:**
@@ -335,8 +369,10 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 - At install or scan, Lucy checks the Manifest against the live `tools/list`. A mismatch, a failed build or a failure during a call marks the Plugin broken and drops it from selection.
 - **Approval** records live in Lucy's own state (`approvals.toml`), never in the Plugin folder. Each pins a hash of the Manifest plus the executable and saves the tool input schemas. Any change needs a fresh Approval, except rolling back to the single kept previous version. A revoke withdraws only the current Approval: the kept previous version survives it, to roll back to once the Plugin is approved again. New Plugins get the full spoken summary; updates get a changes-only summary plus the full diff on screen. lucyd approves shipped Plugins itself when it scans them, with no spoken Approval, so they work from the first Session; that includes a shipped Plugin a removed user copy overrode. A revoked shipped Plugin is approved again at the next scan, so disabling is how to leave one out. Hand-installed Plugins show as awaiting Approval and are mentioned once at the next Session.
 - **Sandbox:** Landlock enforces filesystem `read`/`write`, plus each Plugin's private state dir (`~/.local/state/lucy/plugins/<name>/`, allowed automatically). Network is unenforced in v0.1.
-- Credentials declared by name are stored in the Secret Service (`oo7`), entered via the TUI or a desktop prompt (never by voice, never via the model), and passed as env vars at spawn. No general OAuth flow.
-- Mid-call questions use MCP `input_required`. Slow calls use the MCP Tasks extension within a Session.
+- Credentials declared by name are stored in the Secret Service (`oo7`), entered through `lucy credentials <plugin>` or the Input dialog (never by voice, never via the model), and passed as env vars at spawn. No general OAuth flow.
+- **Missing credential:** after any Confirmation, Lucy opens a `secret` Input dialog for each missing name, stores what is typed in the Secret Service, starts the Plugin and carries on with the call. A cancel or timeout fails the call with the reason and the `lucy credentials <plugin>` pointer.
+- Mid-call questions use MCP `input_required`, carrying MCP form elicitations. Field types are MCP's (string, with `uri`/`email` formats; number; boolean; enum) plus one Lucy extension, `secret`. Lucy accepts `secret` only on a credential name the Plugin's Manifest declares; its value goes to the Secret Service, and the Plugin receives it as that env var on its next start, never in the response. A question with one plain string field is still asked aloud. One with a `secret` or `uri` field, or more than one field, opens the Input dialog. The model learns only `provided`, `cancelled` or `timed_out` for a secret. Plain answers go back to the Plugin as usual. Slow calls use the MCP Tasks extension within a Session.
+- **`requires`:** an optional Manifest table, `requires = { env = [...], commands = [...] }`, says where a Plugin applies. When an env var is unset or a command isn't on `PATH`, the Plugin is left out quietly: not broken, not mentioned, and listed as "not for this desktop" in `plugins.list`. It is hash-covered like the rest of the Manifest.
 - **Lifecycle:** a Plugin starts on first use in a Session and stops at Session end. Disable keeps files and Approval. Remove deletes both (needs Confirmation; shipped Plugins can't be removed). Lucy edits only `author = "lucy"` Plugins.
 - Selection when two Plugins fit equally: Lucy asks the user which one.
 
@@ -356,6 +392,19 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 - A Source the user names that isn't in the catalogue is checked for an official feed: the `<link rel="alternate">` RSS/Atom feeds its home page declares, then the usual feed paths. If one reads, it is added to the rotation and kept in preferences; otherwise Lucy gives the honest limit and offers to open its page. Its terms aren't vetted, so Lucy tells the user so when it is added.
 - Preferences live in the Plugin's state dir: rotation, liked-but-forbidden Sources (opened beside the summary), avoided Sources, topic weighting, default count and length.
 - The fast tier picks the big stories (leading, and appearing across Sources), speaks the top 1–2 in one or two sentences in the Persona with a time-of-day greeting by name, then uses `open_url` for the front pages it drew from and for liked-but-forbidden ones. Feed text is untrusted input.
+
+### Omarchy Plugin (shipped)
+
+- A shipped Rust Plugin, `omarchy`, and the pattern for Plugins for other desktops. `requires = { env = ["HYPRLAND_INSTANCE_SIGNATURE"], commands = [<an omarchy command it uses>] }`.
+- It talks to Hyprland over Hyprland's IPC socket (declared in `[access]`). It runs a curated list of `omarchy-*` commands (declared in `commands`), never arbitrary ones.
+- About ten tools grouped by area, each with an `action` enum:
+  - `list_windows`: each window's address, class, title and workspace.
+  - `window {action: focus|close|move_to_workspace|fullscreen|float|pin, target}`: a polite close, so apps ask about unsaved work themselves.
+  - `kill_window {target}`: with Confirmation.
+  - `workspace` (switch, rename, …), `layout`, `theme`, `bar`, `night_light`, `screenshot` and `idle_lock`.
+- Nothing else needs Confirmation. Logout, reboot and shutdown are not offered.
+- `launch_app` stays a Built-in tool; the Plugin doesn't duplicate it.
+- Like every shipped Plugin, it is approved by lucyd when scanned.
 
 ### Persona
 
@@ -398,6 +447,15 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
   - The private state dir.
   - Lifecycle stop at Session end.
 - **News Plugin:** tested through its own MCP interface against recorded feed fixtures (no live network). This is also the reference for the template's fixtures test harness.
+- **Input dialog:** in the harness, the test connects as the `input` role through the real `lucy-ipc` client and plays the dialog. The fixture Plugin's question tool sends elicitations, `secret` included. The tests cover:
+  - `Typing`, cancel phrases, ignored speech, the timeout on the harness clock, and an Indicator click.
+  - `ask_typed`, including refusing `secret`.
+  - Confirmation before the dialog, and the missing-credential flow writing to the fake credential store.
+  - The terminal fallback through the `Launcher` adapter.
+  - `assert_nothing_private_on_bus` extended to secret answers.
+  - The `lucy input` page through the `lucy` TUI tests. The Quickshell dialog through the bar plugin's offscreen QML checks.
+- **`requires`:** met, not met and never mentioned, with the fixture Plugin in the harness.
+- **Omarchy Plugin:** through its own MCP interface, like the news Plugin. Hyprland is a real Unix socket served by the test that records dispatches and answers queries. `omarchy-*` commands are fake executables on `PATH`. A manual run on a real Omarchy desktop covers the real thing.
 - **Provider adapters against real CLIs:** subscription guard, env scrubbing, version-change re-verification, control-interrupt feature detection and SIGINT fallback. These are manual or opt-in checks, because they need a real login. The Thinking fake follows the recorded stream shapes from the voice-loop prototype.
 - **Manual acceptance (HITL):**
   - The news briefing's six success checks (ticket 11).
@@ -423,7 +481,10 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 - Cancelling other system audio (music/video) as an echo reference.
 - Speaker recognition and multi-user support.
 - API-key Providers as a priority (the design must not preclude them), cloud voices, a Lucy-built libpiper helper, Parakeet STT, Smart Turn endpointing.
-- Packaging and publishing (AUR, release assets, CI wake-model training); a Plugin SDK crate; an Omarchy shell widget (the socket enables third parties).
+- Packaging and publishing (AUR, release assets, CI wake-model training); a Plugin SDK crate.
+- A standalone Input dialog window for desktops without the bar plugin (the terminal fallback covers them).
+- Desktop Plugins for GNOME, KDE and others (the Omarchy Plugin is the pattern).
+- Hand-off to Claude and seeing and acting on the screen ([v0.2](../lucy-v0-2/spec.md)).
 - An article-reading tool for the news Plugin.
 
 ## Further Notes

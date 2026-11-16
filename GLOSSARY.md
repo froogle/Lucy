@@ -56,6 +56,10 @@ _Avoid_: Confirmation (that is the spoken yes before a single risky action), per
 The user's spoken yes before one risky action, asked and heard by Lucy herself rather than by the thinking model. Anything other than a clear yes means no.
 _Avoid_: Approval (that is the yes for a whole Plugin), permission
 
+**Input dialog**:
+A box Lucy puts on screen so the user can type an answer she shouldn't hear or can't easily catch, such as a password, an API key or a long URL. A secret typed there goes only to the tool or Plugin that asked, never to the model.
+_Avoid_: prompt (when meaning an Input dialog), popup, form
+
 **Built-in tool**:
 An action Lucy provides herself rather than through a Plugin, such as opening a link or launching an app. Built-in tools need no Approval, so there are only a few of them.
 _Avoid_: Core plugin, native tool
@@ -71,6 +75,10 @@ _Avoid_: Sub-agent, worker, Agent B
 **Authoring**:
 Lucy writing a new Plugin, or fixing one of her own, by handing the goal to a Delegate. It ends in an Approval, and the Delegate never touches the user's data before that.
 _Avoid_: Plugin generation, building (as the name for the whole process)
+
+**Hand-off**:
+A Delegate that runs the user's own Claude, with their own config and integrations, on a request they asked Lucy to pass on ("tell Claude to …"). Unlike Authoring, it is not sandboxed: what it may do is what the user's own Claude settings allow, and anything else needs a Confirmation.
+_Avoid_: forward, relay (when meaning a Hand-off)
 
 **Persona**:
 The personality and manner of speaking of one user's Lucy, including what she calls them. Each user shapes their own, by editing it or by telling her.

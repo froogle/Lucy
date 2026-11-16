@@ -13,8 +13,10 @@ Still to settle:
 
 Details to be settled in a grilling session.
 
-**Status:** needs-triage
+**Status:** resolved (moved to [lucy-v0-2 02](../../lucy-v0-2/issues/02-see-and-act-on-the-screen.md))
 
 ## Comments
 
 2026-11-16: raised by the user while widening ticket 35. Example: open YouTube, search, then "play the third video".
+
+2026-11-16: settled in a grilling session and moved to v0.2 as [lucy-v0-2 02](../../lucy-v0-2/issues/02-see-and-act-on-the-screen.md), spec [v0.2](../../lucy-v0-2/spec.md), ADR 0008. The questions above are answered there.
