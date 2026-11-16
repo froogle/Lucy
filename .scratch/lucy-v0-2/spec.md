@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 
-Synthesised from a grilling session on build tickets 34, 35, 38 and 41 (2026-11-16), the [v0.1 spec](../lucy-v0-1/spec.md) as amended that day, `GLOSSARY.md` and ADRs 0001–0008 (0007 and 0008 are new). Vocabulary follows the glossary, including the new terms **Hand-off** and **Input dialog**. Building starts once v0.1 acceptance (build ticket 24) passes. Both tickets here also need v0.1's Input dialog (build ticket 34); ticket 02 also needs the Omarchy Plugin (build ticket 35).
+Synthesised from a grilling session on build tickets 34, 35, 38 and 41 (2026-11-16), the [v0.1 spec](../lucy-v0-1/spec.md) as amended that day, `GLOSSARY.md` and ADRs 0001–0008 (0007 and 0008 are new). Vocabulary follows the glossary, including the new terms **Hand-off** and **Input dialog**. Building starts once v0.1 acceptance (build ticket 24) passes. Tickets 01–05 are the Hand-off and 06–07 the screen; 04 also needs v0.1's Input dialog (build ticket 34), and 06 needs the Omarchy Plugin (build ticket 35).
 
 ## Problem Statement
 
@@ -112,7 +112,7 @@ The second is anything that needs her to see the screen. She can open YouTube an
 - **Core: the switch.** `[screen] enabled` (default true). When false, the screen tools are left out of the tool list.
 - **Core: risky clicks.** Before forwarding `click`, lucyd matches `describe` against `[screen] risky_words` (default send, buy, pay, delete, submit, post, confirm), and against the AT-SPI text at the point once AT-SPI is added. A match needs a Confirmation spoken from `describe`. The match is local and never asked of the model.
 - **Core: password fields.** `type` is refused when the focused element is a password field, by AT-SPI role where available. The refusal tells the model to use `ask_typed` or the Plugin's credential path instead.
-- **How Plugins mark these tools:** screen tools are marked in the Manifest so the core knows which calls count as a look and which `click` gets the risk check. The Manifest shape for that mark is settled when ticket 02 is built: one new hash-covered field, owned by that ticket.
+- **How Plugins mark these tools:** screen tools are marked in the Manifest so the core knows which calls count as a look and which `click` gets the risk check. The Manifest shape for that mark is settled when ticket 06 is built: one new hash-covered field, owned by that ticket.
 - AT-SPI for exact targets and the risk check is a later addition. v0.2 starts with screenshots only.
 
 ## Testing Decisions

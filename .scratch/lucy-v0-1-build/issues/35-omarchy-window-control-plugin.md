@@ -1,34 +1,35 @@
-# 35: The Omarchy Plugin
+# 35: The Omarchy Plugin: windows and workspaces
 
-**What to build:** Lucy ships an Omarchy Plugin, so a person can ask for most things they'd want done to their Omarchy desktop. It covers windows (focus, close, move, full screen, float, pin, force-kill), workspaces, the tiling layout, and a curated set of Omarchy's own commands (theme, bar, night light, screenshot, idle and lock). It is a Plugin rather than more Built-in tools, so it can be the pattern for Plugins for other Linux desktops. A new `requires` Manifest field keeps it quietly out of the way on other desktops.
+**What to build:** Lucy ships an Omarchy Plugin, so a person can manage their windows and workspaces by voice: "move Firefox to workspace 3", "make this full screen", "close the terminal", "switch to tiling". It is a Plugin rather than more Built-in tools, so it can be the pattern for Plugins for other Linux desktops. A new `requires` Manifest field keeps it quietly out of the way on other desktops. Omarchy's own settings (theme, bar and so on) are ticket 45.
 
-Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (`requires`), Omarchy Plugin (shipped), Testing (Omarchy Plugin, `requires`). Stories 167–173.
+Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (`requires`), Omarchy Plugin (shipped), Testing (Omarchy Plugin, `requires`). Stories 167, 168, 170–173.
 
-**Blocked by:** none
+**Blocked by:** None (can start immediately)
 
-**Seams:** owns the `requires` Manifest field, and the Omarchy Plugin crate (extended by lucy-v0-2 02 with screen tools). Uses the Plugin host, shipped-Plugin Approval and Landlock as they are.
+**Seams:** owns the `requires` Manifest field and the Omarchy Plugin crate (extended by 45, and by lucy-v0-2 06 and 07 with screen tools). Uses the Plugin host, shipped-Plugin Approval and Landlock as they are.
 
 **Status:** ready-for-agent
 
 **Notes:**
 
-- **Decisions from the grilling session (2026-11-16):**
-  - Hyprland is driven over its IPC socket, plus a curated list of `omarchy-*` commands, never arbitrary ones.
-  - About ten tools grouped by area, each with an `action` enum.
-  - Only `kill_window` needs Confirmation. A polite close goes through `window`, and the app asks about unsaved work itself.
-  - No logout, reboot or shutdown.
-  - `launch_app` stays a Built-in tool.
-  - When `requires` isn't met, the Plugin is not broken and not mentioned, and `plugins.list` shows it as "not for this desktop".
-- Check each `omarchy-*` command on this machine before naming it. Read their `--help` or source; don't guess flags.
-- Hyprland 0.56 config is Lua, but dispatchers over the IPC socket are unchanged.
+- Settled in a grilling session (2026-11-16); split into tracer slices by `to-tickets` the same day.
+- **How it drives the desktop:** Hyprland over its IPC socket, declared in `[access]`. Hyprland 0.56 config is Lua, but dispatchers over the socket are unchanged.
+- **Tools in this slice**, grouped by area with an `action` enum:
+  - `list_windows`
+  - `window {action: focus|close|move_to_workspace|fullscreen|float|pin, target}`, where close is polite and the app asks about unsaved work
+  - `kill_window`, the only one with Confirmation
+  - `workspace`
+  - `layout`
+- No logout, reboot or shutdown. `launch_app` stays a Built-in tool.
+- **When `requires` isn't met:** not broken, not mentioned, and `plugins.list` shows it as "not for this desktop".
 
 **Acceptance:**
 
 - [ ] `requires = { env, commands }` in the Manifest, hash-covered; unmet means left out quietly and shown as "not for this desktop" in `plugins.list` (harness, fixture Plugin)
-- [ ] The Plugin's MCP tests run against a fake Hyprland socket served by the test, which records dispatches, and fake `omarchy-*` executables on `PATH`
-- [ ] Tools: `list_windows`, `window`, `kill_window` (Confirmation), `workspace`, `layout`, `theme`, `bar`, `night_light`, `screenshot`, `idle_lock`; the Manifest matches `tools/list`
+- [ ] The Plugin's MCP tests run against a fake Hyprland socket served by the test, which records dispatches and answers queries
+- [ ] Tools `list_windows`, `window`, `kill_window` (Confirmation), `workspace` and `layout`; the Manifest matches `tools/list`
 - [ ] Shipped and approved at scan like the news Plugin
-- [ ] Once, by hand on Omarchy: close a window, move one to workspace 3, switch the theme, toggle night light, force-kill with a yes and decline with a no
+- [ ] Once, by hand on Omarchy: move a window to workspace 3, full-screen one, close one, force-kill with a yes and decline with a no
 
 ## Comments
 

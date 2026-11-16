@@ -14,10 +14,10 @@ Still to settle:
 
 Details to be settled in a grilling session.
 
-**Status:** resolved (moved to [lucy-v0-2 01](../../lucy-v0-2/issues/01-hand-a-request-to-claude.md))
+**Status:** resolved (moved to lucy-v0-2 01–05 (from [01](../../lucy-v0-2/issues/01-hand-off-to-claude.md)))
 
 ## Comments
 
 2026-11-16: the user widened the scope beyond a project folder. Lucy refused a "tell Claude to …" request again yesterday. The user wants hand-offs that use their Claude MCP integrations (Linear, email), and sees this as especially important for users with such integrations.
 
-2026-11-16: settled in a grilling session and moved to v0.2 as [lucy-v0-2 01](../../lucy-v0-2/issues/01-hand-a-request-to-claude.md), spec [v0.2](../../lucy-v0-2/spec.md), ADR 0007. The questions above are answered there.
+2026-11-16: settled in a grilling session and moved to v0.2 as lucy-v0-2 01–05 (from [01](../../lucy-v0-2/issues/01-hand-off-to-claude.md)), spec [v0.2](../../lucy-v0-2/spec.md), ADR 0007. The questions above are answered there.

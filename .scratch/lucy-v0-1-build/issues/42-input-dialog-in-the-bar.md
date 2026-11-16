@@ -13,7 +13,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Public IPC (Roles),
 **Notes:**
 
 - The QML holds no product knowledge, as in ticket 36. It talks to lucyd through a `lucy` subcommand, not the socket directly, if that keeps it in line with `lucy status --follow`. Decide while building and say which.
-- Field kinds to draw: text, url, number, choice, secret.
+- Field kinds to draw: text, url, number, choice, secret. `secret` reaches lucyd only once 43 lands; test it here against the fake `lucy`.
 
 **Acceptance:**
 
