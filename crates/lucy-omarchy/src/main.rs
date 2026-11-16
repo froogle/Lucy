@@ -1,5 +1,5 @@
 //! The Omarchy Plugin executable: an MCP stdio server lucyd starts in its
-//! sandbox, given `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`,
+//! sandbox. It needs `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`,
 //! which its Manifest requires.
 
 use lucy_omarchy::{Desktop, Omarchy};

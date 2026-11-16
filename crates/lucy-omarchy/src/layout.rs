@@ -1,7 +1,3 @@
-//! The focused workspace's layout, through Omarchy's own commands, which
-//! also remember it across logins and update the bar. Omarchy cycles
-//! dwindle (tiling), scrolling and floating.
-
 use std::ffi::OsStr;
 
 use tokio::process::Command;
@@ -26,8 +22,7 @@ impl Mode {
         })
     }
 
-    /// Omarchy's name for it.
-    fn read(name: &str) -> Option<Mode> {
+    fn from_omarchy(name: &str) -> Option<Mode> {
         match name {
             "dwindle" => Some(Mode::Tiling),
             "scrolling" => Some(Mode::Scrolling),
@@ -36,8 +31,7 @@ impl Mode {
         }
     }
 
-    /// The mode Omarchy's toggle goes back to from this one.
-    fn before(self) -> Mode {
+    fn back(self) -> Mode {
         match self {
             Mode::Tiling => Mode::Floating,
             Mode::Scrolling => Mode::Tiling,
@@ -46,16 +40,15 @@ impl Mode {
     }
 }
 
-/// Puts the focused workspace in `mode`. Says whether it changed.
 pub async fn set(path: &OsStr, mode: Mode) -> Result<bool, String> {
     let mut changed = false;
     for _ in 0..3 {
         let current = run(path, CURRENT, &[]).await?;
-        let current = Mode::read(current.trim());
+        let current = Mode::from_omarchy(current.trim());
         if current == Some(mode) {
             return Ok(changed);
         }
-        let back = current.is_some_and(|current| current.before() == mode);
+        let back = current.is_some_and(|current| current.back() == mode);
         run(path, TOGGLE, if back { &["back"] } else { &[] }).await?;
         changed = true;
     }

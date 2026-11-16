@@ -1,5 +1,4 @@
-//! The Omarchy Plugin, driven through its MCP interface against a fake
-//! Hyprland socket and fake `omarchy-*` commands.
+//! The Omarchy Plugin, driven through MCP against a fake Hyprland and Omarchy.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
@@ -11,7 +10,6 @@ const FIREFOX: &str = "0xf1";
 const GHOSTTY: &str = "0xa2";
 const SLACK: &str = "0xb3";
 
-/// Firefox on workspace 1, a terminal (focused) on 2 and Slack on 3.
 fn desktop() -> Plugin {
     let omarchy = Plugin::start();
     omarchy.hyprland.windows(

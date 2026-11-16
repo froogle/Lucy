@@ -1,9 +1,3 @@
-//! Runs the Omarchy Plugin's MCP server in-process, talking to it through a
-//! real MCP client as lucyd would. Hyprland is a real Unix socket served
-//! here, which records each request and answers queries from what the test
-//! set; the `omarchy-*` commands are fake executables on the Plugin's
-//! `PATH`. Nothing reaches the real desktop.
-
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -16,7 +10,6 @@ use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningSer
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{json, Value};
 
-/// What the fake Hyprland answers, and every request it was sent.
 #[derive(Default)]
 struct Answers {
     clients: Value,
@@ -25,7 +18,6 @@ struct Answers {
     requests: Vec<String>,
 }
 
-/// A fake Hyprland serving its request socket.
 pub struct Hyprland {
     answers: Arc<Mutex<Answers>>,
 }
@@ -62,8 +54,6 @@ impl Hyprland {
         Hyprland { answers }
     }
 
-    /// Sets the open windows, as `(address, class, title, workspace)`, and
-    /// which one is focused.
     pub fn windows(&self, windows: &[(&str, &str, &str, &str)], focused: Option<&str>) {
         let clients: Vec<Value> = windows
             .iter()
@@ -94,7 +84,6 @@ impl Hyprland {
         };
     }
 
-    /// Changes one field of the window at `address`.
     pub fn set(&self, address: &str, field: &str, value: Value) {
         let mut answers = self.answers.lock().unwrap();
         for window in answers.clients.as_array_mut().unwrap() {
@@ -104,12 +93,10 @@ impl Hyprland {
         }
     }
 
-    /// What Hyprland answers each dispatch with.
     pub fn answer_dispatches_with(&self, answer: &str) {
         self.answers.lock().unwrap().dispatch = answer.into();
     }
 
-    /// Every dispatcher sent, in order.
     pub fn dispatched(&self) -> Vec<String> {
         let answers = self.answers.lock().unwrap();
         answers
@@ -120,7 +107,6 @@ impl Hyprland {
     }
 }
 
-/// The Plugin, running and connected.
 pub struct Plugin {
     runtime: tokio::runtime::Runtime,
     client: RunningService<RoleClient, ()>,
@@ -128,8 +114,6 @@ pub struct Plugin {
     dir: tempfile::TempDir,
 }
 
-/// Writes an executable from a child process, so this one holds no write
-/// fd another test's child could inherit ("Text file busy").
 fn write_executable(path: &Path, script: &str) {
     let mut writer = std::process::Command::new("/bin/sh")
         .args(["-c", "cat > \"$1\" && chmod +x \"$1\"", "sh"])
@@ -147,8 +131,6 @@ fn write_executable(path: &Path, script: &str) {
 }
 
 impl Plugin {
-    /// The Plugin, with a fake Hyprland showing no windows and Omarchy's
-    /// focused workspace tiling.
     pub fn start() -> Plugin {
         let dir = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
         let hyprland = Hyprland::serve(&dir.path().join(".socket.sock"));
@@ -212,12 +194,10 @@ impl Plugin {
         }
     }
 
-    /// Sets the focused workspace's layout as Omarchy reports it.
     pub fn set_layout(&self, layout: &str) {
         std::fs::write(self.dir.path().join("layout"), format!("{layout}\n")).unwrap();
     }
 
-    /// Each run of Omarchy's layout toggle, as `toggle <args>`.
     pub fn toggles(&self) -> Vec<String> {
         let log: PathBuf = self.dir.path().join("toggles");
         std::fs::read_to_string(log)
@@ -234,7 +214,6 @@ impl Plugin {
             .to_owned()
     }
 
-    /// The names of the tools it lists.
     pub fn tool_names(&self) -> Vec<String> {
         let tools = self.runtime.block_on(self.client.list_all_tools()).unwrap();
         tools
@@ -243,7 +222,6 @@ impl Plugin {
             .collect()
     }
 
-    /// Calls `tool` with `arguments`, a JSON object.
     pub fn call_result(&self, tool: &str, arguments: Value) -> CallToolResult {
         let Value::Object(arguments) = arguments else {
             panic!("tool arguments are an object");
@@ -257,7 +235,6 @@ impl Plugin {
         })
     }
 
-    /// Calls `tool`, which must succeed, and returns its JSON answer.
     pub fn call(&self, tool: &str, arguments: Value) -> Value {
         let result = self.call_result(tool, arguments);
         let text = text(&result);
@@ -265,7 +242,6 @@ impl Plugin {
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("{e}: {text}"))
     }
 
-    /// Calls `tool`, which must fail, and returns what it said.
     pub fn refused(&self, tool: &str, arguments: Value) -> String {
         let result = self.call_result(tool, arguments);
         assert_eq!(result.is_error, Some(true), "{}", text(&result));
@@ -273,7 +249,6 @@ impl Plugin {
     }
 }
 
-/// The text a tool answered with.
 pub fn text(result: &CallToolResult) -> String {
     result
         .content

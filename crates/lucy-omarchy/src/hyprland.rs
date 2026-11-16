@@ -1,7 +1,3 @@
-//! Hyprland's request socket: one request per connection, answered and
-//! closed. `j/<query>` answers JSON; `dispatch <dispatcher>` answers `ok`.
-//! Since Hyprland 0.56 a dispatcher is a Lua call, `hl.dsp.focus({ .. })`.
-
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -19,7 +15,6 @@ pub struct Window {
     pub title: String,
     pub workspace: Workspace,
     pub floating: bool,
-    /// 0 when it isn't full screen.
     pub fullscreen: u8,
     pub pinned: bool,
 }
@@ -43,7 +38,6 @@ impl Hyprland {
         self.query("clients").await
     }
 
-    /// The focused window's address, if a window is focused.
     pub async fn active_window(&self) -> Result<Option<String>, String> {
         let active: Active = self.query("activewindow").await?;
         Ok(active.address)
