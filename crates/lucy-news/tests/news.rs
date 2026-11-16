@@ -25,7 +25,6 @@ fn urls(urls: &[&str]) -> Vec<String> {
     sorted(urls.iter().map(|url| (*url).to_owned()).collect())
 }
 
-/// The items `briefing` returned from `source`.
 fn from<'a>(briefing: &'a Value, source: &str) -> Vec<&'a Value> {
     briefing["items"]
         .as_array()
@@ -112,16 +111,14 @@ fn the_briefing_tells_lucy_to_greet_open_front_pages_and_respect_not_opening() {
     }
 }
 
-/// A web that answers nothing until `expected` requests are in flight at
-/// once, so a briefing that fetched one feed at a time would fail.
-struct Gate {
+struct AllAtOnce {
     recorded: Recorded,
     in_flight: Mutex<usize>,
     all_in: Condvar,
     expected: usize,
 }
 
-impl Web for Gate {
+impl Web for AllAtOnce {
     fn get(&self, url: &str) -> Result<String, String> {
         let mut in_flight = self.in_flight.lock().unwrap();
         *in_flight += 1;
@@ -140,7 +137,7 @@ impl Web for Gate {
 
 #[test]
 fn the_feeds_are_fetched_all_at_once() {
-    let news = Plugin::with_web(Arc::new(Gate {
+    let news = Plugin::with_web(Arc::new(AllAtOnce {
         recorded: Recorded::new(),
         in_flight: Mutex::new(0),
         all_in: Condvar::new(),
@@ -194,14 +191,13 @@ fn a_detailed_roundup_takes_more_of_each_feed_and_asks_for_about_two_minutes() {
         how.contains("built only from these headlines and descriptions"),
         "{how}"
     );
-    // Still only the feeds: no article pages.
     assert_eq!(
         sorted(news.web.requested()),
-        urls(&[CNN, CNN, NPR, NPR, SKY, SKY])
+        urls(&[CNN, CNN, NPR, NPR, SKY, SKY]),
+        "still only the feeds: no article pages"
     );
 }
 
-/// The recorded web, with NPR unreachable.
 struct WithoutNpr(Recorded);
 
 impl Web for WithoutNpr {
@@ -318,10 +314,10 @@ fn a_named_site_with_an_official_feed_is_added_unvetted_and_read_from_then_on() 
     );
     let tell = reply["tell_the_user"].as_str().unwrap();
     assert!(tell.contains("terms allow AI summaries"), "{tell}");
-    // Only its home page and the feed it declares; no article page.
     assert_eq!(
         news.web.requested(),
-        urls(&["https://dailyplanet.example/", DAILY_PLANET])
+        urls(&["https://dailyplanet.example/", DAILY_PLANET]),
+        "only its home page and the feed it declares; no article page"
     );
 
     let next = news.restart();
@@ -373,14 +369,13 @@ fn a_named_site_without_an_official_feed_gets_the_honest_limit() {
     assert_eq!(names(&reply["rotation"]), ["CNN", "NPR", "Sky News"]);
     let tell = reply["tell_the_user"].as_str().unwrap();
     assert!(tell.contains("no official feed"), "{tell}");
-    // Nothing but its home page and the usual feed paths.
     for url in news.web.requested() {
         assert!(
             url == "https://nofeed.example/"
                 || ["/feed", "/rss", "/feed.xml", "/rss.xml", "/atom.xml"]
                     .iter()
                     .any(|path| url == format!("https://nofeed.example{path}")),
-            "{url}"
+            "{url}: nothing but its home page and the usual feed paths"
         );
     }
 }

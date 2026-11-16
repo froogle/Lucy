@@ -1,5 +1,5 @@
 //! The news Plugin executable: an MCP stdio server lucyd starts in its
-//! sandbox, with its private state dir in `LUCY_PLUGIN_STATE_DIR`.
+//! sandbox. Its private state dir is in `LUCY_PLUGIN_STATE_DIR`.
 
 use std::sync::Arc;
 

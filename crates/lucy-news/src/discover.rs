@@ -1,26 +1,15 @@
-//! Finds the official feed of a site the user names that isn't in the
-//! catalogue, the way feed readers do: the `<link rel="alternate">` feeds
-//! its home page declares, then the usual feed paths. Only the home page and
-//! candidate feeds are fetched, never an article page.
-
 use crate::feed;
 use crate::Web;
 
-/// Where sites commonly serve their feed, tried when the home page declares
-/// none that reads.
 const COMMON_PATHS: &[&str] = &["/feed", "/rss", "/feed.xml", "/rss.xml", "/atom.xml"];
 
-/// A site's official feed, found.
 #[derive(Debug, PartialEq)]
 pub struct SiteFeed {
-    /// The site's host, which identifies it in preferences.
     pub host: String,
     pub feed: String,
     pub front_page: String,
 }
 
-/// The site's home page, from an address like `dailyplanet.com` or
-/// `https://www.dailyplanet.com/world`: its scheme (https if none) and host.
 pub fn home_page(site: &str) -> Option<(String, String)> {
     let site = site.trim();
     let (scheme, rest) = match site.split_once("://") {
@@ -28,20 +17,24 @@ pub fn home_page(site: &str) -> Option<(String, String)> {
         None => ("https".to_owned(), site),
     };
     let host = rest.split(['/', '?', '#']).next()?.to_ascii_lowercase();
-    // A public site's name: no address on the user's own network, no port.
+    (matches!(&*scheme, "http" | "https") && is_public_name(&host))
+        .then(|| (format!("{scheme}://{host}/"), host))
+}
+
+fn is_public_name(host: &str) -> bool {
     let top_level = host.rsplit('.').next().unwrap_or_default();
-    let plausible = host.contains('.')
+    host.contains('.')
         && !top_level.is_empty()
         && top_level.chars().all(|c| c.is_ascii_alphabetic())
         && host
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'));
-    (matches!(&*scheme, "http" | "https") && plausible)
-        .then(|| (format!("{scheme}://{host}/"), host))
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
 }
 
-/// The official feed of `site`, if it has one that reads as a feed with
-/// stories in it.
+fn is_on_public_site(url: &str) -> bool {
+    home_page(url).is_some()
+}
+
 pub fn find(web: &dyn Web, site: &str) -> Option<SiteFeed> {
     let (front_page, host) = home_page(site)?;
     let origin = front_page.trim_end_matches('/');
@@ -50,8 +43,7 @@ pub fn find(web: &dyn Web, site: &str) -> Option<SiteFeed> {
         .map(|html| alternate_feeds(&html, &front_page))
         .unwrap_or_default()
         .into_iter()
-        // Only on public sites, as the site itself must be.
-        .filter(|url| home_page(url).is_some());
+        .filter(|url| is_on_public_site(url));
     let common = COMMON_PATHS.iter().map(|path| format!("{origin}{path}"));
     let feed = declared.chain(common).find(|url| {
         web.get(url)
@@ -65,9 +57,6 @@ pub fn find(web: &dyn Web, site: &str) -> Option<SiteFeed> {
     })
 }
 
-/// The RSS and Atom feeds an HTML page declares with
-/// `<link rel="alternate" type="application/rss+xml" href="…">`, as
-/// absolute web links.
 fn alternate_feeds(html: &str, page: &str) -> Vec<String> {
     let lower = html.to_ascii_lowercase();
     let mut feeds = Vec::new();
@@ -97,7 +86,6 @@ fn alternate_feeds(html: &str, page: &str) -> Vec<String> {
     feeds
 }
 
-/// The value of the attribute `name` in an HTML start tag, quoted or not.
 fn attribute(tag: &str, name: &str) -> Option<String> {
     let lower = tag.to_ascii_lowercase();
     let mut from = 0;
@@ -111,17 +99,14 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
         let Some(value) = after.strip_prefix('=') else {
             continue;
         };
-        // Lowercasing ASCII keeps every byte offset, so this is the same
-        // text in its original case.
-        let value = tag[tag.len() - value.len()..].trim_start();
+        let value = original_case(tag, value).trim_start();
         return Some(match value.chars().next() {
             Some(quote @ ('"' | '\'')) => value[1..].split(quote).next()?.to_owned(),
             _ => {
                 let token = value.split_whitespace().next()?;
-                // At the end of a self-closing tag, the `/` closes the tag.
-                let last = value.trim_end() == token;
+                let ends_tag = value.trim_end() == token;
                 match token.strip_suffix('/') {
-                    Some(unclosed) if last && !unclosed.is_empty() => unclosed.to_owned(),
+                    Some(unclosed) if ends_tag && !unclosed.is_empty() => unclosed.to_owned(),
                     _ => token.to_owned(),
                 }
             }
@@ -130,7 +115,10 @@ fn attribute(tag: &str, name: &str) -> Option<String> {
     None
 }
 
-/// `href` on the page at `page` as an absolute http(s) link.
+fn original_case<'a>(text: &'a str, lowercased_tail: &str) -> &'a str {
+    &text[text.len() - lowercased_tail.len()..]
+}
+
 fn resolve(page: &str, href: &str) -> Option<String> {
     let href = href.trim();
     let (scheme, rest) = page.split_once("://")?;

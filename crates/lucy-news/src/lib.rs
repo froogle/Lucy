@@ -33,6 +33,10 @@ use preferences::{Found, Length, Preferences};
 /// recorded responses instead.
 pub trait Web: Send + Sync {
     /// The body of `url`.
+    ///
+    /// # Errors
+    ///
+    /// Why `url` couldn't be fetched.
     fn get(&self, url: &str) -> Result<String, String>;
 }
 
@@ -95,13 +99,10 @@ pub fn local_hour() -> u32 {
 /// The news Plugin's MCP server.
 pub struct News {
     web: Arc<dyn Web>,
-    /// Its private state dir, which holds `preferences.toml`.
     state_dir: PathBuf,
-    /// The local hour, for the greeting.
     hour: fn() -> u32,
 }
 
-/// How many items each Source gives a briefing.
 const BRIEF_ITEMS: usize = 5;
 const DETAILED_ITEMS: usize = 10;
 
@@ -245,8 +246,6 @@ impl News {
         Ok(changes.into_reply(&preferences))
     }
 
-    /// Adds the Source `name` outside the catalogue if its site, at the
-    /// address `site`, has an official feed.
     async fn add_site(
         &self,
         changes: &mut Changes,
@@ -255,7 +254,7 @@ impl News {
         site: &str,
     ) -> Result<(), ErrorData> {
         let Some((front_page, host)) = discover::home_page(site) else {
-            changes.unknown.push(name.to_owned());
+            changes.no_address.push(name.to_owned());
             return Ok(());
         };
         if preferences.found_by_id(&host).is_some() {
@@ -266,8 +265,8 @@ impl News {
         let found = tokio::task::spawn_blocking(move || discover::find(&*web, &address))
             .await
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        // A Source named by its address alone goes by its host.
-        let name = if name == site { &host } else { name };
+        let named_by_address = name == site;
+        let name = if named_by_address { &host } else { name };
         match found {
             Some(site) => {
                 changes
@@ -291,15 +290,12 @@ impl News {
     }
 }
 
-/// A Source a briefing reads.
 struct Reading {
     name: String,
     feed: String,
     front_page: String,
 }
 
-/// The Sources in rotation that Lucy can read: readable ones from the
-/// catalogue, and those the user added whose feed was found.
 fn readings(preferences: &Preferences) -> Vec<Reading> {
     preferences
         .rotation
@@ -320,16 +316,12 @@ fn readings(preferences: &Preferences) -> Vec<Reading> {
         .collect()
 }
 
-/// What a `set_preference` call changed, and what Lucy should tell the user.
 #[derive(Default)]
 struct Changes {
     changed: Vec<String>,
     cannot_read: Vec<Value>,
-    /// Named Sources with no address to look for a feed at.
-    unknown: Vec<String>,
-    /// Named sites where no official feed was found.
+    no_address: Vec<String>,
     no_feed: Vec<Value>,
-    /// Added Sources outside the vetted catalogue.
     unvetted: Vec<Value>,
     replacements: Option<Vec<Value>>,
 }
@@ -372,7 +364,7 @@ impl Changes {
         }) {
             (found.id.clone(), found.name.clone())
         } else {
-            self.unknown.push(name.to_owned());
+            self.no_address.push(name.to_owned());
             return;
         };
         let in_rotation = preferences.rotation.contains(&id);
@@ -417,8 +409,8 @@ impl Changes {
                  ordinary question, not a Confirmation."
                 .into();
         }
-        if !self.unknown.is_empty() {
-            reply["not_in_catalogue"] = self.unknown.into();
+        if !self.no_address.is_empty() {
+            reply["not_in_catalogue"] = self.no_address.into();
             reply["tell_the_user"] = format!(
                 "{} The Sources in `not_in_catalogue` aren't in the vetted catalogue. If you know \
                  or the user tells you a Source's web address, call set_preference again with it \
@@ -461,7 +453,6 @@ impl Changes {
     }
 }
 
-/// The catalogue Sources with these ids, skipping any it no longer has.
 fn sources(ids: &[String]) -> impl Iterator<Item = &'static Source> + '_ {
     ids.iter().filter_map(|id| catalogue::by_id(id))
 }

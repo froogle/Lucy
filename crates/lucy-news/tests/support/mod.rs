@@ -1,18 +1,3 @@
-//! The Plugin fixtures test harness. It runs the Plugin's MCP server
-//! in-process, talks to it through a real MCP client as lucyd would, and
-//! answers its web requests from recorded responses, so no test touches the
-//! network.
-//!
-//! Recorded responses live in `tests/fixtures/web/<host>/<path>`: the body
-//! of `https://feeds.npr.org/1001/rss.xml` is
-//! `tests/fixtures/web/feeds.npr.org/1001/rss.xml`. A URL with no recording
-//! fails, as an unreachable site would. A site's home page,
-//! `https://dailyplanet.example/`, is `dailyplanet.example/index.html`.
-//!
-//! The Plugin template copies this file; a new Plugin swaps `News` for its
-//! own server and keeps its one way out to the web behind a trait like
-//! `Web`.
-
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -23,10 +8,8 @@ use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningSer
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::Value;
 
-/// The hour the Plugin's clock reads in tests: 8 in the morning.
 pub const HOUR: u32 = 8;
 
-/// The fixtures' web: recorded responses, and every URL asked for.
 pub struct Recorded {
     dir: PathBuf,
     requested: Mutex<Vec<String>>,
@@ -40,7 +23,6 @@ impl Recorded {
         }
     }
 
-    /// Every URL the Plugin asked for, in order.
     pub fn requested(&self) -> Vec<String> {
         self.requested.lock().unwrap().clone()
     }
@@ -61,7 +43,6 @@ impl Web for Recorded {
     }
 }
 
-/// The Plugin, running and connected.
 pub struct Plugin {
     runtime: tokio::runtime::Runtime,
     client: RunningService<RoleClient, ()>,
@@ -70,20 +51,16 @@ pub struct Plugin {
 }
 
 impl Plugin {
-    /// The Plugin with a fresh state dir, reading recorded feeds.
     pub fn start() -> Plugin {
         let web = Arc::new(Recorded::new());
         Plugin::launch(web.clone(), web, Arc::new(tempfile::tempdir().unwrap()))
     }
 
-    /// The Plugin with a fresh state dir, reaching the web through `web`.
     pub fn with_web(web: Arc<dyn Web>) -> Plugin {
         let recorded = Arc::new(Recorded::new());
         Plugin::launch(web, recorded, Arc::new(tempfile::tempdir().unwrap()))
     }
 
-    /// A new run of the Plugin with this one's state dir, as the next
-    /// Session would start it.
     pub fn restart(&self) -> Plugin {
         let web = Arc::new(Recorded::new());
         Plugin::launch(web.clone(), web, self.state.clone())
@@ -117,12 +94,10 @@ impl Plugin {
         }
     }
 
-    /// The Plugin's private state dir.
     pub fn state_dir(&self) -> &Path {
         self.state.path()
     }
 
-    /// The names of the tools it lists.
     pub fn tool_names(&self) -> Vec<String> {
         let tools = self.runtime.block_on(self.client.list_all_tools()).unwrap();
         tools
@@ -131,7 +106,6 @@ impl Plugin {
             .collect()
     }
 
-    /// Calls `tool` with `arguments`, a JSON object.
     pub fn call_result(&self, tool: &str, arguments: Value) -> Result<CallToolResult, String> {
         let Value::Object(arguments) = arguments else {
             panic!("tool arguments are an object");
@@ -145,7 +119,6 @@ impl Plugin {
         })
     }
 
-    /// Calls `tool`, which must succeed, and returns its JSON answer.
     pub fn call(&self, tool: &str, arguments: Value) -> Value {
         let result = self.call_result(tool, arguments).unwrap();
         let text = text(&result);
@@ -154,7 +127,6 @@ impl Plugin {
     }
 }
 
-/// The text a tool answered with.
 pub fn text(result: &CallToolResult) -> String {
     result
         .content
