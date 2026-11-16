@@ -8,12 +8,13 @@ mod support;
 
 use std::io::{BufRead, BufReader, Lines, Write};
 use std::process::{Child, ChildStdout};
+use std::time::{Duration, Instant};
 
 use lucy::menu::Open;
 use lucyd::{Choices, FieldKind, TypedAnswer};
 use ratatui::crossterm::event::KeyCode;
 use serde_json::{json, Value};
-use support::{Home, Script};
+use support::{Home, ParentStdin, Script};
 
 #[test]
 fn the_page_shows_the_question_and_sends_back_what_is_typed() {
@@ -267,4 +268,29 @@ fn a_holder_waits_for_lucyd() {
         open["params"]["message"], "Which page shall I open?",
         "{open}"
     );
+}
+
+#[test]
+fn a_holder_lets_the_role_go_when_the_bar_that_ran_it_goes() {
+    let home = Home::with_lucyd();
+    let _asked = home.ask_typed("Which page shall I open?", FieldKind::Url);
+    let mut bar = home.parented(&["input", "--json"], ParentStdin::Held);
+    assert_eq!(bar.next()["method"], "input.open");
+
+    bar.kill_parent();
+
+    assert!(bar.exits_soon());
+    assert!(role_claimed_soon(&home));
+}
+
+fn role_claimed_soon(home: &Home) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if home.env().connect_as(Some(lucy_ipc::Role::Input)).is_ok() {
+            return true;
+        }
+        // sleep-ok: a poll loop with a deadline, while lucyd sees the holder's socket close
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
 }
