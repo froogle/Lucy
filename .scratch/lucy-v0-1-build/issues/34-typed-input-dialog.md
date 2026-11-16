@@ -39,3 +39,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Public IPC (Roles),
 2026-11-16: the user wants this to be a core ability: anything in the system can open a dialog to ask for information (a URL, a password), then continue once it has the answer.
 
 2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand check left: "Lucy, I'll type a URL for you" with the bar plugin not holding `input`. Review fixes: the box opens after the line, `lucy input` closes on `input.close`, and an unclaimed launch counts as no terminal after `CLAIM_WAIT` (5 s).
+
+2026-11-16: hand-checked on the deployed build; passed.

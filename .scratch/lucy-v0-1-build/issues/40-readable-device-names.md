@@ -34,3 +34,5 @@ Found during ticket 36's desktop hand check (2026-11-15). The user wants it gril
 2026-11-16: settled in a grilling session.
 
 2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand check left: the panel and the TUI show "ATH-M50xSTS-USB Mono" for the headset mic.
+
+2026-11-16: hand-checked on the deployed build; passed.

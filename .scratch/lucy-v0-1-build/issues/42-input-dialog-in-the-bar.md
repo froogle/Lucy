@@ -25,3 +25,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Public IPC (Roles),
 ## Comments
 
 2026-11-16: built in slice 9 (`lucy-v0-1-slice-9`). The bar talks to lucyd through `lucy input --json` (holds the role, JSON lines on stdin/stdout). Hand checks left: a missing credential asked for in the bar (needs 44), and focus landing on the first box.
+
+2026-11-16: hand-checked on the deployed build; passed.
+
+2026-11-16: the bar dialog works, but the first box has no keyboard focus (ticket 49).

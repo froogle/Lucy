@@ -36,3 +36,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (`requires`
 2026-11-16: the user widened the scope. It should ship with Lucy, cover anything you'd want done to an Omarchy machine (not just windows), and be the model for Plugins for other Linux desktops.
 
 2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand checks left, on Omarchy: move to workspace 3, full-screen, polite close, force-kill yes/no, workspace rename and layout change under Landlock. The `kill` and `rename` Lua argument forms are unverified.
+
+2026-11-16: hand-checked on the deployed build; passed.

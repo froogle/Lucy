@@ -28,3 +28,5 @@ Spec: none; wayfinder 25.
 ## Comments
 
 2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand checks left: the redeployed card-off runs (outside and in a Session), the remap-sink speaker run, and one physical unplug.
+
+2026-11-16 hand checks (redeployed main): all passed except the outside-Session notification, now ticket 47. Card off outside a Session: lucyd fell back to the camera mic and heard the Wake word. Card off and a physical unplug mid-Session: the Session ended with the notification. The remap-sink speaker: "the speaker went away". After replugging: heard through the pinned mic again.

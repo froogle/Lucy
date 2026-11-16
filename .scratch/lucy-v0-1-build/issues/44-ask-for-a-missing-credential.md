@@ -25,3 +25,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (missing cr
 ## Comments
 
 2026-11-16: built in slice 10 (`lucy-v0-1-slice-10`). Lucy names the credential from its env-var name ("your Linear API key"). Values typed before a later cancel stay stored. Hand check left: a Plugin with a missing credential asks for it (in the bar and in a terminal), and the request completes.
+
+2026-11-16: hand-checked on the deployed build; passed.

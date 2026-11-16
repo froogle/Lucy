@@ -13,7 +13,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Omarchy Plugin (shipped). Found in the ha
 
 **Seams:** none new. It extends the Omarchy Plugin (ticket 35's crate).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -29,3 +29,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Omarchy Plugin (shipped). Found in the ha
 - [ ] Once, by hand on Omarchy: "take a screenshot" saves one to `~/Pictures` with Omarchy's notification, and night light turns on and off
 
 ## Comments
+
+2026-11-16: hand-checked: a screenshot saved to ~/Pictures/Screenshots, and the night light turned on and off.

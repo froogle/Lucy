@@ -17,7 +17,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Session state machine (Barge-in), Audio p
 
 **Seams:** none expected; say so in the report if the fix needs one.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Steps, in order:**
 
@@ -38,3 +38,5 @@ A harness test that reproduces the cause comes before the fix.
 2026-11-16: grilled with the user; the details are in the body above.
 
 2026-11-16: slice 8 added the gate debug log (`RUST_LOG=lucyd=debug`) and ruled out the DSP pipeline, gate tuning and Silero on recorded audio. Leading hypothesis: the pinned mic on the same USB card as playback gets no audio while Lucy plays. Waiting on the user's two recorded talk-over runs (Superwhisper and Whisper).
+
+2026-11-16: hand-checked on the slice 8–10 build. Talking over her and "Hey Lucy" over her both duck and stop her, with Superwhisper and with Whisper (gate log: duck, then Barge-in about 0.28 s later). The failure never reproduced, so its cause is unknown; most likely something in the earlier build or a stale mic state. The gate debug log stays, so a recurrence can be diagnosed from one run. Resolved as not reproducible; reopen if it comes back.

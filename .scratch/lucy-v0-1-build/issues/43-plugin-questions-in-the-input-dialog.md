@@ -27,3 +27,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (mid-call q
 ## Comments
 
 2026-11-16: built in slice 9 (`lucy-v0-1-slice-9`). A Plugin marks a secret in the elicitation's `_meta` as `"lucy/secret"` (ADR 0011). A lone number, boolean or enum field also opens the dialog (user decision; spec amended). Plugin-author docs (the authoring brief and template) don't yet cover mid-call questions or `lucy/secret`.
+
+2026-11-16: hand-checked on the deployed build; passed.
