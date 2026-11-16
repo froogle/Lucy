@@ -157,8 +157,14 @@ fn env_of(lucyd: &Harness) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
+const SECRET_TEST: &str =
+    "a_secret_goes_to_the_keyring_and_the_plugins_next_start_while_the_model_sees_only_provided";
+
 #[test]
 fn a_secret_goes_to_the_keyring_and_the_plugins_next_start_while_the_model_sees_only_provided() {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = env_logger::try_init();
+    }
     let lucyd = asker(&["LINEAR_KEY"]);
     lucyd.credentials.enter("asker", "LINEAR_KEY", "lin-old");
     let mut holder = lucyd.input("a widget");
@@ -200,6 +206,21 @@ fn a_secret_goes_to_the_keyring_and_the_plugins_next_start_while_the_model_sees_
     );
     events.end_session().unwrap();
     lucyd.assert_nothing_private_on_bus();
+}
+
+#[test]
+fn a_secret_never_reaches_lucyds_log_or_a_plugins_stderr() {
+    let run = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([SECRET_TEST, "--exact", "--nocapture"])
+        .env("RUST_LOG", "trace")
+        .output()
+        .unwrap();
+
+    let log =
+        String::from_utf8_lossy(&run.stderr).into_owned() + &String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success(), "{log}");
+    assert!(log.contains("1 passed"), "{log}");
+    assert!(!log.contains("lin-n3w-s3cret"), "{log}");
 }
 
 #[test]
