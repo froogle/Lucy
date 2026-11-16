@@ -190,6 +190,26 @@ fn a_holder_gets_the_question_as_json_and_answers_on_stdin() {
 }
 
 #[test]
+fn a_holder_gets_a_secret_field_and_sends_its_value_back() {
+    let home = Home::with_lucyd();
+    let asked = home.ask_typed("Your LINEAR_KEY?", FieldKind::Secret);
+    let mut holder = Holder::start(&home);
+
+    let open = holder.next();
+    assert_eq!(open["params"]["fields"][0]["kind"], "secret", "{open}");
+    let field = open["params"]["fields"][0]["name"].as_str().unwrap();
+    holder.send(json!({
+        "method": "input.answer",
+        "params": { "id": open["params"]["id"], "values": { field: "lin-s3cret" } },
+    }));
+
+    assert_eq!(
+        asked.recv().unwrap(),
+        TypedAnswer::Answer("lin-s3cret".to_owned())
+    );
+}
+
+#[test]
 fn a_holder_cancels_on_stdin() {
     let home = Home::with_lucyd();
     let asked = home.ask_typed("Which page shall I open?", FieldKind::Url);
