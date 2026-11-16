@@ -36,6 +36,7 @@ use crate::model_text::PLUGIN_BUILD;
 use crate::plugins::{sandbox, Host};
 use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
+use crate::sync::Locked;
 
 /// The Delegate's system prompt.
 const BRIEF: &str = include_str!("brief.md");
@@ -127,7 +128,7 @@ impl Authoring {
     /// Publishes what the current build in `builds` is doing.
     fn show_building(&self, builds: &Builds) {
         let building = match &builds.current {
-            Some(build) => build.state.lock().unwrap().stage.building(),
+            Some(build) => build.state.locked().stage.building(),
             None => Building::No,
         };
         self.building.send_replace(building);
@@ -150,7 +151,7 @@ impl Authoring {
     /// The Session ended without Lucy saying she'll keep working on the
     /// build running, if one is: she shows it instead.
     pub fn show_still_building(&self) {
-        let building = self.builds.lock().unwrap().current.clone();
+        let building = self.builds.locked().current.clone();
         if let Some(build) = building {
             self.show(build_notification(
                 format!("Lucy is still building the {} Plugin", build.name),
@@ -176,7 +177,7 @@ impl Authoring {
             clarifications,
             request,
         };
-        let mut builds = self.builds.lock().unwrap();
+        let mut builds = self.builds.locked();
         if let Some(build) = &builds.current {
             let building = build.name.clone();
             return self.queue(&mut builds, &building, request);
@@ -268,7 +269,7 @@ impl Authoring {
             self.thinking
                 .open_delegate(&provider, events_tx, relay, BRIEF.to_owned(), workspace);
         {
-            let mut state = build.state.lock().unwrap();
+            let mut state = build.state.locked();
             state.model = Some(model);
             state.token = Some(token);
         }
@@ -289,7 +290,7 @@ impl Authoring {
     /// "cancel it": stops the build that is running, and the one queued.
     pub fn cancel(&self) {
         let current = {
-            let mut builds = self.builds.lock().unwrap();
+            let mut builds = self.builds.locked();
             builds.queued = None;
             builds.current.clone()
         };
@@ -329,7 +330,7 @@ impl Authoring {
 
     /// The build is over: the queued one, if any, starts.
     fn finished(self: &Arc<Self>, build: &Build) {
-        let mut builds = self.builds.lock().unwrap();
+        let mut builds = self.builds.locked();
         if !builds
             .current
             .as_deref()
@@ -541,7 +542,7 @@ impl Build {
         loop {
             // Dropped only once its wake-up is handled, which a test's clock
             // waits for.
-            let mut budget_fired = self.state.lock().unwrap().budget.fired();
+            let mut budget_fired = self.state.locked().budget.fired();
             tokio::select! {
                 event = events.recv() => match event {
                     Some(ThinkingEvent::TurnEnd) => self.turn_ended(),
@@ -564,7 +565,7 @@ impl Build {
     /// says so. Returns whether it did.
     fn out_of_time(&self) -> bool {
         // It may have stopped counting just now.
-        if !self.state.lock().unwrap().budget.is_spent() {
+        if !self.state.locked().budget.is_spent() {
             return false;
         }
         let allowance = spoken_duration(self.allowance);
@@ -614,7 +615,7 @@ impl Build {
 
     /// Sends the Delegate a Turn.
     fn send_turn(&self, text: String) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         if let Some(model) = &mut state.model {
             model.send_turn(text);
             state.turns += 1;
@@ -624,7 +625,7 @@ impl Build {
     /// Moves from `from` to `to`, or says why the Delegate can't do that
     /// now.
     fn advance(&self, from: Stage, to: Stage) -> Result<(), CallToolResult> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         if state.stage != from {
             return Err(error(match state.stage {
                 Stage::Asking => "Wait for the user's answer, which comes as your next message.",
@@ -636,14 +637,14 @@ impl Build {
         state.enter(to);
         drop(state);
         if let Some(authoring) = self.authoring.upgrade() {
-            authoring.show_building(&authoring.builds.lock().unwrap());
+            authoring.show_building(&authoring.builds.locked());
         }
         Ok(())
     }
 
     /// Stops `task`, which waits on the user, when the build is over.
     fn waits(&self, task: AbortHandle) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.locked();
         if state.stage == Stage::Over {
             task.abort();
         } else {
@@ -702,7 +703,7 @@ impl Build {
         };
         let checked = self.check(&authoring).await;
         // It ran out of time, or was cancelled, while being checked.
-        if self.state.lock().unwrap().stage == Stage::Over {
+        if self.state.locked().stage == Stage::Over {
             return error("The build is over.");
         }
         match checked {
@@ -717,7 +718,7 @@ impl Build {
             }
             Err(reason) => {
                 let _ = self.advance(Stage::Checking, Stage::Working);
-                self.state.lock().unwrap().failure = Some(reason.clone());
+                self.state.locked().failure = Some(reason.clone());
                 error(format!(
                     "{reason}\n\nFix it and call submit_plugin again, call ask_user if only the \
                      user can say, or cannot if it can't be done with permitted access."
@@ -849,7 +850,7 @@ impl Build {
     /// do, it has given up.
     fn turn_ended(&self) {
         let reason = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.locked();
             state.turns = state.turns.saturating_sub(1);
             if state.turns > 0 || state.stage != Stage::Working {
                 return;
@@ -861,7 +862,7 @@ impl Build {
 
     /// The build failed for `reason`: Lucy says so.
     fn give_up(&self, reason: String) {
-        if self.state.lock().unwrap().stage == Stage::Over {
+        if self.state.locked().stage == Stage::Over {
             return;
         }
         self.tell(
@@ -892,7 +893,7 @@ impl Build {
     /// staging dir is kept.
     fn finish(&self) {
         let (model, token, waiting) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.locked();
             state.enter(Stage::Over);
             let waiting = std::mem::take(&mut state.waiting);
             (state.model.take(), state.token.take(), waiting)

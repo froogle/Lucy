@@ -1,6 +1,7 @@
 //! The `claude` Thinking Provider, driven through the `Thinking` seam against
 //! a fake `claude` that replays a recorded real stream-json transcript
 //! (`fixtures/claude/`).
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

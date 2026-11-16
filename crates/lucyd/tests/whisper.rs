@@ -1,4 +1,5 @@
 //! The `whisper` STT Provider.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 mod recording;

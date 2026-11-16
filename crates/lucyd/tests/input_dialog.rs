@@ -1,6 +1,7 @@
 //! The Input dialog: `ask_typed` puts a box on screen through the client
 //! holding the `input` role, Lucy waits in Typing, and the typed answer goes
 //! back to the model.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

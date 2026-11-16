@@ -1,5 +1,6 @@
 //! `config.toml` is read at each Session start, and the fast Model tier
 //! picks the Thinking Provider that Session uses.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

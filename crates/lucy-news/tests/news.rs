@@ -1,4 +1,5 @@
 //! The news Plugin, driven through its MCP interface against recorded feeds.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 

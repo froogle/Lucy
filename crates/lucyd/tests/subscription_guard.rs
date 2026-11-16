@@ -3,6 +3,7 @@
 //! When the CLI's version changes, Lucy re-verifies before the Session goes
 //! on: the login must be claude.ai, and one turn must show
 //! `apiKeySource: "none"` and a `rate_limit_event`.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

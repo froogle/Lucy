@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
+use crate::sync::Locked;
 
 /// The `claude` tools a Delegate writes and builds a Plugin with, inside
 /// its sandbox. A Session's model has none of them.
@@ -192,7 +193,7 @@ impl Claude {
         for input in inputs {
             match input {
                 ToClaude::Turn(text) => {
-                    running.turns.lock().unwrap().sent += 1;
+                    running.turns.locked().sent += 1;
                     let message = serde_json::json!(
                         {"type": "user", "message": {"role": "user", "content": text}}
                     );
@@ -200,7 +201,7 @@ impl Claude {
                 }
                 ToClaude::Interrupt => {
                     {
-                        let mut turns = running.turns.lock().unwrap();
+                        let mut turns = running.turns.locked();
                         if turns.sent == turns.ended {
                             continue;
                         }
@@ -219,8 +220,8 @@ impl Claude {
                         eprintln!("lucyd: claude didn't take the control interrupt; using SIGINT");
                         control_interrupt = false;
                     }
-                    running.turns.lock().unwrap().retired = true;
-                    if let Process::Running(child) = &*run.process.lock().unwrap() {
+                    running.turns.locked().retired = true;
+                    if let Process::Running(child) = &*run.process.locked() {
                         // SAFETY: kill(2) on our own child's pid.
                         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
                     }
@@ -243,7 +244,7 @@ impl Claude {
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         run: &Arc<Run>,
     ) -> Option<Running> {
-        let resume = run.sessions.lock().unwrap().last().cloned();
+        let resume = run.sessions.locked().last().cloned();
         let resume = resume.as_deref();
         let Role {
             relay,
@@ -268,7 +269,7 @@ impl Claude {
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
         {
-            let mut process = run.process.lock().unwrap();
+            let mut process = run.process.locked();
             if matches!(*process, Process::Ended) {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -298,7 +299,7 @@ impl Claude {
                     continue;
                 }
                 let discarding = {
-                    let mut turns = reader_turns.lock().unwrap();
+                    let mut turns = reader_turns.locked();
                     let discarding = turns.ended < turns.discard_until;
                     if value["type"] == "result" {
                         turns.ended += 1;
@@ -319,8 +320,8 @@ impl Claude {
             }
             // claude stopped on its own, not because the Session ended or
             // it was interrupted with SIGINT.
-            let ended = matches!(*reader_run.process.lock().unwrap(), Process::Ended);
-            if !ended && !reader_turns.lock().unwrap().retired {
+            let ended = matches!(*reader_run.process.locked(), Process::Ended);
+            if !ended && !reader_turns.locked().retired {
                 let _ = reader_events.send(ThinkingEvent::Died);
             }
         });
@@ -381,7 +382,7 @@ impl Claude {
             cwd: cwd.clone(),
         });
         {
-            let mut live = self.live.lock().unwrap();
+            let mut live = self.live.locked();
             live.retain(|run| run.strong_count() > 0);
             live.push(Arc::downgrade(&run));
         }
@@ -441,7 +442,7 @@ impl Thinking for Claude {
     }
 
     fn shutdown(&self) {
-        let live = std::mem::take(&mut *self.live.lock().unwrap());
+        let live = std::mem::take(&mut *self.live.locked());
         for run in live.iter().filter_map(Weak::upgrade) {
             run.end();
         }
@@ -472,7 +473,7 @@ struct Run {
 
 impl Run {
     fn kept(&self, id: &str) {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions.locked();
         if !sessions.iter().any(|kept| kept == id) {
             sessions.push(id.to_owned());
         }
@@ -481,7 +482,7 @@ impl Run {
     /// Stops claude for good, then deletes the conversations it kept:
     /// `<id>.jsonl` and the `<id>` dir beside it. Nothing else of claude's.
     fn end(&self) {
-        let process = std::mem::replace(&mut *self.process.lock().unwrap(), Process::Ended);
+        let process = std::mem::replace(&mut *self.process.locked(), Process::Ended);
         if let Process::Running(mut child) = process {
             let _ = child.kill();
             let _ = child.wait();
@@ -490,7 +491,7 @@ impl Run {
             .config_dir
             .join("projects")
             .join(project_dir(&self.cwd));
-        for id in std::mem::take(&mut *self.sessions.lock().unwrap()) {
+        for id in std::mem::take(&mut *self.sessions.locked()) {
             let _ = std::fs::remove_file(project.join(format!("{id}.jsonl")));
             let _ = std::fs::remove_dir_all(project.join(&id));
         }

@@ -19,6 +19,7 @@ use crate::adapters::{Notification, NotificationKind};
 use crate::mcp;
 use crate::runner;
 use crate::session::{Answer, Expects, Question};
+use crate::sync::Locked;
 
 /// Why a Plugin couldn't be changed.
 #[derive(Debug)]
@@ -339,7 +340,7 @@ impl Host {
         change: impl FnOnce() -> Result<(), Refusal>,
     ) -> Result<(), Refusal> {
         {
-            let _editing = self.editing.lock().unwrap();
+            let _editing = self.editing.locked();
             change()?;
         }
         self.changed(name).await;
@@ -387,7 +388,7 @@ impl Host {
     /// Session's tools in line with it.
     async fn changed(&self, name: &str) {
         self.changes.publish();
-        let Some(session) = self.session.lock().unwrap().upgrade() else {
+        let Some(session) = self.session.locked().upgrade() else {
             return;
         };
         match self.usable(name).await {

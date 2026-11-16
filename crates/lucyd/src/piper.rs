@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{Speaker, SpeakerEvent, Tts};
 use crate::playback::{self, Pcm, Reference};
+use crate::sync::{Locked, POISONED};
 
 /// The default voice: its whole training chain is CC BY 4.0.
 pub const DEFAULT_VOICE: &str = "en_GB-cori-medium";
@@ -88,7 +89,7 @@ impl Piper {
 
     /// The voice's native sample rate, once the voice is ready.
     pub fn sample_rate(&self) -> Option<u32> {
-        match *self.shared.server.lock().unwrap() {
+        match *self.shared.server.locked() {
             Server::Ready { sample_rate, .. } => Some(sample_rate),
             _ => None,
         }
@@ -97,7 +98,7 @@ impl Piper {
     /// What Lucy actually played, at 16 kHz: the echo canceller's render
     /// reference. Can be taken once.
     pub fn take_reference(&self) -> Option<rtrb::Consumer<f32>> {
-        self.reference_out.lock().unwrap().take()
+        self.reference_out.locked().take()
     }
 
     /// Synthesises one sentence.
@@ -133,18 +134,18 @@ impl Tts for Piper {
 
 impl Shared {
     fn set(&self, server: Server) {
-        *self.server.lock().unwrap() = server;
+        *self.server.locked() = server;
         self.changed.notify_all();
     }
 
     /// Synthesises `text` in `voice`, fetched first if need be, or in the
     /// running voice.
     fn synthesise(&self, text: &str, voice: Option<&str>) -> Result<Pcm, String> {
-        let server = self.server.lock().unwrap();
+        let server = self.server.locked();
         let (server, _) = self
             .changed
             .wait_timeout_while(server, START_WAIT, |s| matches!(s, Server::Starting))
-            .unwrap();
+            .expect(POISONED);
         let port = match server.clone() {
             Server::Ready { port, .. } => port,
             Server::Starting => return Err("Piper is still starting".into()),
@@ -153,7 +154,7 @@ impl Shared {
         drop(server);
         let mut request = serde_json::json!({ "text": text });
         if let Some(voice) = voice {
-            let python = self.python.lock().unwrap().clone();
+            let python = self.python.locked().clone();
             let python = python.ok_or("Piper isn't installed")?;
             ensure_voice(&python, &self.voices_dir, voice)?;
             request["voice"] = voice.into();
@@ -182,7 +183,7 @@ fn supervise(shared: &Shared, python: Option<PathBuf>, voice: &str) {
         });
     let (python, model, sample_rate) = match prepared {
         Ok(prepared) => {
-            *shared.python.lock().unwrap() = Some(prepared.0.clone());
+            *shared.python.locked() = Some(prepared.0.clone());
             prepared
         }
         Err(reason) => {
@@ -555,7 +556,7 @@ mod tests {
         }
 
         // Only reachable on loopback.
-        let Server::Ready { port, .. } = piper.shared.server.lock().unwrap().clone() else {
+        let Server::Ready { port, .. } = piper.shared.server.locked().clone() else {
             panic!("not ready");
         };
         let lan_ip = std::net::UdpSocket::bind("0.0.0.0:0")
@@ -579,7 +580,7 @@ mod tests {
             .unwrap();
         assert!(killed.success());
         wait_for("a new server", || {
-            matches!(*piper.shared.server.lock().unwrap(),
+            matches!(*piper.shared.server.locked(),
                 Server::Ready { port: new, .. } if new != port)
         });
         assert!(piper.synthesise("Still here.").is_ok());

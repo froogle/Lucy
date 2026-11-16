@@ -1,4 +1,5 @@
 //! The tests setup runs inside lucyd: `test.mic_level` and `test.wake_word`.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

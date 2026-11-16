@@ -23,3 +23,6 @@ libc = "0.2"
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client"] }
 tempfile.workspace = true
+
+[lints]
+workspace = true

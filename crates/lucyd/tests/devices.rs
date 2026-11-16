@@ -1,5 +1,6 @@
 //! Pinned devices are re-resolved by name at each Session start, and a
 //! device lost mid-Session ends the Session.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

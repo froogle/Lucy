@@ -1,4 +1,5 @@
 //! The `superwhisper` STT Provider, against a fake `superwhisper` CLI.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

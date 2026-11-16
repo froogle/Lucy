@@ -157,7 +157,7 @@ fn ask(question: &str) -> InputRequiredResult {
             "properties": {"answer": {"type": "string"}},
             "required": ["answer"],
         }))
-        .unwrap(),
+        .expect("the literal is a valid form schema"),
     });
     let mut requests = InputRequests::new();
     requests.insert("answer".to_owned(), InputRequest::Elicitation(request));

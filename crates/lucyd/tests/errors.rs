@@ -1,4 +1,5 @@
 //! Failures are spoken plainly and never hang a Session.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

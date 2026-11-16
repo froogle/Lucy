@@ -1,4 +1,5 @@
 //! The systemd user units Lucy ships in `dist/systemd`.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 use std::path::Path;
 

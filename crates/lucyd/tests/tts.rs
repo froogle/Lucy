@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 mod harness;
 
 use harness::{next_state, Harness};

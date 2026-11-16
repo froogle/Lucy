@@ -7,6 +7,7 @@ use std::process::Command;
 
 use super::manifest::{Author, Manifest};
 use super::Host;
+use crate::sync::Locked;
 
 impl Host {
     /// Whether Lucy may write the Plugin `name`: it is new, or one of her
@@ -48,7 +49,7 @@ impl Host {
             ));
         }
         let folder = self.paths.user.join(name);
-        let _editing = self.editing.lock().unwrap();
+        let _editing = self.editing.locked();
         replace(&folder, staging, executable)
             .map_err(|e| format!("It couldn't be installed: {e}"))?;
         self.changes.publish();

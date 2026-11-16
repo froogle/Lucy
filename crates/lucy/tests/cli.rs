@@ -1,4 +1,5 @@
 //! Drives the real `lucy` binary against an in-process lucyd.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 use std::io::{BufRead, BufReader};
 use std::path::Path;

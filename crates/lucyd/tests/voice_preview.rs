@@ -1,5 +1,6 @@
 //! The Voice preview: `test.voice_preview` speaks a sentence outside any
 //! Session.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

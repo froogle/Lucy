@@ -1,6 +1,7 @@
 //! `lucy`: the list of sections, each opened as its own page, and the walk
 //! through them that first run and `lucy setup` take. Full-screen, pressed
 //! by scripted keys.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 

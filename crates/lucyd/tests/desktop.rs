@@ -1,4 +1,5 @@
 //! The desktop Built-in tools: `open_url`, `launch_app` and `system_status`.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

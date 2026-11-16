@@ -1,5 +1,6 @@
 //! Approval: Lucy asks the user's spoken yes to a new or changed Plugin, and
 //! hears it herself. Nothing else can grant one.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

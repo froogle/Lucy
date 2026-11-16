@@ -1,6 +1,7 @@
 //! The `codex` Thinking Provider, driven through the `Thinking` seam against
 //! a fake `codex app-server` that streams turns shaped like the app-server
 //! protocol (`fixtures/codex/`).
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

@@ -1,3 +1,4 @@
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 mod harness;
 
 use std::time::Duration;

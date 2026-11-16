@@ -2,6 +2,7 @@
 //! Omarchy, asking the user's yes before a force-quit, and left out quietly
 //! anywhere else. Hyprland is a fake socket served here, and Omarchy's
 //! commands are fakes on `PATH`; the Plugin's own tests cover its tools.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

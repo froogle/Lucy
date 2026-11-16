@@ -1,4 +1,5 @@
 //! The real Silero VAD, run on tract through `ort`.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod recording;
 

@@ -2,6 +2,7 @@
 //! offered to the model, and keeping its preferences across Sessions.
 //! Nothing here reaches the network; the Plugin's own tests cover briefings
 //! against recorded feeds.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

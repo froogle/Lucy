@@ -1,5 +1,6 @@
 //! Each section of `lucy`, opened from the list: what it writes to
 //! `config.toml`, when that applies, and the parts that need lucyd.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 

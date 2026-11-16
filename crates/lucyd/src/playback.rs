@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{Sound, Speaker, SpeakerEvent};
 use crate::audio;
+use crate::sync::Locked;
 
 /// Lucy's internal rate, which the echo canceller works at.
 pub const REFERENCE_RATE: u32 = 16_000;
@@ -335,11 +336,14 @@ impl Player {
             self.report_finished();
             return;
         };
-        while !self.backlog.is_empty() && !output.pcm.is_full() {
-            let _ = output.pcm.push(self.backlog.pop_front().unwrap());
+        while !output.pcm.is_full() {
+            let Some(sample) = self.backlog.pop_front() else {
+                break;
+            };
+            let _ = output.pcm.push(sample);
         }
         let played: Vec<f32> = std::iter::from_fn(|| output.played.pop().ok()).collect();
-        let mut reference = self.reference.lock().unwrap();
+        let mut reference = self.reference.locked();
         output.downsampler.push(&played, |samples| {
             for &s in samples {
                 let _ = reference.push(s);
@@ -356,11 +360,7 @@ impl Player {
     /// Reports, in order, every sentence that has finished playing.
     fn report_finished(&mut self) {
         let consumed = self.consumed.load(Ordering::Acquire);
-        while let Some((end, _)) = self.pending.front() {
-            if *end > consumed {
-                return;
-            }
-            let (_, failed) = self.pending.pop_front().unwrap();
+        while let Some((_, failed)) = self.pending.pop_front_if(|(end, _)| *end <= consumed) {
             let _ = self.events.send(match failed {
                 None => SpeakerEvent::Played,
                 Some(Failure { sentence, reason }) => SpeakerEvent::Failed { sentence, reason },
@@ -513,9 +513,11 @@ impl Downsampler {
         self.input.extend_from_slice(samples);
         let chunk = resampler.input_frames_next();
         while self.input.len() >= chunk {
-            let input = InterleavedSlice::new(&self.input[..chunk], 1, chunk).unwrap();
+            let input = InterleavedSlice::new(&self.input[..chunk], 1, chunk)
+                .expect("a mono slice of `chunk` samples holds `chunk` frames");
             let capacity = self.output.len();
-            let mut output = InterleavedSlice::new_mut(&mut self.output, 1, capacity).unwrap();
+            let mut output = InterleavedSlice::new_mut(&mut self.output, 1, capacity)
+                .expect("a mono buffer of `capacity` samples holds `capacity` frames");
             let (_, written) = resampler
                 .process_into_buffer(&input, &mut output, None)
                 .expect("buffers sized by the resampler");

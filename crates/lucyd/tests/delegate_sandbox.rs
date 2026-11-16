@@ -1,6 +1,7 @@
 //! An Authoring Delegate runs under Landlock: it can work in its staging
 //! dir, but can't read or write the user's files. Driven through the real
 //! `claude` adapter's Delegate spawn against a fake `claude` that tries.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

@@ -3,6 +3,7 @@
 //!
 //! The fake microphone feeds samples whose value the fake VAD reads as the
 //! speech probability, so a test scripts speech and silence as levels.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

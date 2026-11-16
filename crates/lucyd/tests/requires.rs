@@ -1,6 +1,7 @@
 //! A Manifest's `requires`: where a Plugin applies. A Plugin whose required
 //! env vars or commands lucyd's environment lacks is left out quietly, never
 //! called broken or mentioned, and listed as not for this desktop.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

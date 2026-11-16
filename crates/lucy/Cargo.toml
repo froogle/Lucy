@@ -20,3 +20,6 @@ serde_json.workspace = true
 lucyd.workspace = true
 rtrb = "0.4.1"
 tempfile.workspace = true
+
+[lints]
+workspace = true

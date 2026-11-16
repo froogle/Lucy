@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
+use crate::sync::Locked;
 
 /// How long app-server may take to answer a request.
 const REQUEST_WAIT: Duration = Duration::from_secs(30);
@@ -167,7 +168,7 @@ impl Codex {
             .connect(provider, Some(relay), workspace, inbox)
             .and_then(|(mut server, child)| {
                 {
-                    let mut process = process.lock().unwrap();
+                    let mut process = process.locked();
                     if matches!(*process, Process::Ended) {
                         let mut child = child;
                         let _ = child.kill();
@@ -329,7 +330,7 @@ impl SessionModel for CodexSessionModel {
 
 impl Drop for CodexSessionModel {
     fn drop(&mut self) {
-        let process = std::mem::replace(&mut *self.process.lock().unwrap(), Process::Ended);
+        let process = std::mem::replace(&mut *self.process.locked(), Process::Ended);
         if let Process::Running(mut child) = process {
             let _ = child.kill();
             let _ = child.wait();
@@ -581,7 +582,7 @@ impl Session<'_> {
                 Input::Closed => {
                     // app-server stopped on its own, not because the Session
                     // ended.
-                    if !matches!(*process.lock().unwrap(), Process::Ended) {
+                    if !matches!(*process.locked(), Process::Ended) {
                         let _ = self.events.send(ThinkingEvent::Died);
                     }
                     return;

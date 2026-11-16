@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::mcp::{error, tool};
 use crate::runner::{self, Command};
 use crate::session::{Answer, Expects, Question};
+use crate::sync::Locked;
 
 /// What the Input dialog asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +102,7 @@ impl Dialogs {
     /// Claims the `input` role, or `None` if another client holds it. The
     /// claim is sent the open dialog, if there is one.
     pub fn claim(&self) -> Option<InputClaim> {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         if inner.holder.is_some() {
             return None;
         }
@@ -119,7 +120,7 @@ impl Dialogs {
     /// Opens `dialog`, and whether a client holds the role to draw it. It
     /// stays open until answered or the returned `OpenDialog` is dropped.
     pub fn open(&self, dialog: Dialog) -> (OpenDialog, bool) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         inner.opened += 1;
         let request = InputOpen {
             id: inner.opened.to_string(),
@@ -140,7 +141,7 @@ impl Dialogs {
     }
 
     fn release(&self) {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.locked();
         inner.holder = None;
         // The user closed the box the holder drew.
         if let Some(open) = inner.open.take() {
@@ -159,7 +160,7 @@ pub struct InputClaim {
 impl InputClaim {
     /// The user typed `values` into the dialog `id`.
     pub fn answer(&self, id: &str, values: BTreeMap<String, String>) -> Result<(), Refusal> {
-        let mut inner = self.dialogs.inner.lock().unwrap();
+        let mut inner = self.dialogs.inner.locked();
         let open = inner.open.as_ref().filter(|open| open.request.id == id);
         let Some(open) = open else {
             return Err(Refusal::NoDialog);
@@ -175,7 +176,7 @@ impl InputClaim {
 
     /// The user closed the dialog `id` unanswered.
     pub fn cancel(&self, id: &str) -> Result<(), Refusal> {
-        let mut inner = self.dialogs.inner.lock().unwrap();
+        let mut inner = self.dialogs.inner.locked();
         let open = inner.take(id).ok_or(Refusal::NoDialog)?;
         let _ = open.reply.send(Typed::Cancelled);
         Ok(())
@@ -204,7 +205,7 @@ impl OpenDialog {
 
 impl Drop for OpenDialog {
     fn drop(&mut self) {
-        let mut inner = self.dialogs.inner.lock().unwrap();
+        let mut inner = self.dialogs.inner.locked();
         if inner.take(&self.id).is_some() {
             inner.send(Event::InputClose(InputClose {
                 id: self.id.clone(),

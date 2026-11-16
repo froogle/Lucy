@@ -2,6 +2,7 @@
 //! lucyd hands the goal to an advanced-tier Delegate. The Delegate here is
 //! scripted: the test writes the Plugin into its workspace and calls the
 //! Delegate tools through its real relay.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

@@ -7,6 +7,7 @@ use lucy_ipc::{State, Status};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::input::Dialogs;
+use crate::sync::Locked;
 
 #[derive(Clone)]
 pub struct StatusBus(Arc<Mutex<Inner>>);
@@ -30,7 +31,7 @@ impl StatusBus {
     }
 
     pub fn snapshot(&self) -> Status {
-        self.0.lock().unwrap().status.clone()
+        self.0.locked().status.clone()
     }
 
     /// The current status, and a queue of every change after it.
@@ -43,14 +44,14 @@ impl StatusBus {
     /// The current status; `deliver` is then called with every change, in
     /// order, until it returns false.
     pub fn subscribe_with(&self, deliver: impl Fn(Status) -> bool + Send + 'static) -> Status {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self.0.locked();
         inner.subscribers.push(Box::new(deliver));
         inner.status.clone()
     }
 
     /// Sets the status and, if it changed, tells every subscriber.
     pub fn publish(&self, status: Status) {
-        let mut inner = self.0.lock().unwrap();
+        let mut inner = self.0.locked();
         if inner.status == status {
             return;
         }
@@ -100,11 +101,11 @@ impl ChangeBus {
     /// A queue of every change after now.
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<()> {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.0.lock().unwrap().push(tx);
+        self.0.locked().push(tx);
         rx
     }
 
     pub fn publish(&self) {
-        self.0.lock().unwrap().retain(|tx| tx.send(()).is_ok());
+        self.0.locked().retain(|tx| tx.send(()).is_ok());
     }
 }

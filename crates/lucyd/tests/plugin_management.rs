@@ -1,5 +1,6 @@
 //! Plugin management: enable, disable, rollback and remove by voice through
 //! `manage_plugin`, and over IPC through `plugins.*` and `approvals.*`.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

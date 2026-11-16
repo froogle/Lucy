@@ -1,5 +1,6 @@
 //! `providers.status` and `provider.check` on the public socket, for the
 //! TUI's Provider status page.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

@@ -34,6 +34,7 @@ use crate::model_text::CALL_FINISHED;
 use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
+use crate::sync::{Locked, POISONED};
 pub use environment::Environment;
 pub use manage::{manage_plugin_tool, Refusal};
 use manifest::{Manifest, ToolEntry};
@@ -262,7 +263,7 @@ impl Host {
             barge_ins: tokio::sync::watch::Sender::new(0),
             finished: Mutex::default(),
         });
-        *self.session.lock().unwrap() = Arc::downgrade(&tools);
+        *self.session.locked() = Arc::downgrade(&tools);
         tools
     }
 
@@ -291,7 +292,7 @@ impl Host {
     /// Asks at the time `when` says.
     async fn ask_approval(&self, name: &str, when: When) -> Result<bool, String> {
         const NO_SESSION: &str = "no Session is open to ask in";
-        if !when.keeps() && self.session.lock().unwrap().upgrade().is_none() {
+        if !when.keeps() && self.session.locked().upgrade().is_none() {
             return Err(NO_SESSION.into());
         }
         let candidate = self.candidate(name).await?;
@@ -333,8 +334,7 @@ impl Host {
         let candidate = self.candidate(name).await?;
         self.record(&candidate)?;
         self.verdicts
-            .lock()
-            .unwrap()
+            .locked()
             .insert(candidate.plugin.hash.clone(), Ok(()));
         Ok(candidate.plugin)
     }
@@ -388,7 +388,7 @@ impl Host {
     /// what was approved.
     fn record(&self, candidate: &Candidate) -> Result<(), String> {
         let plugin = &candidate.plugin;
-        let _editing = self.editing.lock().unwrap();
+        let _editing = self.editing.locked();
         self.keep_version(
             &plugin.name,
             &plugin.hash,
@@ -400,7 +400,12 @@ impl Host {
         let schemas = plugin
             .schemas
             .iter()
-            .map(|(tool, schema)| (tool.clone(), serde_json::to_string(&**schema).unwrap()))
+            .map(|(tool, schema)| {
+                (
+                    tool.clone(),
+                    serde_json::to_string(&**schema).expect("a JSON object always serialises"),
+                )
+            })
             .collect();
         let kept = approvals.revoked.remove(&plugin.name);
         let previous = approvals
@@ -455,7 +460,7 @@ impl Host {
     /// that the user hasn't been told about as it is now, remembering that
     /// they now have.
     fn mention_once(&self, awaiting: Vec<(String, Contents)>) -> Vec<String> {
-        let _editing = self.editing.lock().unwrap();
+        let _editing = self.editing.locked();
         let mut prefs = self.prefs();
         let mut lines = Vec::new();
         for (name, contents) in awaiting {
@@ -479,11 +484,8 @@ impl Host {
 
     /// Offers the newly approved `plugin` in the open Session, if any.
     async fn offer(&self, plugin: Usable) {
-        let session = self.session.lock().unwrap().upgrade();
-        self.verdicts
-            .lock()
-            .unwrap()
-            .insert(plugin.hash.clone(), Ok(()));
+        let session = self.session.locked().upgrade();
+        self.verdicts.locked().insert(plugin.hash.clone(), Ok(()));
         if let Some(session) = session {
             session.replace(plugin).await;
         }
@@ -562,8 +564,7 @@ impl Host {
         }
         .await;
         self.verdicts
-            .lock()
-            .unwrap()
+            .locked()
             .insert(plugin.hash.clone(), verdict.clone());
         verdict
     }
@@ -581,14 +582,11 @@ impl Host {
     }
 
     fn verdict(&self, hash: &str) -> Option<Result<(), String>> {
-        self.verdicts.lock().unwrap().get(hash).cloned()
+        self.verdicts.locked().get(hash).cloned()
     }
 
     fn mark_broken(&self, hash: &str, reason: String) {
-        self.verdicts
-            .lock()
-            .unwrap()
-            .insert(hash.to_owned(), Err(reason));
+        self.verdicts.locked().insert(hash.to_owned(), Err(reason));
     }
 
     /// The approved `plugin`'s declared credentials, as env vars, or what
@@ -780,7 +778,7 @@ impl SessionTools {
     /// What confirmed calls returned since the model was cut off, one line
     /// each, for the next Turn.
     pub fn take_finished(&self) -> Vec<String> {
-        std::mem::take(&mut *self.finished.lock().unwrap())
+        std::mem::take(&mut *self.finished.locked())
     }
 
     /// For the model's instructions: which Plugins the scan left out and
@@ -809,7 +807,7 @@ impl SessionTools {
 
     /// Tells `peer` with `tools/list_changed` whenever the tools change.
     pub fn watch(&self, peer: Peer<RoleServer>) {
-        self.watchers.lock().unwrap().push(peer);
+        self.watchers.locked().push(peer);
     }
 
     /// Offers `plugin` in place of any Plugin of the same name, stopping
@@ -817,7 +815,7 @@ impl SessionTools {
     async fn replace(&self, plugin: Usable) {
         let name = plugin.name.clone();
         {
-            let mut plugins = self.plugins.write().unwrap();
+            let mut plugins = self.plugins.write().expect(POISONED);
             plugins.retain(|p| p.name != name);
             plugins.push(Arc::new(plugin));
         }
@@ -830,7 +828,7 @@ impl SessionTools {
     /// Tells the watchers with `tools/list_changed`.
     async fn tools_changed(&self) {
         let watchers: Vec<_> = {
-            let mut watchers = self.watchers.lock().unwrap();
+            let mut watchers = self.watchers.locked();
             watchers.retain(|peer| !peer.is_transport_closed());
             watchers.clone()
         };
@@ -842,7 +840,10 @@ impl SessionTools {
     /// Stops offering the Plugin `name`, stopping it, and tells the
     /// watchers.
     async fn remove(&self, name: &str) {
-        self.plugins.write().unwrap().retain(|p| p.name != name);
+        self.plugins
+            .write()
+            .expect(POISONED)
+            .retain(|p| p.name != name);
         if let Some(client) = self.running.lock().await.remove(name) {
             let _ = client.cancel().await;
         }
@@ -934,7 +935,7 @@ impl SessionTools {
             let outcome = outcome.await;
             if barge_ins.has_changed().unwrap_or(false) {
                 if let Ok(result) = &outcome {
-                    self.finished.lock().unwrap().push(format!(
+                    self.finished.locked().push(format!(
                         "{CALL_FINISHED} {name} returned: {}]",
                         mcp::result_text(result)
                     ));
@@ -989,7 +990,10 @@ impl SessionTools {
                     }
                 }
             }
-            answers.insert(key, serde_json::to_value(answer).unwrap());
+            answers.insert(
+                key,
+                serde_json::to_value(answer).expect("an ElicitResult always serialises"),
+            );
         }
         answers
     }
@@ -1036,7 +1040,7 @@ impl SessionTools {
     fn working(&self) -> Vec<Arc<Usable>> {
         self.plugins
             .read()
-            .unwrap()
+            .expect(POISONED)
             .iter()
             .filter(|p| !matches!(self.host.verdict(&p.hash), Some(Err(_))))
             .cloned()

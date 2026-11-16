@@ -1,6 +1,7 @@
 //! Barge-in: the user cuts Lucy off, by the Wake word or by talking. She
 //! stops speaking, stops the model if it is still going, listens, and tells
 //! the model what the user heard.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

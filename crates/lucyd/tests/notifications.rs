@@ -1,5 +1,6 @@
 //! With no client holding the `indicator` role, lucyd shows Session start,
 //! Confirming and end as desktop notifications instead.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

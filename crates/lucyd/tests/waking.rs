@@ -1,5 +1,6 @@
 //! The Wake word opens a Session hands-free: a start sound, Listening, and
 //! the speech straight after it kept. A false wake ends after 8 s.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

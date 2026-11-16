@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 use crate::adapters::{Notification, NotificationAction, NotificationKind, Notifier};
+use crate::sync::Locked;
 
 pub struct NotifySend {
     program: PathBuf,
@@ -38,7 +39,7 @@ impl Notifier for NotifySend {
         // `--print-id` prints the notification's id first.
         command.arg("--app-name=Lucy").arg("--print-id");
         if notification.kind == NotificationKind::Status {
-            if let Some(id) = self.with_action.lock().unwrap().take() {
+            if let Some(id) = self.with_action.locked().take() {
                 command.arg(format!("--replace-id={id}"));
             }
         }
@@ -66,7 +67,7 @@ impl Notifier for NotifySend {
         std::thread::spawn(move || {
             let mut lines = BufReader::new(stdout).lines().map_while(Result::ok);
             if let Some(id) = lines.next().filter(|_| has_action) {
-                *with_action.lock().unwrap() = Some(id.trim().to_owned());
+                *with_action.locked() = Some(id.trim().to_owned());
             }
             for line in lines {
                 if line.trim() == END_KEY {

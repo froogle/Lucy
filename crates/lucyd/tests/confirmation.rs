@@ -1,5 +1,6 @@
 //! Confirmation: a Plugin tool with `confirm = true` waits in Confirming
 //! while Lucy asks, and only a yes she hears herself lets it run.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

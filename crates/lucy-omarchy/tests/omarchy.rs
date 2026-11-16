@@ -1,5 +1,6 @@
 //! The Omarchy Plugin, driven through its MCP interface against a fake
 //! Hyprland socket and fake `omarchy-*` commands.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 

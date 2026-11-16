@@ -2,6 +2,7 @@
 //! credentials that Plugin declares, each typed hidden. The values go to
 //! the Secret Service (here a fake), never to lucyd, the screen or the
 //! transcript.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 

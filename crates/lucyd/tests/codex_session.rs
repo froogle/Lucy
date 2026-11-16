@@ -1,6 +1,7 @@
 //! Sessions on a `codex` Provider, through the harness with the real `codex`
 //! adapter driving a fake `codex app-server` (`fixtures/codex/fake-codex`).
 //! Lucy uses Codex only on a ChatGPT login unless the Provider opts out.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 

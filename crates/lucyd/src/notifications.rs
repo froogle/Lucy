@@ -11,6 +11,7 @@ use crate::adapters::{Notification, NotificationAction, NotificationKind, Notifi
 use crate::audio::Direction;
 use crate::runner::Command;
 use crate::status::StatusBus;
+use crate::sync::Locked;
 
 /// A status change or a change in how many clients hold the role, queued in
 /// the order they happened.
@@ -34,7 +35,7 @@ impl Indicators {
     }
 
     fn add(&self, delta: isize) {
-        let mut count = self.count.lock().unwrap();
+        let mut count = self.count.locked();
         *count = count.checked_add_signed(delta).expect("claims balance");
         let _ = self.changes.send(Change::Indicators(*count));
     }

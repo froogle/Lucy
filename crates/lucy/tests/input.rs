@@ -1,6 +1,7 @@
 //! `lucy input`: the Input dialog as a page, which lucyd opens in a terminal
 //! while no other client holds the `input` role. It claims the role for one
 //! dialog, shows the question and sends back what is typed.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;
 

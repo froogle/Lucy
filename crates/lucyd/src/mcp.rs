@@ -26,6 +26,7 @@ use crate::input;
 use crate::persona::Persona;
 use crate::plugins::{self, SessionTools};
 use crate::runner::Command;
+use crate::sync::Locked;
 
 /// Who a token was issued to, and what it lets them reach. Each sees a
 /// different set of tools.
@@ -68,7 +69,7 @@ impl Relays {
     /// `Token` is dropped.
     pub fn issue(&self, caller: Caller) -> (Relay, Token) {
         let value = random_token();
-        self.tokens.0.lock().unwrap().insert(value.clone(), caller);
+        self.tokens.0.locked().insert(value.clone(), caller);
         let relay = Relay {
             program: self.program.clone(),
             args: vec![
@@ -92,7 +93,7 @@ struct Tokens(Arc<Mutex<HashMap<String, Caller>>>);
 
 impl Tokens {
     fn grant(&self, token: &str) -> Option<Caller> {
-        self.0.lock().unwrap().get(token).cloned()
+        self.0.locked().get(token).cloned()
     }
 }
 
@@ -104,7 +105,7 @@ pub struct Token {
 
 impl Drop for Token {
     fn drop(&mut self) {
-        self.tokens.0.lock().unwrap().remove(&self.value);
+        self.tokens.0.locked().remove(&self.value);
     }
 }
 

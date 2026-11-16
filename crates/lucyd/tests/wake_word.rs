@@ -1,6 +1,7 @@
 //! The real wake-word engine, LiveKit WakeWord v2 on tract, with the bundled
 //! "Hey Lucy" model. `positive.wav` is the maintainer saying "Hey Lucy";
 //! `negative.wav` comes from livekit-wakeword's own fixtures (Apache-2.0).
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 use std::path::{Path, PathBuf};
 

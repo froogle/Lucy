@@ -26,6 +26,7 @@ mod sentences;
 mod session;
 mod status;
 pub mod superwhisper;
+mod sync;
 mod system_status;
 mod wake;
 pub mod whisper;

@@ -1,5 +1,6 @@
 //! Plugin credentials: declared by name in the Manifest, kept in the Secret
 //! Service, and handed to the approved Plugin as env vars when it starts.
+#![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
