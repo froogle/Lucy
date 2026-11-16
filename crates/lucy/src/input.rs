@@ -1,10 +1,15 @@
 use std::collections::BTreeMap;
-use std::sync::mpsc::{self, TryRecvError};
+use std::io::{self, BufRead, Write};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-use lucy_ipc::{error_code, Client, Event, Field, FieldKind, InputOpen, Role};
+use lucy_ipc::{
+    error_code, Client, Event, Field, FieldKind, InputAnswer, InputCancel, InputOpen, Role,
+};
 use ratatui::backend::Backend;
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::ui::{Stop, Ui};
 use crate::Env;
@@ -74,6 +79,105 @@ impl Watch {
 }
 
 const WATCH_EVERY: Duration = Duration::from_millis(50);
+
+/// Holds the `input` role for a client that draws the box.
+///
+/// It prints each `input.open` and `input.close` lucyd sends to `out` as it
+/// came, one JSON line each, and sends each `input.answer` or `input.cancel`
+/// line read from `replies`. While lucyd is away or another client holds the
+/// role, it tries again.
+///
+/// # Errors
+///
+/// When `out` can't be written. It returns `Ok` once `replies` ends.
+pub fn hold(
+    env: &Env,
+    replies: impl BufRead + Send + 'static,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let (send, lines) = mpsc::channel();
+    thread::spawn(move || {
+        for line in replies.lines().map_while(Result::ok) {
+            if send.send(line).is_err() {
+                return;
+            }
+        }
+    });
+    loop {
+        if let Ok(mut client) = env.connect_as(Some(Role::Input)) {
+            if let Held::RepliesEnded = serve(&mut client, &lines, out)? {
+                return Ok(());
+            }
+        }
+        match lines.recv_timeout(HOLD_AGAIN) {
+            Ok(_) => eprintln!("lucy: no box is open, so that reply went nowhere"),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Ok(()),
+        }
+    }
+}
+
+const HOLD_AGAIN: Duration = Duration::from_secs(1);
+
+enum Held {
+    LucydGone,
+    RepliesEnded,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "method", content = "params")]
+enum Reply {
+    #[serde(rename = "input.answer")]
+    Answer(InputAnswer),
+    #[serde(rename = "input.cancel")]
+    Cancel(InputCancel),
+}
+
+fn serve(client: &mut Client, lines: &Receiver<String>, out: &mut impl Write) -> io::Result<Held> {
+    loop {
+        match client.next_event_line_within(WATCH_EVERY) {
+            Ok(Some(line)) if is_input_event(&line) => {
+                writeln!(out, "{line}")?;
+                out.flush()?;
+            }
+            Ok(_) => {}
+            Err(_) => return Ok(Held::LucydGone),
+        }
+        loop {
+            match lines.try_recv() {
+                Ok(line) => {
+                    if let Err(lucy_ipc::Error::Io(_) | lucy_ipc::Error::Closed) =
+                        reply(client, &line)
+                    {
+                        return Ok(Held::LucydGone);
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return Ok(Held::RepliesEnded),
+            }
+        }
+    }
+}
+
+fn is_input_event(line: &str) -> bool {
+    let event: Value = serde_json::from_str(line).unwrap_or_default();
+    matches!(event["method"].as_str(), Some("input.open" | "input.close"))
+}
+
+fn reply(client: &mut Client, line: &str) -> Result<(), lucy_ipc::Error> {
+    let sent = match serde_json::from_str(line) {
+        Ok(Reply::Answer(answer)) => client.answer_input(&answer.id, answer.values),
+        Ok(Reply::Cancel(cancel)) => client.cancel_input(&cancel.id),
+        Err(_) => {
+            eprintln!("lucy: expected an input.answer or input.cancel line");
+            return Ok(());
+        }
+    };
+    if let Err(e) = &sent {
+        eprintln!("lucy: lucyd didn't take that reply: {e}");
+    }
+    sent
+}
 
 fn next_open(client: &mut Client) -> Result<InputOpen, lucy_ipc::Error> {
     loop {

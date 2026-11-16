@@ -20,5 +20,16 @@
   "restart": "Restart",
   "notSaved": "Not saved",
   "notSavedBecause": "Not saved: %1",
-  "more": "More settings…"
+  "more": "More settings…",
+  "input.title": "Lucy asks",
+  "input.text": "Your answer",
+  "input.url": "URL",
+  "input.number": "Number",
+  "input.choice": "Pick one",
+  "input.secret": "Secret, hidden as you type",
+  "input.empty": "Fill in every box, or Cancel.",
+  "input.pick": "Pick one of the choices, or Cancel.",
+  "input.notNumber": "%1 isn't a number.",
+  "input.send": "Send",
+  "input.cancel": "Cancel"
 }

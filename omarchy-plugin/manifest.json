@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "Lucy",
   "license": "MIT OR Apache-2.0",
-  "description": "Turn Lucy on or off, end a Session, and change her models and audio devices from the Omarchy bar.",
+  "description": "Turn Lucy on or off, end a Session, and change her models and audio devices from the Omarchy bar, and type what she asks you for.",
   "kinds": [
     "bar-widget"
   ],
