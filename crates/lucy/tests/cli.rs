@@ -24,6 +24,7 @@ fn start_lucyd(runtime_dir: &Path) -> lucyd::Daemon {
             shipped: runtime_dir.join("shipped"),
             state: runtime_dir.join("state"),
         },
+        plugin_env: lucyd::plugins::Environment::from_process(),
     })
     .unwrap()
 }

@@ -262,6 +262,8 @@ pub enum PluginStatus {
     AwaitingApproval,
     /// It can't be used; `problem` says why.
     Broken,
+    /// Its Manifest's `requires` isn't met here, so it is left out quietly.
+    NotForThisDesktop,
 }
 
 /// Params of `plugins.set_enabled`.

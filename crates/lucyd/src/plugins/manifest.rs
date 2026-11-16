@@ -18,6 +18,8 @@ pub struct Manifest {
     pub tools: Vec<ToolEntry>,
     #[serde(default)]
     pub access: Access,
+    #[serde(default)]
+    pub requires: Requires,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +55,17 @@ pub struct Access {
     /// Names only.
     #[serde(default)]
     pub credentials: Vec<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+}
+
+/// Where a Plugin applies: lucyd's environment must set each of `env` and
+/// find each of `commands` on `PATH`. The Plugin is given the `env` vars.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Requires {
+    #[serde(default)]
+    pub env: Vec<String>,
     #[serde(default)]
     pub commands: Vec<String>,
 }
@@ -106,6 +119,16 @@ impl Manifest {
         for credential in &self.access.credentials {
             credential_name(credential)?;
         }
+        for var in &self.requires.env {
+            required_var(var)?;
+        }
+        for command in &self.requires.commands {
+            if command.is_empty() || command.contains('/') {
+                return Err(format!(
+                    "its required command {command:?} must be a bare name, found on PATH"
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -113,25 +136,41 @@ impl Manifest {
 /// Checks that `name` can be passed as an env var without replacing one
 /// Lucy sets for every Plugin, or the dynamic loader reads.
 fn credential_name(name: &str) -> Result<(), String> {
-    let is_env_name = name.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
-    if !is_env_name {
+    if !is_env_name(name) {
         return Err(format!(
             "its credential {name:?} must be an env var name: uppercase letters, digits and \
              underscores, not starting with a digit"
         ));
     }
-    let lucys = ["PATH", "HOME", "LANG"].contains(&name)
-        || name.starts_with("LUCY_")
-        || name.starts_with("LD_");
-    if lucys {
+    if ["PATH", "HOME", "LANG"].contains(&name) || is_lucys(name) {
         return Err(format!(
             "its credential {name:?} names an env var Lucy or the system sets"
         ));
     }
     Ok(())
+}
+
+/// Checks that `name` can be passed on from lucyd's environment without
+/// replacing one Lucy sets, or one the dynamic loader reads.
+fn required_var(name: &str) -> Result<(), String> {
+    if !is_env_name(name) || is_lucys(name) {
+        return Err(format!(
+            "its required env var {name:?} must be an env var name that Lucy doesn't set and \
+             the loader doesn't read"
+        ));
+    }
+    Ok(())
+}
+
+fn is_env_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_uppercase() || c == '_')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn is_lucys(name: &str) -> bool {
+    name.starts_with("LUCY_") || name.starts_with("LD_")
 }
 
 fn one_line(what: &str, text: &str) -> Result<(), String> {

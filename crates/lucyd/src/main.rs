@@ -76,6 +76,7 @@ fn main() -> ExitCode {
         lucy_program,
         adapters,
         plugin_paths: lucyd::plugins::Paths::from_env(),
+        plugin_env: lucyd::plugins::Environment::from_process(),
     }) {
         Ok(daemon) => daemon,
         Err(e) => {

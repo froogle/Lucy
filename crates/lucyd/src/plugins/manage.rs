@@ -159,6 +159,9 @@ impl Host {
                         PluginStatus::AwaitingApproval,
                         None,
                     ),
+                    Ok(Scanned::NotForThisDesktop(manifest)) => {
+                        (Some(manifest), PluginStatus::NotForThisDesktop, None)
+                    }
                     Err(reason) => (None, PluginStatus::Broken, Some(reason)),
                 };
                 PluginInfo {
