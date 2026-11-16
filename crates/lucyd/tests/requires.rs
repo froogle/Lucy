@@ -106,7 +106,7 @@ fn an_unmet_shipped_plugin_is_not_approved_at_scan() {
 
 #[test]
 fn a_met_plugin_is_offered_and_gets_the_env_vars_it_requires() {
-    let lucyd = Harness::with_env(&[("FIXTURE_DESK", "oak")]);
+    let lucyd = Harness::with_env(&[("FIXTURE_DESK", "oak"), ("PATH", "/usr/bin:/bin")]);
     lucyd.install_plugin(
         "desk",
         &manifest(r#"{ env = ["FIXTURE_DESK"], commands = ["sh"] }"#),
@@ -129,7 +129,7 @@ fn a_met_plugin_is_offered_and_gets_the_env_vars_it_requires() {
 
 #[test]
 fn changing_requires_needs_a_fresh_approval() {
-    let lucyd = Harness::with_env(&[("FIXTURE_DESK", "oak")]);
+    let lucyd = Harness::with_env(&[("FIXTURE_DESK", "oak"), ("PATH", "/usr/bin:/bin")]);
     let folder = lucyd.install_plugin("desk", &manifest(r#"{ env = ["FIXTURE_DESK"] }"#));
     lucyd.approve("desk");
 

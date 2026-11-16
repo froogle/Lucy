@@ -14,10 +14,13 @@ impl Environment {
         Environment(std::env::vars_os().collect())
     }
 
-    /// This environment with `name` set to `value`.
-    pub fn with(mut self, name: &str, value: &str) -> Environment {
-        self.0.insert(name.into(), value.into());
-        self
+    /// Just the env vars `vars`, as `(name, value)`.
+    pub fn new<'a>(vars: impl IntoIterator<Item = (&'a str, &'a str)>) -> Environment {
+        Environment(
+            vars.into_iter()
+                .map(|(name, value)| (name.into(), value.into()))
+                .collect(),
+        )
     }
 
     pub(super) fn var(&self, name: &str) -> Option<&OsStr> {

@@ -79,14 +79,10 @@ impl Harness {
         Harness::launch(None, Some(PERSONA), None, None, None)
     }
 
-    /// Starts lucyd with `vars` added to the environment its Plugins are
+    /// Starts lucyd with only `vars` in the environment its Plugins are
     /// checked against and start with.
     pub fn with_env(vars: &[(&str, &str)]) -> Harness {
-        let env = vars
-            .iter()
-            .fold(Environment::from_process(), |env, (name, value)| {
-                env.with(name, value)
-            });
+        let env = Environment::new(vars.iter().copied());
         Harness::launch_in(env, None, Some(PERSONA), None, None, None)
     }
 

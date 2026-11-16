@@ -1,0 +1,50 @@
+name = "omarchy"
+version = "0.1.0"
+author = "human"
+summary = "Manages windows, workspaces and layouts on the Omarchy desktop"
+command = ["./lucy-omarchy"]
+# Only on Omarchy: Hyprland running, with Omarchy's layout commands.
+requires = { env = ["HYPRLAND_INSTANCE_SIGNATURE", "XDG_RUNTIME_DIR"], commands = [
+    "omarchy-hyprland-workspace-layout-current",
+    "omarchy-hyprland-workspace-layout-toggle",
+] }
+
+[[tools]]
+name = "list_windows"
+handles = "which windows are open and where"
+examples = ["what windows have I got open?", "where's Firefox?"]
+
+[[tools]]
+name = "window"
+handles = "focusing, closing, moving, full-screening, floating or pinning a window"
+examples = ["move Firefox to workspace 3", "make this full screen", "close the terminal"]
+
+[[tools]]
+name = "kill_window"
+handles = "force-quitting a window's app"
+examples = ["force quit Slack", "kill that window"]
+confirm = true
+confirm_prompt = "Shall I force-quit that window ({target})? Anything unsaved in it will be lost."
+
+[[tools]]
+name = "workspace"
+handles = "switching to or renaming a workspace"
+examples = ["go to workspace 2", "call this workspace mail"]
+
+[[tools]]
+name = "layout"
+handles = "changing a workspace's layout to tiling, scrolling or floating"
+examples = ["switch to tiling", "make this workspace scrolling"]
+
+[access]
+# $XDG_RUNTIME_DIR/hypr holds Hyprland's IPC socket. The sandbox doesn't
+# expand $XDG_RUNTIME_DIR, and Landlock in v0.1 doesn't confine connecting
+# to a socket, so that path is declared, not enforced. Omarchy's layout
+# toggle saves each workspace's layout under ~/.local/state/omarchy and
+# reads its language from ~/.config/omarchy.
+write = ["$XDG_RUNTIME_DIR/hypr", "~/.local/state/omarchy"]
+read = ["~/.config/omarchy"]
+commands = [
+    "omarchy-hyprland-workspace-layout-current",
+    "omarchy-hyprland-workspace-layout-toggle",
+]
