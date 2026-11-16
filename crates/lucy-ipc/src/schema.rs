@@ -1,5 +1,3 @@
-//! The JSON Schema of the public IPC, generated from the types.
-
 use schemars::generate::SchemaSettings;
 use serde_json::{json, Value};
 

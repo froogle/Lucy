@@ -116,7 +116,7 @@ pub struct Status {
     pub state: State,
     /// The current Session, if one is open.
     pub session_id: Option<String>,
-    /// An Authoring build is running, with or without a Session: the
+    /// An Authoring build is running, with or without a Session. The
     /// Indicator adds a "building" mark.
     #[serde(default)]
     pub building: bool,
@@ -148,8 +148,8 @@ pub struct SessionStarted {
     pub session_id: String,
 }
 
-/// Result of `providers.status`: each Thinking Provider in `config.toml`,
-/// with health checks that make no model call.
+/// Result of `providers.status`: each Thinking Provider in `config.toml`.
+/// Its health checks make no model call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProvidersStatus {
     /// Sorted by name.
@@ -194,7 +194,7 @@ pub struct ProviderCheck {
 }
 
 /// Result of `provider.check`: a real "Reply OK" round trip through the
-/// Provider, with the subscription guard's checks on it.
+/// Provider. The subscription guard's checks run on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProviderCheckResult {
     /// What's wrong and how to fix it, or `None` if the check passed.
@@ -269,8 +269,8 @@ pub struct InputAnswer {
     pub values: BTreeMap<String, String>,
 }
 
-/// Params of `input.cancel`, from the `input` holder only: the user closed
-/// the Input dialog without answering.
+/// Params of `input.cancel`: the user closed the Input dialog unanswered.
+/// Only the `input` holder sends it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InputCancel {
     pub id: String,
@@ -286,7 +286,7 @@ pub struct LevelEvent {
     pub rms: f32,
 }
 
-/// Result of `plugins.list`: every installed Plugin, a user one overriding
+/// Result of `plugins.list`: every installed Plugin. A user Plugin overrides
 /// a shipped one of the same name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PluginsList {
@@ -369,16 +369,16 @@ pub struct RevokeApproval {
     pub plugin: String,
 }
 
-/// Params of `test.voice_preview`: Lucy speaks `text` in her running voice
-/// on the configured speaker, outside any Session, between the Start and
-/// Closing sounds. It replies once playback has finished. Refused while a
+/// Params of `test.voice_preview`: Lucy speaks `text` outside any Session.
+/// She uses her running voice on the configured speaker, between the Start
+/// and Closing sounds. It replies once playback has finished. Refused while a
 /// Session is open or another Voice preview plays; a Session that opens
 /// cuts it short.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VoicePreview {
     /// The sentence to say. Not empty.
     pub text: String,
-    /// A Piper voice to say it in, such as `en_GB-cori-medium`, in place of
+    /// A Piper voice to say it in, such as `en_GB-cori-medium`. It replaces
     /// the running one. lucyd downloads it first if it must.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
@@ -392,14 +392,13 @@ pub struct MicLevel {
     /// The loudest RMS the microphone heard since the last `test.mic_level`,
     /// from 0.0 (silent) to 1.0.
     pub rms: f32,
-    /// `rms` is so low that even Lucy's +24 dB boost of a quiet microphone
-    /// leaves it under the level she wants, so Barge-in by speech may not
-    /// work. Silence is quiet too.
+    /// `rms` is under the level Lucy wants, even after her +24 dB quiet-mic
+    /// boost. Barge-in by speech may not work then. Silence is quiet too.
     pub quiet: bool,
 }
 
-/// Params of `test.wake_word`: lucyd listens for the Wake word, outside any
-/// Session, and replies once it is heard or `timeout_secs` have passed.
+/// Params of `test.wake_word`: lucyd listens for the Wake word outside any
+/// Session. It replies once it is heard or `timeout_secs` have passed.
 /// Hearing it opens no Session. Refused while a Session is open.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WakeWordTest {

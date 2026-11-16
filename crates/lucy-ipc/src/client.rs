@@ -1,5 +1,3 @@
-//! A small blocking client for lucyd's public socket.
-
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
@@ -21,8 +19,7 @@ pub struct Client {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: u64,
-    /// Notifications that arrived while waiting for a response.
-    pending: VecDeque<String>,
+    early_notifications: VecDeque<String>,
 }
 
 impl Client {
@@ -36,7 +33,7 @@ impl Client {
             reader: BufReader::new(stream.try_clone()?),
             writer: stream,
             next_id: 1,
-            pending: VecDeque::new(),
+            early_notifications: VecDeque::new(),
         };
         let hello = Hello {
             protocol: PROTOCOL,
@@ -123,8 +120,8 @@ impl Client {
         self.voice_preview_in(text, None)
     }
 
-    /// Has Lucy say `text` in the Piper voice `voice` (or her running voice
-    /// if `None`), and waits until she has.
+    /// Has Lucy say `text` in the Piper voice `voice`, and waits until she has.
+    /// `None` is her running voice.
     pub fn voice_preview_in(&mut self, text: &str, voice: Option<&str>) -> Result<(), Error> {
         let params = VoicePreview {
             text: text.to_owned(),
@@ -168,7 +165,7 @@ impl Client {
 
     /// The next event, exactly as lucyd sent it (one NDJSON line, no newline).
     pub fn next_event_line(&mut self) -> Result<String, Error> {
-        match self.pending.pop_front() {
+        match self.early_notifications.pop_front() {
             Some(line) => Ok(line),
             None => self.read_line(),
         }
@@ -195,7 +192,7 @@ impl Client {
             let message: Value = serde_json::from_str(&line)
                 .map_err(|e| Error::Protocol(format!("bad message: {e}")))?;
             if message.get("id") != Some(&json!(id)) {
-                self.pending.push_back(line);
+                self.early_notifications.push_back(line);
                 continue;
             }
             if let Some(error) = message.get("error") {

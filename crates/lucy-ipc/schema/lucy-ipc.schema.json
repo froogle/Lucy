@@ -161,7 +161,7 @@
       "type": "object"
     },
     "InputCancel": {
-      "description": "Params of `input.cancel`, from the `input` holder only: the user closed\nthe Input dialog without answering.",
+      "description": "Params of `input.cancel`: the user closed the Input dialog unanswered.\nOnly the `input` holder sends it.",
       "properties": {
         "id": {
           "type": "string"
@@ -227,7 +227,7 @@
       "description": "Result of `test.mic_level`. lucyd first switches to the microphone\n`config.toml` names now. Refused while a Session is open or another\nsetup test runs.",
       "properties": {
         "quiet": {
-          "description": "`rms` is so low that even Lucy's +24 dB boost of a quiet microphone\nleaves it under the level she wants, so Barge-in by speech may not\nwork. Silence is quiet too.",
+          "description": "`rms` is under the level Lucy wants, even after her +24 dB quiet-mic\nboost. Barge-in by speech may not work then. Silence is quiet too.",
           "type": "boolean"
         },
         "rms": {
@@ -343,7 +343,7 @@
       "type": "object"
     },
     "PluginsList": {
-      "description": "Result of `plugins.list`: every installed Plugin, a user one overriding\na shipped one of the same name.",
+      "description": "Result of `plugins.list`: every installed Plugin. A user Plugin overrides\na shipped one of the same name.",
       "properties": {
         "plugins": {
           "description": "Sorted by name.",
@@ -372,7 +372,7 @@
       "type": "object"
     },
     "ProviderCheckResult": {
-      "description": "Result of `provider.check`: a real \"Reply OK\" round trip through the\nProvider, with the subscription guard's checks on it.",
+      "description": "Result of `provider.check`: a real \"Reply OK\" round trip through the\nProvider. The subscription guard's checks run on it.",
       "properties": {
         "problem": {
           "description": "What's wrong and how to fix it, or `None` if the check passed.",
@@ -432,7 +432,7 @@
       "type": "object"
     },
     "ProvidersStatus": {
-      "description": "Result of `providers.status`: each Thinking Provider in `config.toml`,\nwith health checks that make no model call.",
+      "description": "Result of `providers.status`: each Thinking Provider in `config.toml`.\nIts health checks make no model call.",
       "properties": {
         "providers": {
           "description": "Sorted by name.",
@@ -547,7 +547,7 @@
       "properties": {
         "building": {
           "default": false,
-          "description": "An Authoring build is running, with or without a Session: the\nIndicator adds a \"building\" mark.",
+          "description": "An Authoring build is running, with or without a Session. The\nIndicator adds a \"building\" mark.",
           "type": "boolean"
         },
         "session_id": {
@@ -609,14 +609,14 @@
       ]
     },
     "VoicePreview": {
-      "description": "Params of `test.voice_preview`: Lucy speaks `text` in her running voice\non the configured speaker, outside any Session, between the Start and\nClosing sounds. It replies once playback has finished. Refused while a\nSession is open or another Voice preview plays; a Session that opens\ncuts it short.",
+      "description": "Params of `test.voice_preview`: Lucy speaks `text` outside any Session.\nShe uses her running voice on the configured speaker, between the Start\nand Closing sounds. It replies once playback has finished. Refused while a\nSession is open or another Voice preview plays; a Session that opens\ncuts it short.",
       "properties": {
         "text": {
           "description": "The sentence to say. Not empty.",
           "type": "string"
         },
         "voice": {
-          "description": "A Piper voice to say it in, such as `en_GB-cori-medium`, in place of\nthe running one. lucyd downloads it first if it must.",
+          "description": "A Piper voice to say it in, such as `en_GB-cori-medium`. It replaces\nthe running one. lucyd downloads it first if it must.",
           "type": [
             "string",
             "null"
@@ -629,7 +629,7 @@
       "type": "object"
     },
     "WakeWordTest": {
-      "description": "Params of `test.wake_word`: lucyd listens for the Wake word, outside any\nSession, and replies once it is heard or `timeout_secs` have passed.\nHearing it opens no Session. Refused while a Session is open.",
+      "description": "Params of `test.wake_word`: lucyd listens for the Wake word outside any\nSession. It replies once it is heard or `timeout_secs` have passed.\nHearing it opens no Session. Refused while a Session is open.",
       "properties": {
         "timeout_secs": {
           "format": "double",
