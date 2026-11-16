@@ -4,7 +4,7 @@ use lucy_ipc::State;
 
 use crate::adapters::ThinkingEvent;
 use crate::authoring::Building;
-use crate::input::{Dialog, Typed};
+use crate::input::Dialog;
 use crate::model_text::INTERRUPTED;
 
 pub enum Input {
@@ -23,7 +23,7 @@ pub enum Input {
     Withdrawn,
     Say(String),
     Building(Building),
-    Typed(Typed),
+    Typed(Answer),
     Unshown(String),
 }
 
@@ -317,10 +317,7 @@ impl Session {
                 self.building = building;
                 vec![]
             }
-            Input::Typed(typed) if self.state() == State::Typing => self.answered(match typed {
-                Typed::Values(values) => Answer::Typed(values),
-                Typed::Cancelled => Answer::Cancelled,
-            }),
+            Input::Typed(answer) if self.state() == State::Typing => self.answered(answer),
             Input::Typed(_) => vec![],
             Input::Unshown(why) if self.state() == State::Typing => {
                 self.asking = None;

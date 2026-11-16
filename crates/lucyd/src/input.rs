@@ -17,12 +17,6 @@ pub struct Dialog {
     pub fields: Vec<Field>,
 }
 
-#[derive(Debug)]
-pub enum Typed {
-    Values(BTreeMap<String, String>),
-    Cancelled,
-}
-
 /// How a question put in the Input dialog was answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypedAnswer {
@@ -70,7 +64,7 @@ impl std::fmt::Display for DialogId {
 struct Open {
     id: DialogId,
     request: InputOpen,
-    reply: oneshot::Sender<Typed>,
+    reply: oneshot::Sender<Answer>,
 }
 
 impl Inner {
@@ -154,7 +148,7 @@ impl Dialogs {
         self.held.send_replace(false);
         let closed_by_user = inner.open.take();
         if let Some(open) = closed_by_user {
-            let _ = open.reply.send(Typed::Cancelled);
+            let _ = open.reply.send(Answer::Cancelled);
         }
     }
 }
@@ -182,7 +176,7 @@ impl InputClaim {
             return Err(Refusal::Fields);
         }
         let open = inner.take(id).expect("checked above");
-        let _ = open.reply.send(Typed::Values(values));
+        let _ = open.reply.send(Answer::Typed(values));
         Ok(())
     }
 
@@ -190,7 +184,7 @@ impl InputClaim {
         let mut inner = self.dialogs.inner.locked();
         let id = DialogId::parse(id).ok_or(Refusal::NoDialog)?;
         let open = inner.take(id).ok_or(Refusal::NoDialog)?;
-        let _ = open.reply.send(Typed::Cancelled);
+        let _ = open.reply.send(Answer::Cancelled);
         Ok(())
     }
 }
@@ -204,12 +198,12 @@ impl Drop for InputClaim {
 pub struct OpenDialog {
     id: DialogId,
     dialogs: Dialogs,
-    typed: oneshot::Receiver<Typed>,
+    typed: oneshot::Receiver<Answer>,
 }
 
 impl OpenDialog {
-    pub async fn typed(&mut self) -> Typed {
-        (&mut self.typed).await.unwrap_or(Typed::Cancelled)
+    pub async fn typed(&mut self) -> Answer {
+        (&mut self.typed).await.unwrap_or(Answer::Cancelled)
     }
 }
 
