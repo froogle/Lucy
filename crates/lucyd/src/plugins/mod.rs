@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
+use lucy_ipc::{Field, FieldKind};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ElicitRequestParams, ElicitResult,
     ElicitationAction, InputRequest, InputRequests, InputResponses, JsonObject, ProtocolVersion,
@@ -539,14 +540,14 @@ impl Host {
             .map_err(|e| format!("What the user typed can't be kept: {e}."))
     }
 
-    async fn credentials(&self, plugin: &Usable) -> Result<Vec<(String, String)>, String> {
+    async fn credentials(&self, plugin: &Usable) -> Result<Credentials, String> {
         let store = self.credentials.clone();
         let name = plugin.name.clone();
         let declared = plugin.manifest.access.credentials.clone();
         let found = tokio::task::spawn_blocking(move || {
             declared
                 .into_iter()
-                .map(|credential| Ok((store.get(&name, &credential)?, credential)))
+                .map(|credential| Ok((credential.clone(), store.get(&name, &credential)?)))
                 .collect::<Result<Vec<_>, String>>()
         })
         .await
@@ -558,24 +559,48 @@ impl Host {
                 plugin.name
             )
         })?;
-        let missing: Vec<&str> = found
-            .iter()
-            .filter(|(value, _)| value.is_none())
-            .map(|(_, name)| &**name)
-            .collect();
-        if !missing.is_empty() {
-            return Err(format!(
-                "The {plugin} Plugin needs {}, which the user hasn't entered yet. They enter it \
-                 by running `lucy credentials {plugin}` in a terminal, never by voice or \
-                 through you.",
-                missing.join(" and "),
-                plugin = plugin.name,
-            ));
+        let mut credentials = Credentials::default();
+        for (name, value) in found {
+            match value {
+                Some(value) => credentials.entered.push((name, value)),
+                None => credentials.missing.push(name),
+            }
         }
-        Ok(found
-            .into_iter()
-            .filter_map(|(value, name)| Some((name, value?)))
-            .collect())
+        Ok(credentials)
+    }
+
+    async fn ask_missing(
+        &self,
+        plugin: &Usable,
+        credentials: &mut Credentials,
+    ) -> Result<(), String> {
+        for name in std::mem::take(&mut credentials.missing) {
+            let field = Field {
+                name: name.clone(),
+                description: None,
+                kind: FieldKind::Secret,
+            };
+            let message = format!("The {} Plugin needs {name}.", plugin.name);
+            let mut values = match input::fill(&self.commands, &message, vec![field]).await {
+                Filled::Values(values) => values,
+                Filled::Cancelled => {
+                    return Err(unentered(
+                        &plugin.name,
+                        &name,
+                        "the box for it was cancelled",
+                    ))
+                }
+                Filled::TimedOut => {
+                    return Err(unentered(&plugin.name, &name, "the box for it timed out"))
+                }
+            };
+            let value = values
+                .remove(&name)
+                .expect("an answer fills every field asked");
+            self.keep(&plugin.name, &name, &value).await?;
+            credentials.entered.push((name, value));
+        }
+        Ok(())
     }
 
     async fn start(
@@ -627,6 +652,20 @@ impl Host {
         .map_err(|_| "it didn't start in time".to_owned())?
         .map_err(|e| format!("it didn't start: {e}"))
     }
+}
+
+#[derive(Default)]
+struct Credentials {
+    entered: Vec<(String, String)>,
+    missing: Vec<String>,
+}
+
+fn unentered(plugin: &str, name: &str, why: &str) -> String {
+    format!(
+        "The {plugin} Plugin needs {name}, but {why}, so nothing was done. The \
+         user can enter it by running `lucy credentials {plugin}` in a terminal, never by voice \
+         or through you."
+    )
 }
 
 struct Candidate {
@@ -794,11 +833,16 @@ impl SessionTools {
         if !self.running.lock().await.contains_key(plugin_name) {
             match self.host.credentials(&plugin).await {
                 Ok(read) => read_before_confirming = Some(read),
-                Err(missing) => return Some(mcp::error(missing)),
+                Err(unreadable) => return Some(mcp::error(unreadable)),
             }
         }
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
+        }
+        if let Some(read) = &mut read_before_confirming {
+            if let Err(reason) = self.host.ask_missing(&plugin, read).await {
+                return Some(mcp::error(reason));
+            }
         }
         let mut barge_ins = self.barge_ins.subscribe();
         let outcome = async {
@@ -809,10 +853,17 @@ impl SessionTools {
                         Some(read) => read,
                         None => match self.host.credentials(&plugin).await {
                             Ok(read) => read,
-                            Err(missing) => return Ok(mcp::error(missing)),
+                            Err(unreadable) => return Ok(mcp::error(unreadable)),
                         },
                     };
-                    let client = self.host.start(&plugin, &credentials).await?;
+                    if let Some(name) = credentials.missing.first() {
+                        return Ok(mcp::error(unentered(
+                            &plugin.name,
+                            name,
+                            "the user hasn't entered it",
+                        )));
+                    }
+                    let client = self.host.start(&plugin, &credentials.entered).await?;
                     running.insert(plugin_name.to_owned(), client);
                 }
                 running[plugin_name].peer().clone()
