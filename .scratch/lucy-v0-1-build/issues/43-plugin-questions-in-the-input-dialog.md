@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (mid-call q
 
 **Seams:** owns the `secret` elicitation field. Uses the `input` role and `Typing` (owned by 34), and `CredentialStore` (ticket 21).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -23,3 +23,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Plugins (mid-call q
 - [ ] `secret` on a declared credential: the value lands in the fake credential store, the Plugin's next start gets it as its env var, and the model sees only `provided`
 - [ ] `secret` on an undeclared name is declined without opening the dialog
 - [ ] No secret in IPC, logs, notifications or model traffic (`assert_nothing_private_on_bus` counts it)
+
+## Comments
+
+2026-11-16: built in slice 9 (`lucy-v0-1-slice-9`). A Plugin marks a secret in the elicitation's `_meta` as `"lucy/secret"` (ADR 0011). A lone number, boolean or enum field also opens the dialog (user decision; spec amended). Plugin-author docs (the authoring brief and template) don't yet cover mid-call questions or `lucy/secret`.
