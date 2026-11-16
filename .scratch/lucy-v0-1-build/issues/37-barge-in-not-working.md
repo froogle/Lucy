@@ -11,6 +11,8 @@
 - Speech-to-text is Superwhisper (`[stt] kind = "superwhisper"`). The Whisper model `base.en` is missing, as lucyd logs at every start.
 - The running lucyd was built 2026-11-15 17:45, after 27, 28 and 33, so it isn't an old binary.
 
+Spec: [v0.1](../../lucy-v0-1/spec.md): Session state machine (Barge-in), Audio pipeline, Further Notes (Barge-in regression).
+
 **Blocked by:** none
 
 **Seams:** none expected; say so in the report if the fix needs one.

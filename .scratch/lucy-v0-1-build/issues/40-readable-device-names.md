@@ -2,6 +2,8 @@
 
 **What to build:** The bar panel's Microphone and Speaker rows, and the `lucy` TUI's Audio devices section, show raw node names (`alsa_input.usb-Generic_ATH-M50xSTS-USB-00.mono-fallback`) instead of names a person recognises. Show `pactl`'s description of each device, exactly as given ("ATH-M50xSTS-USB Mono", "Pebble V3 Analog Stereo"), in both places, through the shared device list (`crates/lucy/src/devices.rs`, which already leaves out monitor sources).
 
+Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Audio pipeline (Device names), Testing (Device names); stories 178–182.
+
 **Blocked by:** none
 
 **Seams:** owns the description in the device list both callers use. The panel snapshot gains a label for each option; `key`/`current`/`options` keep node names.

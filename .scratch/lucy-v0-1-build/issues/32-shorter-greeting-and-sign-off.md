@@ -2,7 +2,7 @@
 
 **What to build:** Lucy says too much at either end of a Session. When the user opens with just a greeting ("hi", "morning"), she answers with a long greeting. When they say goodbye, she gives a long sign-off. A word or two would do for both. A bare "Hey Lucy" is already stripped and gets no reply, so both come from the model following the Persona's "one to three short spoken sentences" rule. Add one rule to the shipped default Persona (Speaking section): when the user only greets you, greet back in a word or two; when they say goodbye, say a word or two ("Bye", "See ya") and call `end_session`.
 
-Spec: Persona. No code change beyond the default text.
+Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Persona; stories 174–177. No code change beyond the default text.
 
 **Blocked by:** none
 

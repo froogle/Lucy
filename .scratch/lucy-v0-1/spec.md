@@ -4,7 +4,7 @@ Status: ready-for-agent
 
 Synthesised from [map.md](map.md), resolved tickets 01–22, `GLOSSARY.md` and ADRs 0001–0006. Vocabulary follows the glossary (Session, Turn, Barge-in, Wake word, Closing phrase, Indicator, Provider, Model tier, Plugin, Manifest, Approval, Confirmation, Input dialog, Built-in tool, Delegate, Authoring, Persona, Source).
 
-Amended 2026-11-16 after a grilling session on build tickets 34, 35, 38 and 41: the Input dialog (build tickets 34 and 42) and the shipped Omarchy Plugin (build ticket 35) join v0.1. Hand-off (38) and screen access (41) moved to [v0.2](../lucy-v0-2/spec.md).
+Amended 2026-11-16 after a grilling session on build tickets 34, 35, 38 and 41: the Input dialog (build tickets 34 and 42) and the shipped Omarchy Plugin (build ticket 35) join v0.1. Hand-off (38) and screen access (41) moved to [v0.2](../lucy-v0-2/spec.md). A second session the same day settled build tickets 32 (a shorter greeting and sign-off), 40 (readable device names) and 37 (Barge-in not working, a regression under diagnosis).
 
 ## Problem Statement
 
@@ -243,6 +243,18 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 172. As a user of another desktop, I want the Omarchy Plugin quietly left out, never reported as broken, so that I don't hear about something that doesn't apply to me.
 173. As a Plugin author, I want the Omarchy Plugin to be the pattern for desktop Plugins, with a `requires` Manifest field saying where it applies, so that I can write one for GNOME or KDE.
 
+### Brevity and device names
+
+174. As a user, I want a greeting like "hi" answered with a word or two, so that I can get straight on with what I want.
+175. As a user, I want "bye Lucy" answered with a word or two ("Bye", "See ya") before the Session ends, so that leaving is quick.
+176. As a user, I want that brevity to be part of the default Persona, so that I can still shape how she says it.
+177. As an existing user, I want to bring my own Persona in line by telling her, so that my edits to it aren't overwritten.
+178. As a user, I want the bar panel and the `lucy` TUI to name my mics and speakers the way the system describes them ("ATH-M50xSTS-USB Mono"), so that I can tell which is which.
+179. As a user, I want two devices with the same description numbered (1) and (2), so that I can still tell them apart.
+180. As a user, I want the default device shown as "Default (<the device it is now>)", so that I know what "default" means right now.
+181. As a user, I want a pinned device that's unplugged shown by its raw name plus "(not connected)", so that I can see my choice and that it's missing.
+182. As a user, I want my config to keep the device's stable node name, so that a renamed description or another language doesn't break my choice.
+
 ## Implementation Decisions
 
 ### Processes and crates (ADR 0006)
@@ -323,6 +335,10 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 - **VAD:** Silero v6.2 in 32 ms chunks behind a `Vad` trait. End of utterance: start threshold 0.5, end threshold 0.35, 100 ms to start, 500 ms pre-roll, 700 ms silence to end, 30 s cap. Barge-in gate: p ≥ 0.7 for 300 ms; p ≥ 0.85 for 500 ms while AEC is unconverged (ERLE < 10 dB or the first 2 s). With no echo of Lucy at the mic (headphones), measured over her last ~10 s of speech, it counts as converged after the first 2 s. The window covers TTS plus a 300 ms tail, and TTS ducks on the first frame above threshold. All values are tunable starting points.
 - ONNX through the `ort` API on the pure-Rust tract backend by default. Native ORT via dynamic load of the system library is allowed for Silero only, if tract fails. Nothing is downloaded from a CDN.
 - **Devices:** `"default"` or a pinned node name, re-resolved each Session. A missing pin falls back to the default with one notification and keeps the pin. A device lost mid-Session ends the Session.
+- **Device names (display only):** the bar panel and the TUI show each device by its PipeWire/Pulse description, exactly as given, from one shared device list that both use. Config and `lucy set` keep node names. The panel snapshot carries a label beside each option's node name.
+  - Equal descriptions are numbered "(1)", "(2)" in node-name order.
+  - `default` reads "Default (<description of the current default>)".
+  - A pinned device that is missing reads "<node name> (not connected)". No last-seen description is stored.
 - PipeWire is the supported stack. On PulseAudio or ALSA, Barge-in is off by default (`[barge_in] force` turns it on, with a warning).
 
 ### Providers and configuration (ADR 0001)
@@ -408,7 +424,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
 
 ### Persona
 
-- An editable `persona.md` in `$XDG_CONFIG_HOME/lucy/`, included in every Session prompt. The default is jovial with a little sass, never flippant on serious news, and asks for one to three short spoken sentences with no markdown and a "Let me check" before slow tools.
+- An editable `persona.md` in `$XDG_CONFIG_HOME/lucy/`, included in every Session prompt. The default is jovial with a little sass, never flippant on serious news, and asks for one to three short spoken sentences with no markdown and a "Let me check" before slow tools. When the user only greets her, she greets back in a word or two; when they say goodbye, she says a word or two and calls `end_session`. This is a matter of manner, so it lives in the Persona, not in fixed instructions or a runtime sign-off. A `persona.md` already written keeps its old text until the user tells her to change it.
 - The very first Session opens with a self-introduction that asks the user's name and stores it there. Changing it by voice rewrites the file and reads the change back, with no Approval.
 
 ### Licensing (ADR 0003)
@@ -446,6 +462,9 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
   - Credential env injection.
   - The private state dir.
   - Lifecycle stop at Session end.
+- **Default Persona:** the harness's Persona tests check that the default's greeting and goodbye rule reaches the Session prompt. Whether the model keeps it short is checked by hand.
+- **Device names:** the `lucy` crate's tests run against a fake `pactl` on `PATH` listing descriptions, duplicates, a default and a missing pin. They cover `lucy status --json` labels, the TUI's Audio devices section, and `lucy set` still writing node names. The panel's QML runs through its offscreen checks against a fake `lucy`.
+- **Barge-in regression (build ticket 37):** reproduced in the harness under its real DSP thread, alongside the existing Barge-in tests, before it is fixed. Recorded runs are replayed through the AEC bench, which stays outside the automated checks.
 - **News Plugin:** tested through its own MCP interface against recorded feed fixtures (no live network). This is also the reference for the template's fixtures test harness.
 - **Input dialog:** in the harness, the test connects as the `input` role through the real `lucy-ipc` client and plays the dialog. The fixture Plugin's question tool sends elicitations, `secret` included. The tests cover:
   - `Typing`, cancel phrases, ignored speech, the timeout on the harness clock, and an Indicator click.
@@ -495,6 +514,7 @@ v0.1 succeeds when (a) the news briefing works end to end as a hand-written refe
   - 25: audio-stack coexistence. GPU contention with Superwhisper, a single PipeWire driver, device loss.
   - 26: Silero on tract vs earshot. May trigger the native-ORT fallback or replace Silero.
   - 27: train and commit the wake models (HITL). The real models are needed for 24 and for acceptance.
+- **Barge-in regression (build ticket 37, under diagnosis):** on a USB headset used as both mic and speaker, with Superwhisper as STT, neither speech nor the Wake word cuts Lucy off, every time, and her voice never ducks. Both paths are dead, so the cause is likely shared: whether lucyd knows she is speaking, whether the DSP thread hears the mic while she speaks, or something about Superwhisper. The diagnosis compares Superwhisper with Whisper first, then logs the gate's inputs behind `RUST_LOG`, then checks the Silero change from build ticket 33. The fix may adjust this spec's Barge-in or Audio pipeline sections.
 - **Pinned dependencies:** `livekit-wakeword` v2 is not yet on crates.io (pin a git rev). The `claude` stream-json interrupt is undocumented (feature-detect it). AUR `piper-tts` currently fails to install (the fallback order handles it).
 - **Terms risk:** ADR 0001 accepts that Anthropic's terms are ambiguous about third-party tools driving a user's own `claude` login. Lucy never handles or proxies credentials and is single-user. Re-check Anthropic and OpenAI terms and the Source catalogue flags before release; Sky News's terms are still unverified.
 - Hyprland config Lucy documents (for example a `lucy listen` keybinding, which isn't shipped by default) uses Hyprland 0.56's Lua syntax.
