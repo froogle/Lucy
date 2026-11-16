@@ -58,11 +58,10 @@ impl Home {
         &self,
         question: &str,
         kind: lucyd::FieldKind,
-        choices: Vec<String>,
     ) -> std::sync::mpsc::Receiver<lucyd::TypedAnswer> {
         self.env().connect().unwrap().start_session().unwrap();
         let daemon = self._lucyd.as_ref().expect("lucyd runs in this home");
-        let answer = daemon.ask_typed(question, kind, choices);
+        let answer = daemon.ask_typed(question, kind);
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(answer.blocking_recv().expect("lucyd answers")));
         rx

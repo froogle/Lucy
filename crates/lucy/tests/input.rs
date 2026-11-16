@@ -6,14 +6,14 @@
 mod support;
 
 use lucy::menu::Open;
-use lucyd::{FieldKind, TypedAnswer};
+use lucyd::{Choices, FieldKind, TypedAnswer};
 use ratatui::crossterm::event::KeyCode;
 use support::{Home, Script};
 
 #[test]
 fn the_page_shows_the_question_and_sends_back_what_is_typed() {
     let home = Home::with_lucyd();
-    let asked = home.ask_typed("Which page shall I open?", FieldKind::Url, vec![]);
+    let asked = home.ask_typed("Which page shall I open?", FieldKind::Url);
 
     let tui = home.tui(
         Open::Input,
@@ -35,7 +35,7 @@ fn the_page_shows_the_question_and_sends_back_what_is_typed() {
 #[test]
 fn esc_closes_the_box_unanswered() {
     let home = Home::with_lucyd();
-    let asked = home.ask_typed("Which page shall I open?", FieldKind::Url, vec![]);
+    let asked = home.ask_typed("Which page shall I open?", FieldKind::Url);
 
     home.tui(Open::Input, Script::new().press(KeyCode::Esc));
 
@@ -45,7 +45,7 @@ fn esc_closes_the_box_unanswered() {
 #[test]
 fn the_page_goes_when_lucy_closes_the_box() {
     let home = Home::with_lucyd();
-    let asked = home.ask_typed("Which page shall I open?", FieldKind::Url, vec![]);
+    let asked = home.ask_typed("Which page shall I open?", FieldKind::Url);
     let env = home.env();
     let click_the_indicator = move || env.connect().unwrap().end_session().unwrap();
 
@@ -60,7 +60,10 @@ fn the_page_goes_when_lucy_closes_the_box() {
 fn a_choice_is_picked_from_its_options() {
     let home = Home::with_lucyd();
     let choices = vec!["red".to_owned(), "blue".to_owned()];
-    let asked = home.ask_typed("Which colour?", FieldKind::Choice, choices);
+    let choices = FieldKind::Choice {
+        choices: Choices::try_from(choices).unwrap(),
+    };
+    let asked = home.ask_typed("Which colour?", choices);
 
     let tui = home.tui(Open::Input, Script::new().down(1).enter());
 
@@ -74,7 +77,7 @@ fn a_choice_is_picked_from_its_options() {
 #[test]
 fn a_number_is_asked_again_until_it_is_one() {
     let home = Home::with_lucyd();
-    let asked = home.ask_typed("How many?", FieldKind::Number, vec![]);
+    let asked = home.ask_typed("How many?", FieldKind::Number);
 
     let tui = home.tui(
         Open::Input,

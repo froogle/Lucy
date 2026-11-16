@@ -40,7 +40,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::{mpsc, oneshot};
 
 pub use input::TypedAnswer;
-pub use lucy_ipc::FieldKind;
+pub use lucy_ipc::{Choices, FieldKind};
 
 pub struct Options {
     /// Where to listen; normally `lucy_ipc::default_socket_path()`.
@@ -206,25 +206,20 @@ impl Daemon {
 
     /// Asks `question` in the Input dialog, in the open Session.
     ///
-    /// It asks as the `ask_typed` tool does: one field of `kind`, with
-    /// `choices` for a choice. With no Session open, it is cancelled.
+    /// It asks as the `ask_typed` tool does: one field of `kind`. With no
+    /// Session open, it is cancelled.
     ///
     /// # Panics
     ///
     /// If the `Daemon`'s runtime has gone, which it can't while the `Daemon`
     /// lives.
-    pub fn ask_typed(
-        &self,
-        question: &str,
-        kind: FieldKind,
-        choices: Vec<String>,
-    ) -> oneshot::Receiver<TypedAnswer> {
+    pub fn ask_typed(&self, question: &str, kind: FieldKind) -> oneshot::Receiver<TypedAnswer> {
         let (reply, answer) = oneshot::channel();
         let sessions = self.sessions.clone();
         let question = question.to_owned();
         let runtime = self.runtime.as_ref().expect("runtime lives until drop");
         runtime.spawn(async move {
-            let _ = reply.send(input::ask(&sessions, &question, kind, choices).await);
+            let _ = reply.send(input::ask(&sessions, &question, kind).await);
         });
         answer
     }

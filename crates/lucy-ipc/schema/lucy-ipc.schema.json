@@ -39,16 +39,72 @@
       ],
       "type": "object"
     },
+    "Choices": {
+      "description": "The options of a choice field: at least one.",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
     "Field": {
       "description": "One box in the Input dialog.",
-      "properties": {
-        "choices": {
-          "description": "The options to pick from, for `choice`.",
-          "items": {
-            "type": "string"
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "text",
+              "type": "string"
+            }
           },
-          "type": "array"
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         },
+        {
+          "properties": {
+            "kind": {
+              "const": "url",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One of `choices`.",
+          "properties": {
+            "choices": {
+              "$ref": "#/$defs/Choices"
+            },
+            "kind": {
+              "const": "choice",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "choices"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
         "description": {
           "description": "What to type in it, if the question alone doesn't say.",
           "type": [
@@ -56,37 +112,15 @@
             "null"
           ]
         },
-        "kind": {
-          "$ref": "#/$defs/FieldKind"
-        },
         "name": {
           "description": "Its key in `input.answer`'s `values`.",
           "type": "string"
         }
       },
       "required": [
-        "name",
-        "kind"
+        "name"
       ],
       "type": "object"
-    },
-    "FieldKind": {
-      "description": "What a field takes.",
-      "oneOf": [
-        {
-          "enum": [
-            "text",
-            "url",
-            "number"
-          ],
-          "type": "string"
-        },
-        {
-          "const": "choice",
-          "description": "One of the field's `choices`.",
-          "type": "string"
-        }
-      ]
     },
     "Hello": {
       "description": "Params of `hello`, the first request on every connection.",

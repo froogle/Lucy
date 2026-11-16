@@ -91,22 +91,26 @@ fn fields<B: Backend>(ui: &mut Ui<B>, fields: &[Field]) -> Result<BTreeMap<Strin
 }
 
 fn value<B: Backend>(ui: &mut Ui<B>, field: &Field) -> Result<String, Stop> {
-    let label = field.description.as_deref().unwrap_or(match field.kind {
+    let label = field.description.as_deref().unwrap_or(match &field.kind {
         FieldKind::Text => "Your answer:",
         FieldKind::Url => "URL:",
         FieldKind::Number => "Number:",
-        FieldKind::Choice => "Pick one:",
+        FieldKind::Choice { .. } => "Pick one:",
     });
-    if field.kind == FieldKind::Choice {
-        let picked = ui.choose(label, &field.choices)?;
-        return Ok(field.choices[picked].clone());
+    if let FieldKind::Choice { choices } = &field.kind {
+        let choices = choices.as_slice();
+        let picked = ui.choose(label, choices)?;
+        let picked = choices
+            .get(picked)
+            .expect("ui.choose picks one of its options");
+        return Ok(picked.clone());
     }
     loop {
         let typed = ui.ask(label, "")?;
         let typed = typed.trim();
         if typed.is_empty() {
             ui.say("Type an answer, or Esc to close the box.")?;
-        } else if field.kind == FieldKind::Number && typed.parse::<f64>().is_err() {
+        } else if matches!(field.kind, FieldKind::Number) && typed.parse::<f64>().is_err() {
             ui.say(format!("{typed} isn't a number."))?;
         } else {
             return Ok(typed.to_owned());

@@ -123,8 +123,10 @@ fn ask_typed_offers_a_choice_and_returns_the_one_picked() {
     line_said(&lucyd);
 
     let open = next_open(&mut holder);
-    assert_eq!(open.fields[0].kind, FieldKind::Choice);
-    assert_eq!(open.fields[0].choices, ["red", "blue"]);
+    let FieldKind::Choice { choices } = &open.fields[0].kind else {
+        panic!("not a choice: {:?}", open.fields[0]);
+    };
+    assert_eq!(choices.as_slice(), ["red", "blue"]);
     lucyd.answer_input(&mut holder, &open.id, "blue");
 
     let result = call.join().unwrap().unwrap();

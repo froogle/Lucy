@@ -237,22 +237,57 @@ pub struct Field {
     /// What to type in it, if the question alone doesn't say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(flatten)]
     pub kind: FieldKind,
-    /// The options to pick from, for `choice`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub choices: Vec<String>,
 }
 
 /// What a field takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FieldKind {
     Text,
     Url,
     Number,
-    /// One of the field's `choices`.
-    Choice,
+    /// One of `choices`.
+    Choice {
+        choices: Choices,
+    },
 }
+
+/// The options of a choice field: at least one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "Vec<String>")]
+#[schemars(extend("minItems" = 1))]
+pub struct Choices(Vec<String>);
+
+impl TryFrom<Vec<String>> for Choices {
+    type Error = NoChoices;
+
+    fn try_from(choices: Vec<String>) -> Result<Choices, NoChoices> {
+        match choices.is_empty() {
+            true => Err(NoChoices),
+            false => Ok(Choices(choices)),
+        }
+    }
+}
+
+impl Choices {
+    pub fn as_slice(&self) -> &[String] {
+        &self.0
+    }
+}
+
+/// A choice field was given nothing to pick from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoChoices;
+
+impl std::fmt::Display for NoChoices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "a choice needs at least one option")
+    }
+}
+
+impl std::error::Error for NoChoices {}
 
 /// Params of the `input.close` event: take the Input dialog away, unanswered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

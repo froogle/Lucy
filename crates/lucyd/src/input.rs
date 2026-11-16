@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use lucy_ipc::{Event, Field, FieldKind, InputClose, InputOpen};
+use lucy_ipc::{Choices, Event, Field, FieldKind, InputClose, InputOpen};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -254,7 +254,10 @@ pub async fn ask_typed(
         Some("text") => FieldKind::Text,
         Some("url") => FieldKind::Url,
         Some("number") => FieldKind::Number,
-        Some("choice") => FieldKind::Choice,
+        Some("choice") => match Choices::try_from(choices(arguments)) {
+            Ok(choices) => FieldKind::Choice { choices },
+            Err(_) => return error("A choice needs its choices."),
+        },
         Some("secret") => {
             return error(
                 "ask_typed can't ask for a secret. Passwords and keys go into a Plugin's \
@@ -263,17 +266,7 @@ pub async fn ask_typed(
         }
         _ => return error("kind must be one of text, url, number or choice."),
     };
-    let choices: Vec<String> = arguments
-        .get("choices")
-        .and_then(|choices| choices.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|choice| choice.as_str().map(str::to_owned))
-        .collect();
-    if kind == FieldKind::Choice && choices.is_empty() {
-        return error("A choice needs its choices.");
-    }
-    match ask(commands, question, kind, choices).await {
+    match ask(commands, question, kind).await {
         TypedAnswer::Answer(answer) => CallToolResult::structured(json!({"answer": answer})),
         TypedAnswer::Cancelled => CallToolResult::structured(json!({"result": "cancelled"})),
         TypedAnswer::TimedOut => CallToolResult::structured(json!({"result": "timed_out"})),
@@ -284,19 +277,18 @@ pub async fn ask(
     commands: &mpsc::UnboundedSender<Command>,
     question: &str,
     kind: FieldKind,
-    choices: Vec<String>,
 ) -> TypedAnswer {
+    let prompt = format!("I've put a box on screen for {}.", what(&kind));
     let dialog = Dialog {
         message: question.to_owned(),
         fields: vec![Field {
             name: ANSWER.to_owned(),
             description: None,
             kind,
-            choices,
         }],
     };
     let question = Question {
-        prompt: format!("I've put a box on screen for {}.", what(kind)),
+        prompt,
         expects: Expects::Typed(dialog),
     };
     match runner::ask(commands, question, None).await {
@@ -310,11 +302,21 @@ pub async fn ask(
 
 const ANSWER: &str = "answer";
 
-fn what(kind: FieldKind) -> &'static str {
+fn choices(arguments: &JsonObject) -> Vec<String> {
+    arguments
+        .get("choices")
+        .and_then(|choices| choices.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|choice| choice.as_str().map(str::to_owned))
+        .collect()
+}
+
+fn what(kind: &FieldKind) -> &'static str {
     match kind {
         FieldKind::Text => "your answer",
         FieldKind::Url => "the URL",
         FieldKind::Number => "the number",
-        FieldKind::Choice => "your choice",
+        FieldKind::Choice { .. } => "your choice",
     }
 }
