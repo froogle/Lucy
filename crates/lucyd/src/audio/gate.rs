@@ -103,12 +103,7 @@ impl Gate {
         if !self.on || self.cut || !self.window_open() {
             return self.unduck();
         }
-        // With no echo to remove, the ERLE never gets anywhere.
-        let converged = self.warmed >= samples(self.config.warm_up_ms)
-            && (!own_canceller
-                || erle_db.is_some_and(|erle| erle >= self.config.converged_erle_db)
-                || echo_heard == Some(false));
-        let (threshold, sustain) = if converged {
+        let (threshold, sustain) = if self.converged(erle_db, echo_heard, own_canceller) {
             (self.config.threshold, self.config.sustain_ms)
         } else {
             (
@@ -127,6 +122,25 @@ impl Gate {
             return Some(BargeInEvent::BargeIn);
         }
         (!std::mem::replace(&mut self.ducked, true)).then_some(BargeInEvent::Duck)
+    }
+
+    /// Whether the echo canceller has settled, so the normal bar applies.
+    pub fn converged(
+        &self,
+        erle_db: Option<f32>,
+        echo_heard: Option<bool>,
+        own_canceller: bool,
+    ) -> bool {
+        // With no echo to remove, the ERLE never gets anywhere.
+        self.warmed >= samples(self.config.warm_up_ms)
+            && (!own_canceller
+                || erle_db.is_some_and(|erle| erle >= self.config.converged_erle_db)
+                || echo_heard == Some(false))
+    }
+
+    /// Speech may barge in this Session.
+    pub fn on(&self) -> bool {
+        self.on
     }
 
     fn unduck(&mut self) -> Option<BargeInEvent> {

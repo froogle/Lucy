@@ -517,7 +517,10 @@ impl Runner {
                     Input::Building(*self.building.borrow_and_update())
                 }
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
-                    Some(()) => Input::WakeWord,
+                    Some(()) => {
+                        log::debug!("wake word in {:?}", session.state());
+                        Input::WakeWord
+                    }
                     None => {
                         self.wake_open = false;
                         continue;
@@ -536,14 +539,19 @@ impl Runner {
                         return;
                     }
                     Heard::Gate(BargeInEvent::Duck) => {
+                        log::debug!("gate: ducking Lucy in {:?}", session.state());
                         speaker.duck(true);
                         continue;
                     }
                     Heard::Gate(BargeInEvent::Unduck) => {
+                        log::debug!("gate: unducking Lucy in {:?}", session.state());
                         speaker.duck(false);
                         continue;
                     }
-                    Heard::Gate(BargeInEvent::BargeIn) => Input::BargeIn,
+                    Heard::Gate(BargeInEvent::BargeIn) => {
+                        log::debug!("gate: Barge-in in {:?}", session.state());
+                        Input::BargeIn
+                    }
                 },
                 () = silence.fired() => {
                     speaker.sound(Sound::Closing);
@@ -633,7 +641,10 @@ impl Runner {
                             let _ = reply.send(answer);
                         }
                     }
-                    Output::StopSpeaking => speaker.stop(),
+                    Output::StopSpeaking => {
+                        log::debug!("stopping Lucy's speech");
+                        speaker.stop();
+                    }
                     Output::CancelBuild => self.authoring.cancel(),
                     Output::Interrupt => {
                         model.interrupt();

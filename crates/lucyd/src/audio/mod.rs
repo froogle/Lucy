@@ -158,6 +158,10 @@ fn rms(frame: &[f32]) -> f32 {
     (frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32).sqrt()
 }
 
+fn dbfs(rms: f32) -> f32 {
+    20.0 * rms.max(1e-6).log10()
+}
+
 /// Why the microphone can't be heard.
 #[derive(Debug)]
 pub struct Error(pub String);
@@ -451,10 +455,16 @@ fn dsp(
                 }
                 Change::Endpointing(config) => listeners.endpointer.configure(&config),
                 Change::Session(barge_in, on, cancelling) => {
+                    log::debug!(
+                        "gate: Session starts, speech barges in={on}, own canceller={cancelling}"
+                    );
                     listeners.gate.configure(&barge_in, on);
                     listeners.cancelling = cancelling;
                 }
-                Change::LucySpeaking(speaking) => listeners.gate.lucy_speaking(speaking),
+                Change::LucySpeaking(speaking) => {
+                    log::debug!("gate: Lucy speaking={speaking}");
+                    listeners.gate.lucy_speaking(speaking);
+                }
             }
         }
         listeners.report_speaking();
@@ -479,7 +489,8 @@ fn dsp(
 impl Listeners {
     /// Takes the next 10 ms frame of the microphone.
     fn hear(&mut self, frame: &mut [f32]) {
-        Meter::raise(&self.meter.level, rms(frame));
+        let level = rms(frame);
+        Meter::raise(&self.meter.level, level);
         let own_canceller = self.echo.is_some() && self.cancelling;
         let (mut erle_db, mut echo_heard) = (None, None);
         if let Some(echo) = self.echo.as_mut().filter(|_| own_canceller) {
@@ -494,14 +505,33 @@ impl Listeners {
             // Before the detection, so a test that hears it sees its score.
             Meter::raise(&self.meter.wake_score, wake_word.score());
             if heard {
+                log::debug!(
+                    "wake word heard, gate window open={}",
+                    self.gate.window_open()
+                );
                 let _ = self.wakes.send(());
                 self.gate.wake_word();
             }
         }
         let was_speaking = self.endpointer.speaking();
+        let wake_score = self.wake_word.as_ref().map(|wake_word| wake_word.score());
+        let cancelled = rms(frame);
         let (gate, gate_events) = (&mut self.gate, &self.gate_events);
         let segment = self.endpointer.push(frame, |probability, len| {
-            if let Some(event) = gate.judge(probability, len, erle_db, echo_heard, own_canceller) {
+            let event = gate.judge(probability, len, erle_db, echo_heard, own_canceller);
+            if gate.window_open() {
+                log::debug!(
+                    "gate: p={probability:.2} erle_db={erle_db:?} echo_heard={echo_heard:?} \
+                     settled={} on={} cut={} own_canceller={own_canceller} \
+                     mic_dbfs={:.1} cancelled_dbfs={:.1} wake={wake_score:?} event={event:?}",
+                    gate.converged(erle_db, echo_heard, own_canceller),
+                    gate.on(),
+                    gate.is_cut(),
+                    dbfs(level),
+                    dbfs(cancelled),
+                );
+            }
+            if let Some(event) = event {
                 let _ = gate_events.send(event);
             }
         });
