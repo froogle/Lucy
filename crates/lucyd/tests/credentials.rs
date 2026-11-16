@@ -127,11 +127,11 @@ fn line_said(lucyd: &Harness) -> String {
     line
 }
 
-fn asked_for(lucyd: &Harness, holder: &mut Client, events: &mut Client) -> InputOpen {
+fn asked_for(lucyd: &Harness, holder: &mut Client, events: &mut Client, what: &str) -> InputOpen {
     assert_eq!(next_state(events).state, State::Typing);
     assert_eq!(
         line_said(lucyd),
-        "I've put a box on screen for your secret."
+        format!("I've put a box on screen for your {what}.")
     );
     let open = next_open(holder);
     assert_eq!(open.fields.len(), 1);
@@ -139,10 +139,16 @@ fn asked_for(lucyd: &Harness, holder: &mut Client, events: &mut Client) -> Input
     open
 }
 
+const ASKED_TEST: &str =
+    "a_missing_credential_is_asked_for_after_the_confirmation_and_the_call_carries_on";
+
 #[test]
 fn a_missing_credential_is_asked_for_after_the_confirmation_and_the_call_carries_on() {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = env_logger::try_init();
+    }
     let lucyd = Harness::start();
-    let declared = ["WEATHER_KEY", "CITY", "UNITS"];
+    let declared = ["LINEAR_API_KEY", "CITY", "UNITS"];
     lucyd.install_plugin("weather", &confirming(&manifest("weather", &declared)));
     lucyd.approve("weather");
     lucyd.credentials.enter("weather", "CITY", "Leeds");
@@ -154,18 +160,18 @@ fn a_missing_credential_is_asked_for_after_the_confirmation_and_the_call_carries
     line_said(&lucyd);
     lucyd.say("Yes.");
     assert_eq!(next_state(&mut events).state, State::Thinking);
-    let first = asked_for(&lucyd, &mut holder, &mut events);
-    assert_eq!(first.fields[0].name, "WEATHER_KEY");
-    lucyd.answer_fields(&mut holder, &first.id, &[("WEATHER_KEY", "w-typed-1")]);
+    let first = asked_for(&lucyd, &mut holder, &mut events, "Linear API key");
+    assert_eq!(first.fields[0].name, "LINEAR_API_KEY");
+    lucyd.answer_fields(&mut holder, &first.id, &[("LINEAR_API_KEY", "w-typed-1")]);
     assert_eq!(next_state(&mut events).state, State::Thinking);
-    let second = asked_for(&lucyd, &mut holder, &mut events);
+    let second = asked_for(&lucyd, &mut holder, &mut events, "Units");
     assert_eq!(second.fields[0].name, "UNITS");
     lucyd.answer_fields(&mut holder, &second.id, &[("UNITS", "u-typed-2")]);
 
     let result = call.join().unwrap().unwrap();
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
     let env = plugin_env(&lucyd, "weather");
-    assert_eq!(env["WEATHER_KEY"], "w-typed-1");
+    assert_eq!(env["LINEAR_API_KEY"], "w-typed-1");
     assert_eq!(env["CITY"], "Leeds");
     assert_eq!(env["UNITS"], "u-typed-2");
     let mut kept = lucyd.credentials.values();
@@ -173,6 +179,22 @@ fn a_missing_credential_is_asked_for_after_the_confirmation_and_the_call_carries
     assert_eq!(kept, ["Leeds", "u-typed-2", "w-typed-1"]);
     events.end_session().unwrap();
     lucyd.assert_nothing_private_on_bus();
+}
+
+#[test]
+fn a_typed_credential_never_reaches_lucyds_log_or_a_plugins_stderr() {
+    let run = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([ASKED_TEST, "--exact", "--nocapture"])
+        .env("RUST_LOG", "trace")
+        .output()
+        .unwrap();
+
+    let log =
+        String::from_utf8_lossy(&run.stderr).into_owned() + &String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success(), "{log}");
+    assert!(log.contains("1 passed"), "{log}");
+    assert!(!log.contains("w-typed-1"), "{log}");
+    assert!(!log.contains("u-typed-2"), "{log}");
 }
 
 #[test]
@@ -199,10 +221,10 @@ fn a_declined_confirmation_asks_for_no_credential() {
     assert!(!lucyd.state_dir().join("plugins/weather/env").exists());
 }
 
-fn unentered(result: &CallToolResult, reason: &str) {
+fn assert_unentered(result: &CallToolResult, name: &str, reason: &str) {
     assert_eq!(result.is_error, Some(true));
     let said = text(result);
-    assert!(said.contains("WEATHER_KEY"), "{said}");
+    assert!(said.contains(name), "{said}");
     assert!(said.contains(reason), "{said}");
     assert!(said.contains("lucy credentials weather"), "{said}");
     assert!(!said.contains("broken"), "{said}");
@@ -217,10 +239,10 @@ fn a_cancelled_credential_box_fails_the_call_with_where_to_enter_it() {
     let mut events = session(&lucyd);
     let call = model_calls(&lucyd);
 
-    let open = asked_for(&lucyd, &mut holder, &mut events);
+    let open = asked_for(&lucyd, &mut holder, &mut events, "Weather key");
     holder.cancel_input(&open.id).unwrap();
 
-    unentered(&call.join().unwrap().unwrap(), "cancelled");
+    assert_unentered(&call.join().unwrap().unwrap(), "WEATHER_KEY", "cancelled");
     assert!(lucyd.credentials.values().is_empty());
     assert!(!lucyd.state_dir().join("plugins/weather/env").exists());
 }
@@ -233,12 +255,84 @@ fn a_credential_box_left_untyped_fails_the_call_with_where_to_enter_it() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_calls(&lucyd);
-    asked_for(&lucyd, &mut holder, &mut events);
+    asked_for(&lucyd, &mut holder, &mut events, "Weather key");
 
     lucyd.clock.advance_once_set(Duration::from_secs(120));
 
-    unentered(&call.join().unwrap().unwrap(), "timed out");
+    assert_unentered(&call.join().unwrap().unwrap(), "WEATHER_KEY", "timed out");
     assert!(lucyd.credentials.values().is_empty());
+}
+
+#[test]
+fn a_credential_typed_before_a_cancelled_one_is_kept_and_only_the_other_is_asked_again() {
+    let lucyd = Harness::start();
+    let declared = ["GITHUB_OAUTH_TOKEN", "CLIENT_ID"];
+    lucyd.install_plugin("weather", &manifest("weather", &declared));
+    lucyd.approve("weather");
+    let mut holder = lucyd.input("a widget");
+    let mut events = session(&lucyd);
+    let call = model_calls(&lucyd);
+
+    let first = asked_for(&lucyd, &mut holder, &mut events, "Github OAuth token");
+    lucyd.answer_fields(
+        &mut holder,
+        &first.id,
+        &[("GITHUB_OAUTH_TOKEN", "g-typed-1")],
+    );
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+    let second = asked_for(&lucyd, &mut holder, &mut events, "Client ID");
+    holder.cancel_input(&second.id).unwrap();
+
+    assert_unentered(&call.join().unwrap().unwrap(), "CLIENT_ID", "cancelled");
+    assert_eq!(lucyd.credentials.values(), ["g-typed-1"]);
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+
+    let call = model_calls(&lucyd);
+    let again = asked_for(&lucyd, &mut holder, &mut events, "Client ID");
+    assert_eq!(again.fields[0].name, "CLIENT_ID");
+    lucyd.answer_fields(&mut holder, &again.id, &[("CLIENT_ID", "c-typed-2")]);
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let env = plugin_env(&lucyd, "weather");
+    assert_eq!(env["GITHUB_OAUTH_TOKEN"], "g-typed-1");
+    assert_eq!(env["CLIENT_ID"], "c-typed-2");
+}
+
+#[test]
+fn a_plugin_stopped_while_confirming_asks_for_a_credential_gone_meanwhile() {
+    let lucyd = Harness::start();
+    lucyd.install_plugin(
+        "weather",
+        &confirming(&manifest("weather", &["WEATHER_KEY"])),
+    );
+    lucyd.approve("weather");
+    lucyd.credentials.enter("weather", "WEATHER_KEY", "w-old");
+    let mut holder = lucyd.input("a widget");
+    let mut events = session(&lucyd);
+    let confirm = |events: &mut Client| {
+        assert_eq!(next_state(events).state, State::Confirming);
+        line_said(&lucyd);
+    };
+    let call = model_calls(&lucyd);
+    confirm(&mut events);
+    lucyd.say("Yes.");
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+
+    let call = model_calls(&lucyd);
+    confirm(&mut events);
+    lucyd.credentials.forget("weather", "WEATHER_KEY");
+    lucyd.client().set_plugin_enabled("weather", true).unwrap();
+    lucyd.say("Yes.");
+    assert_eq!(next_state(&mut events).state, State::Thinking);
+    let open = asked_for(&lucyd, &mut holder, &mut events, "Weather key");
+    lucyd.answer_fields(&mut holder, &open.id, &[("WEATHER_KEY", "w-new")]);
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert_eq!(plugin_env(&lucyd, "weather")["WEATHER_KEY"], "w-new");
 }
 
 #[test]

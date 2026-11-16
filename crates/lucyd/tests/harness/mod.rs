@@ -1402,6 +1402,13 @@ impl FakeCredentials {
             .insert((plugin.into(), name.into()), value.into());
     }
 
+    pub fn forget(&self, plugin: &str, name: &str) {
+        self.values
+            .lock()
+            .unwrap()
+            .remove(&(plugin.into(), name.into()));
+    }
+
     pub fn values(&self) -> Vec<String> {
         self.values.lock().unwrap().values().cloned().collect()
     }

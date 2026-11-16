@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
-use lucy_ipc::{Field, FieldKind};
+use lucy_ipc::FieldKind;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ElicitRequestParams, ElicitResult,
     ElicitationAction, InputRequest, InputRequests, InputResponses, JsonObject, ProtocolVersion,
@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use crate::adapters::{CredentialStore, Notification, NotificationKind};
-use crate::input::{self, Filled};
+use crate::input::{self, Filled, TypedAnswer};
 use crate::mcp;
 use crate::model_text::CALL_FINISHED;
 use crate::runner::{self, Command, When};
@@ -562,7 +562,7 @@ impl Host {
         let mut credentials = Credentials::default();
         for (name, value) in found {
             match value {
-                Some(value) => credentials.entered.push((name, value)),
+                Some(value) => credentials.entered.push(Credential { name, value }),
                 None => credentials.missing.push(name),
             }
         }
@@ -572,41 +572,43 @@ impl Host {
     async fn ask_missing(
         &self,
         plugin: &Usable,
-        credentials: &mut Credentials,
-    ) -> Result<(), String> {
-        for name in std::mem::take(&mut credentials.missing) {
-            let field = Field {
-                name: name.clone(),
-                description: None,
-                kind: FieldKind::Secret,
-            };
+        credentials: Credentials,
+    ) -> Result<Vec<Credential>, String> {
+        let mut entered = credentials.entered;
+        for name in credentials.missing {
+            let what = format!("your {}", words(&name));
             let message = format!("The {} Plugin needs {name}.", plugin.name);
-            let mut values = match input::fill(&self.commands, &message, vec![field]).await {
-                Filled::Values(values) => values,
-                Filled::Cancelled => {
-                    return Err(unentered(
-                        &plugin.name,
-                        &name,
-                        "the box for it was cancelled",
-                    ))
-                }
-                Filled::TimedOut => {
-                    return Err(unentered(&plugin.name, &name, "the box for it timed out"))
-                }
-            };
-            let value = values
-                .remove(&name)
-                .expect("an answer fills every field asked");
+            let value =
+                match input::ask_for(&self.commands, &what, &message, &name, FieldKind::Secret)
+                    .await
+                {
+                    TypedAnswer::Answer(value) => value,
+                    TypedAnswer::Cancelled => {
+                        return Err(unentered(
+                            &plugin.name,
+                            &name,
+                            "the box for it was cancelled",
+                        ))
+                    }
+                    TypedAnswer::TimedOut => {
+                        return Err(unentered(&plugin.name, &name, "the box for it timed out"))
+                    }
+                };
             self.keep(&plugin.name, &name, &value).await?;
-            credentials.entered.push((name, value));
+            entered.push(Credential { name, value });
         }
-        Ok(())
+        Ok(entered)
+    }
+
+    async fn entered(&self, plugin: &Usable) -> Result<Vec<Credential>, String> {
+        let read = self.credentials(plugin).await?;
+        self.ask_missing(plugin, read).await
     }
 
     async fn start(
         &self,
         plugin: &Usable,
-        env: &[(String, String)],
+        env: &[Credential],
     ) -> Result<RunningService<RoleClient, ()>, String> {
         let state_dir = self.paths.state_dir(&plugin.name);
         std::fs::DirBuilder::new()
@@ -628,7 +630,7 @@ impl Host {
                 command.env(var, value);
             }
         }
-        command.envs(env.iter().map(|(name, value)| (name, value)));
+        command.envs(env.iter().map(|c| (&c.name, &c.value)));
         sandbox::confine(
             &mut command,
             &plugin.folder,
@@ -656,8 +658,35 @@ impl Host {
 
 #[derive(Default)]
 struct Credentials {
-    entered: Vec<(String, String)>,
+    entered: Vec<Credential>,
     missing: Vec<String>,
+}
+
+struct Credential {
+    name: String,
+    value: String,
+}
+
+const ACRONYMS: [&str; 10] = [
+    "API", "URL", "URI", "ID", "SSH", "AWS", "JWT", "HTTP", "SMTP", "IMAP",
+];
+
+fn words(name: &str) -> String {
+    let parts: Vec<String> = name
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .map(|word| match &*word.to_ascii_uppercase() {
+            "OAUTH" => "OAuth".to_owned(),
+            upper if ACRONYMS.contains(&upper) => upper.to_owned(),
+            _ => word.to_ascii_lowercase(),
+        })
+        .collect();
+    let spoken = parts.join(" ");
+    let mut chars = spoken.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => spoken,
+    }
 }
 
 fn unentered(plugin: &str, name: &str, why: &str) -> String {
@@ -839,32 +868,34 @@ impl SessionTools {
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
         }
-        if let Some(read) = &mut read_before_confirming {
-            if let Err(reason) = self.host.ask_missing(&plugin, read).await {
-                return Some(mcp::error(reason));
-            }
-        }
+        let mut entered = match read_before_confirming {
+            Some(read) => match self.host.ask_missing(&plugin, read).await {
+                Ok(entered) => Some(entered),
+                Err(reason) => return Some(mcp::error(reason)),
+            },
+            None => None,
+        };
         let mut barge_ins = self.barge_ins.subscribe();
         let outcome = async {
             let peer = {
                 let mut running = self.running.lock().await;
                 if !running.contains_key(plugin_name) {
-                    let credentials = match read_before_confirming.take() {
-                        Some(read) => read,
-                        None => match self.host.credentials(&plugin).await {
-                            Ok(read) => read,
-                            Err(unreadable) => return Ok(mcp::error(unreadable)),
-                        },
+                    let entered = match entered.take() {
+                        Some(entered) => entered,
+                        None => {
+                            drop(running);
+                            let entered = match self.host.entered(&plugin).await {
+                                Ok(entered) => entered,
+                                Err(reason) => return Ok(mcp::error(reason)),
+                            };
+                            running = self.running.lock().await;
+                            entered
+                        }
                     };
-                    if let Some(name) = credentials.missing.first() {
-                        return Ok(mcp::error(unentered(
-                            &plugin.name,
-                            name,
-                            "the user hasn't entered it",
-                        )));
+                    if !running.contains_key(plugin_name) {
+                        let client = self.host.start(&plugin, &entered).await?;
+                        running.insert(plugin_name.to_owned(), client);
                     }
-                    let client = self.host.start(&plugin, &credentials.entered).await?;
-                    running.insert(plugin_name.to_owned(), client);
                 }
                 running[plugin_name].peer().clone()
             };
