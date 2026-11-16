@@ -8,7 +8,7 @@ Spec: none; wayfinder 25.
 
 **Seams:** none (`AudioIo` and `SpeakerEvent::DeviceLost` unchanged).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -26,3 +26,5 @@ Spec: none; wayfinder 25.
 - [ ] Once, a physical unplug of the USB headset mid-Session behaves like the card-off run (wayfinder 25 only switched the profile)
 
 ## Comments
+
+2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand checks left: the redeployed card-off runs (outside and in a Session), the remap-sink speaker run, and one physical unplug.

@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Public IPC (Roles),
 
 **Seams:** owns the `input` role, the `input.open`/`input.close` events, the `input.answer`/`input.cancel` requests, the `Typing` state, the `[input]` config section, the `ask_typed` Built-in tool (also used by 43, and by lucy-v0-2 04 as a Delegate tool) and the `lucy input` page. Uses `runner::ask` and the `Launcher` adapter.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -37,3 +37,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Public IPC (Roles),
 ## Comments
 
 2026-11-16: the user wants this to be a core ability: anything in the system can open a dialog to ask for information (a URL, a password), then continue once it has the answer.
+
+2026-11-16: built in slice 8 (`lucy-v0-1-slice-8`). Hand check left: "Lucy, I'll type a URL for you" with the bar plugin not holding `input`. Review fixes: the box opens after the line, `lucy input` closes on `input.close`, and an unclaimed launch counts as no terminal after `CLAIM_WAIT` (5 s).
