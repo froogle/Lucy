@@ -133,6 +133,10 @@ impl EchoCanceller for Sonora {
     fn echo_heard(&self) -> Option<bool> {
         self.echo.heard
     }
+
+    fn lucy_playing(&self) -> bool {
+        self.echo.lucy_speaking()
+    }
 }
 
 fn power(samples: &[f32]) -> f32 {

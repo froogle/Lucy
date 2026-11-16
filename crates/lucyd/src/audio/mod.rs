@@ -21,7 +21,7 @@ pub use self::sonora::{too_quiet, Sonora};
 use crate::adapters::SpeechSegment;
 use endpoint::Endpointer;
 pub use gate::BargeInEvent;
-use gate::Gate;
+use gate::{Echo, Gate, Judged};
 pub use livekit::{install_bundled_wake_model, LiveKit};
 pub use silero::Silero;
 
@@ -116,6 +116,11 @@ pub trait EchoCanceller: Send {
     /// Whether Lucy's voice reaches the microphone at all: `None` until it
     /// can tell.
     fn echo_heard(&self) -> Option<bool>;
+
+    /// Whether Lucy's voice has been in its reference just now.
+    fn lucy_playing(&self) -> bool {
+        false
+    }
 }
 
 /// A wake-word detector. It hears every frame, in and out of Sessions.
@@ -467,26 +472,30 @@ impl Listeners {
     fn hear(&mut self, frame: &mut [f32]) {
         let level = rms(frame);
         Meter::raise(&self.meter.level, level);
-        let own_canceller = self.echo.is_some() && self.own_canceller_on;
-        let (mut erle_db, mut echo_heard) = (None, None);
-        if let Some(echo) = self.echo.as_mut().filter(|_| own_canceller) {
-            echo.cancel(frame);
-            erle_db = echo.erle_db();
-            echo_heard = echo.echo_heard();
-        }
+        let (echo, lucy_playing) = match self.echo.as_mut().filter(|_| self.own_canceller_on) {
+            Some(canceller) => {
+                canceller.cancel(frame);
+                let echo = Echo::Cancelled {
+                    erle_db: canceller.erle_db(),
+                    reaches: canceller.echo_heard().into(),
+                };
+                (echo, canceller.lucy_playing())
+            }
+            None => (Echo::Elsewhere, false),
+        };
         self.hear_wake_word_before_its_utterance_ends(frame);
         let was_speaking = self.endpointer.speaking();
         let wake_score = self.wake_word.as_ref().map(|wake_word| wake_word.score());
         let cancelled = rms(frame);
         let (gate, gate_events) = (&mut self.gate, &self.gate_events);
         let segment = self.endpointer.push(frame, |probability, len| {
-            let event = gate.judge(probability, len, erle_db, echo_heard, own_canceller);
-            if gate.window_open() {
+            let Judged { event, converged } = gate.judge(probability, len, echo);
+            if gate.window_open() || lucy_playing {
                 log::debug!(
-                    "gate: p={probability:.2} erle_db={erle_db:?} echo_heard={echo_heard:?} \
-                     settled={} on={} cut={} own_canceller={own_canceller} \
-                     mic_dbfs={:.1} cancelled_dbfs={:.1} wake={wake_score:?} event={event:?}",
-                    gate.converged(erle_db, echo_heard, own_canceller),
+                    "gate: p={probability:.2} echo={echo:?} settled={converged} window={} \
+                     on={} cut={} mic_dbfs={:.1} cancelled_dbfs={:.1} wake={wake_score:?} \
+                     event={event:?}",
+                    gate.window_open(),
                     gate.on(),
                     gate.is_cut(),
                     dbfs(level),

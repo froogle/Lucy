@@ -13,6 +13,40 @@ pub enum BargeInEvent {
     BargeIn,
 }
 
+/// What Lucy's own echo canceller says of her echo, for one chunk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Echo {
+    /// Her canceller is off: the sound server cancels her echo, or nothing does.
+    Elsewhere,
+    Cancelled {
+        erle_db: Option<f32>,
+        reaches: Reaches,
+    },
+}
+
+/// Whether Lucy's voice reaches the microphone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reaches {
+    Unknown,
+    Yes,
+    No,
+}
+
+impl From<Option<bool>> for Reaches {
+    fn from(heard: Option<bool>) -> Reaches {
+        match heard {
+            None => Reaches::Unknown,
+            Some(true) => Reaches::Yes,
+            Some(false) => Reaches::No,
+        }
+    }
+}
+
+pub(super) struct Judged {
+    pub event: Option<BargeInEvent>,
+    pub converged: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Gate {
     config: BargeIn,
@@ -66,23 +100,22 @@ impl Gate {
         self.speech_run = 0;
     }
 
-    pub fn judge(
-        &mut self,
-        probability: f32,
-        len: usize,
-        erle_db: Option<f32>,
-        echo_heard: Option<bool>,
-        own_canceller: bool,
-    ) -> Option<BargeInEvent> {
+    pub fn judge(&mut self, probability: f32, len: usize, echo: Echo) -> Judged {
         if self.lucy_speaking {
             self.warmed += len;
         } else if let Some(since) = &mut self.since_stopped {
             *since += len;
         }
+        let converged = self.converged(echo);
+        let event = self.event(probability, len, converged);
+        Judged { event, converged }
+    }
+
+    fn event(&mut self, probability: f32, len: usize, converged: bool) -> Option<BargeInEvent> {
         if !self.on || self.cut || !self.window_open() {
             return self.unduck();
         }
-        let (threshold, sustain) = if self.converged(erle_db, echo_heard, own_canceller) {
+        let (threshold, sustain) = if converged {
             (self.config.threshold, self.config.sustain_ms)
         } else {
             (
@@ -103,17 +136,15 @@ impl Gate {
         (!std::mem::replace(&mut self.ducked, true)).then_some(BargeInEvent::Duck)
     }
 
-    pub fn converged(
-        &self,
-        erle_db: Option<f32>,
-        echo_heard: Option<bool>,
-        own_canceller: bool,
-    ) -> bool {
-        let nothing_to_cancel = echo_heard == Some(false);
-        self.warmed >= ms_to_samples(self.config.warm_up_ms)
-            && (!own_canceller
-                || erle_db.is_some_and(|erle| erle >= self.config.converged_erle_db)
-                || nothing_to_cancel)
+    fn converged(&self, echo: Echo) -> bool {
+        let cancelled = match echo {
+            Echo::Elsewhere => true,
+            Echo::Cancelled { erle_db, reaches } => {
+                reaches == Reaches::No
+                    || erle_db.is_some_and(|erle| erle >= self.config.converged_erle_db)
+            }
+        };
+        self.warmed >= ms_to_samples(self.config.warm_up_ms) && cancelled
     }
 
     pub fn on(&self) -> bool {
