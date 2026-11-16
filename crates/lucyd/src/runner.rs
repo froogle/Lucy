@@ -313,6 +313,8 @@ impl Runner {
         let answer_timeout = Duration::from_secs_f64(confirmation.timeout_secs);
         let mut answer_timer = SilenceTimer::new(answer_timeout, clock.clone());
         let mut dialog: Option<OpenDialog> = None;
+        let mut due: Option<Dialog> = None;
+        let mut unshown: Option<String> = None;
 
         let mut introducing = first_run;
         let mut unspoken = Vec::new();
@@ -326,6 +328,8 @@ impl Runner {
             let mut segment = None;
             let input = if let Some(input) = opening.take() {
                 input
+            } else if let Some(why) = unshown.take() {
+                Input::Unshown(why)
             } else if let Some(next) = answer_to
                 .is_none()
                 .then(|| {
@@ -341,26 +345,16 @@ impl Runner {
                         if let Some(shown) = ask.shown {
                             self.notify(shown);
                         }
-                        let opened = match &ask.question.expects {
-                            Expects::Typed(typed) => Some(self.open_dialog(typed.clone())),
-                            _ => None,
+                        let timeout = match &ask.question.expects {
+                            Expects::Typed(typed) => {
+                                due = Some(typed.clone());
+                                typing_timeout
+                            }
+                            _ => answer_timeout,
                         };
-                        match opened {
-                            Some(Err(why)) => {
-                                let _ = ask.reply.send(Answer::Cancelled);
-                                Input::Say(why)
-                            }
-                            opened => {
-                                dialog = opened.and_then(Result::ok);
-                                let timeout = match dialog {
-                                    Some(_) => typing_timeout,
-                                    None => answer_timeout,
-                                };
-                                answer_to = Some(ask.reply);
-                                answer_timer.reset_to(timeout);
-                                Input::Ask(ask.question)
-                            }
-                        }
+                        answer_to = Some(ask.reply);
+                        answer_timer.reset_to(timeout);
+                        Input::Ask(ask.question)
                     }
                     Parked::Turn(text, _) => Input::Opening(text),
                 }
@@ -575,6 +569,14 @@ impl Runner {
             }
             if session.state() != State::Typing {
                 dialog = None;
+                due = None;
+            } else if session.box_line_said() {
+                if let Some(typed) = due.take() {
+                    match self.open_dialog(typed) {
+                        Ok(opened) => dialog = Some(opened),
+                        Err(why) => unshown = Some(why),
+                    }
+                }
             }
             silence.set_running(session.silence_timer_runs());
             answer_timer.set_running(session.answer_timer_runs());

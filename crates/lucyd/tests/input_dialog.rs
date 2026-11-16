@@ -48,6 +48,11 @@ fn structured(result: &CallToolResult) -> Value {
         .expect("a structured result")
 }
 
+fn line_said(lucyd: &Harness) {
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+}
+
 fn session(lucyd: &Harness) -> Client {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
@@ -61,6 +66,7 @@ fn ask_typed_opens_the_box_on_the_holder_and_returns_what_was_typed() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
 
     let open = next_open(&mut holder);
     assert_eq!(open.message, "Which page shall I open?");
@@ -114,6 +120,7 @@ fn ask_typed_offers_a_choice_and_returns_the_one_picked() {
         &mut events,
         json!({"question": "Which one?", "kind": "choice", "choices": ["red", "blue"]}),
     );
+    line_said(&lucyd);
 
     let open = next_open(&mut holder);
     assert_eq!(open.fields[0].kind, FieldKind::Choice);
@@ -136,6 +143,7 @@ fn lucy_says_she_has_put_a_box_on_screen_and_waits_in_typing() {
         lucyd.tts.next_sentence(),
         "I've put a box on screen for the URL."
     );
+    lucyd.tts.finish_playing();
     next_open(&mut holder);
     assert_eq!(lucyd.client().status().unwrap().state, State::Typing);
 }
@@ -164,9 +172,8 @@ fn a_cancel_phrase_closes_the_box_and_returns_cancelled() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
     let open = next_open(&mut holder);
-    lucyd.tts.next_sentence();
-    lucyd.tts.finish_playing();
 
     lucyd.say("Never mind.");
 
@@ -181,9 +188,8 @@ fn other_speech_is_ignored_while_typing() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
     let open = next_open(&mut holder);
-    lucyd.tts.next_sentence();
-    lucyd.tts.finish_playing();
 
     lucyd.say("Sorry, I'm on the phone, can you cancel my dentist?");
     lucyd.mumble_handled();
@@ -204,11 +210,12 @@ fn a_barge_in_does_not_close_the_box() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
-    let open = next_open(&mut holder);
     lucyd.tts.next_sentence();
 
     lucyd.wake();
     lucyd.barrier();
+    lucyd.tts.finish_playing();
+    let open = next_open(&mut holder);
 
     assert_eq!(lucyd.client().status().unwrap().state, State::Typing);
     lucyd.answer_input(&mut holder, &open.id, "https://example.com");
@@ -221,9 +228,8 @@ fn the_box_gives_up_after_its_timeout() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
     let open = next_open(&mut holder);
-    lucyd.tts.next_sentence();
-    lucyd.tts.finish_playing();
 
     lucyd.clock.advance_once_set(secs(30));
 
@@ -238,6 +244,7 @@ fn an_indicator_click_ends_the_session_and_closes_the_box() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
     let open = next_open(&mut holder);
     assert_eq!(next_state(&mut events).state, State::Typing);
 
@@ -279,6 +286,7 @@ fn answers_from_a_client_without_the_role_are_refused() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
     let open = next_open(&mut holder);
 
     let refused = lucyd
@@ -303,6 +311,7 @@ fn with_no_holder_lucy_input_is_opened_in_a_terminal_and_answers() {
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
     assert_eq!(next_state(&mut events).state, State::Typing);
+    line_said(&lucyd);
 
     let opened = wait_until("a terminal to open", || lucyd.launcher.terminals().pop());
     let socket = lucyd.socket_path().display().to_string();
@@ -319,11 +328,28 @@ fn with_no_holder_lucy_input_is_opened_in_a_terminal_and_answers() {
 }
 
 #[test]
+fn the_box_opens_only_once_lucy_has_said_she_put_it_there() {
+    let lucyd = Harness::start();
+    let mut events = session(&lucyd);
+    let _call = model_asks(&lucyd, &mut events, url_question());
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "I've put a box on screen for the URL."
+    );
+    lucyd.barrier();
+
+    assert!(lucyd.launcher.terminals().is_empty());
+    lucyd.tts.finish_playing();
+    wait_until("a terminal to open", || lucyd.launcher.terminals().pop());
+}
+
+#[test]
 fn with_no_terminal_the_model_gets_cancelled_and_lucy_says_why() {
     let lucyd = Harness::start();
     lucyd.launcher.no_terminal();
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
 
     let result = call.join().unwrap().unwrap();
     assert_eq!(structured(&result), json!({"result": "cancelled"}));
@@ -337,6 +363,7 @@ fn a_typed_answer_never_reaches_the_bus() {
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
     let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
     let open = next_open(&mut holder);
     lucyd.answer_input(&mut holder, &open.id, "https://example.com/private");
     call.join().unwrap().unwrap();

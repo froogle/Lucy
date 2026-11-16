@@ -24,6 +24,7 @@ pub enum Input {
     Say(String),
     Building(Building),
     Typed(Typed),
+    Unshown(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +135,10 @@ impl Session {
 
     pub fn quiet(&self) -> bool {
         self.state() == State::Listening && !self.speaking && !self.transcribing
+    }
+
+    pub fn box_line_said(&self) -> bool {
+        self.state() == State::Typing && self.queued.is_empty()
     }
 
     pub fn answer_timer_runs(&self) -> bool {
@@ -317,6 +322,14 @@ impl Session {
                 Typed::Cancelled => Answer::Cancelled,
             }),
             Input::Typed(_) => vec![],
+            Input::Unshown(why) if self.state() == State::Typing => {
+                self.asking = None;
+                self.sentence = why;
+                let mut outputs: Vec<Output> = self.speak_sentence().into_iter().collect();
+                outputs.push(Output::Answered(Answer::Cancelled));
+                outputs
+            }
+            Input::Unshown(_) => vec![],
         }
     }
 
