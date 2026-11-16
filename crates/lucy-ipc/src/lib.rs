@@ -252,6 +252,8 @@ pub enum FieldKind {
     Choice {
         choices: Choices,
     },
+    /// A password or key: hidden as it is typed.
+    Secret,
 }
 
 /// The options of a choice field: at least one.

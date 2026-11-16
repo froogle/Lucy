@@ -89,6 +89,32 @@ fn a_number_is_asked_again_until_it_is_one() {
 }
 
 #[test]
+fn a_secret_is_hidden_as_it_is_typed() {
+    let home = Home::with_lucyd();
+    let asked = home.ask_typed("Your LINEAR_KEY?", FieldKind::Secret);
+
+    let esc_mid_entry = Script::new().typed("lin-s3cret").press(KeyCode::Esc);
+    let tui = home.tui(Open::Input, esc_mid_entry);
+
+    assert!(tui.screen.contains("Your LINEAR_KEY?"), "{}", tui.screen);
+    assert!(!tui.screen.contains("lin-s3cret"), "{}", tui.screen);
+    assert_eq!(asked.recv().unwrap(), TypedAnswer::Cancelled);
+}
+
+#[test]
+fn a_secret_typed_is_sent_back() {
+    let home = Home::with_lucyd();
+    let asked = home.ask_typed("Your LINEAR_KEY?", FieldKind::Secret);
+
+    home.tui(Open::Input, Script::new().typed("lin-s3cret").enter());
+
+    assert_eq!(
+        asked.recv().unwrap(),
+        TypedAnswer::Answer("lin-s3cret".to_owned())
+    );
+}
+
+#[test]
 fn with_another_holder_the_page_says_so() {
     let home = Home::with_lucyd();
     let _holder = home.env().connect_as(Some(lucy_ipc::Role::Input)).unwrap();
