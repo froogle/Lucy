@@ -1,12 +1,8 @@
-# 47: No notification when the pinned mic goes missing outside a Session
+# 47: Notify when the pinned mic goes missing outside a Session
 
-**What to build:** With the mic pinned to the USB headset, switching its card off outside a Session gives no notification. lucyd logs "the microphone has gone away" and falls back to the default mic, which hears the Wake word fine. But the Session that then starts doesn't send the spec's "Lucy is using the default device" notification. The same card-off during a Session ends the Session and does notify. Find out why, then fix it.
+**What to build:** When the pinned mic disappears outside a Session, lucyd falls back to the default mic quietly and only notifies "Lucy is using the default device" at the next Session start. That notification lasts 8 s, while the user is talking to Lucy, so in the 2026-11-16 hand check it went unseen. Diagnosis (see Comments) found no bug: the notification was sent and expired as normal.
 
-What the hand check showed (2026-11-16, after ticket 39 was deployed):
-
-- 18:47:24, card off: `microphone error: target not found`, then `the microphone has gone away`.
-- 18:47:43, a Session starts on the Wake word, heard through the OBSBOT camera mic. No notification. A test `notify-send` run from systemd's environment does show, so delivery works.
-- `runner/start.rs` notifies `devices_missing` when `Hearing::configure` finds the pin missing. That goes through `resolve`, which calls `AudioIo::has_device` (cpal device enumeration). The leading hypothesis is that `has_device` still listed the removed node. The reopen loop (`REOPEN_MIC_EVERY`) might also have changed `Hearing`'s state first.
+User decision (2026-11-16): notify at the moment of the loss instead. When the pinned mic is lost outside a Session, lucyd shows the "Lucy is using the default device" notification straight away, and doesn't repeat it at the next Session start while the pin is still missing. If the pin comes back and goes again, that's a new loss and a new notification. A pin found missing at a Session start without an earlier loss notification (for example, lucyd started with it unplugged) still notifies there, as today. A loss during a Session keeps its current path (the Session ends through `error` with its own notification).
 
 Spec: [v0.1](../../lucy-v0-1/spec.md): Audio pipeline, Devices ("A missing pin falls back to the default with one notification and keeps the pin").
 
@@ -18,7 +14,10 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Audio pipeline, Devices ("A missing pin f
 
 **Acceptance:**
 
-- [ ] The cause is named, and a harness test that fails before the fix reproduces it
-- [ ] Redeployed, with the mic pinned: switching its card off outside a Session gives the notification, either on the loss or at the next Session start, once
+- [ ] Harness: the pinned mic lost outside a Session notifies at once; the next Session start doesn't notify again; a pin missing at start with no earlier loss still notifies once
+- [ ] The spec's Devices line says when the notification comes
+- [ ] Redeployed, with the mic pinned: switching its card off outside a Session shows the notification straight away, and the next Session doesn't repeat it
 
 ## Comments
+
+2026-11-16: diagnosed (no lucyd bug): the Session-start notification was sent at 18:47:43.785 and expired after 8 s (Omarchy notification history). `has_device` and `Hearing::configure` report the missing pin correctly on the real headset. Reworked by user decision: notify on the loss.
