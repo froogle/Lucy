@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 
-use tokio::process::Command;
+use crate::command::run;
 
 const CURRENT: &str = "omarchy-hyprland-workspace-layout-current";
 const TOGGLE: &str = "omarchy-hyprland-workspace-layout-toggle";
@@ -60,20 +60,4 @@ pub async fn set(path: &OsStr, mode: Mode) -> Result<bool, String> {
         changed = true;
     }
     Err("Omarchy's layout didn't change to it".into())
-}
-
-async fn run(path: &OsStr, command: &str, args: &[&str]) -> Result<String, String> {
-    let output = Command::new(command)
-        .args(args)
-        .env("PATH", path)
-        .output()
-        .await
-        .map_err(|e| format!("{command} can't run: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{command} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

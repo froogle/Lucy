@@ -71,7 +71,15 @@ impl Omarchy {
         ] {
             write_executable(&bin.join(command), "#!/bin/sh\necho dwindle\n");
         }
+        write_executable(
+            &bin.join("omarchy-toggle-bar"),
+            &format!("#!/bin/sh\necho \"$*\" >> '{}/bar'\n", dir.path().display()),
+        );
         Omarchy { dir, dispatched }
+    }
+
+    fn bar_toggles(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("bar")).unwrap_or_default()
     }
 
     fn bin(&self) -> String {
@@ -84,6 +92,8 @@ impl Omarchy {
         let lucyd = Harness::with_env(&[
             ("HYPRLAND_INSTANCE_SIGNATURE", "sig"),
             ("XDG_RUNTIME_DIR", &runtime),
+            ("OMARCHY_PATH", "/usr/share/omarchy"),
+            ("WAYLAND_DISPLAY", "wayland-1"),
             ("PATH", &bin),
         ]);
         install_omarchy(&lucyd);
@@ -169,9 +179,14 @@ fn on_omarchy_the_shipped_plugin_is_approved_at_scan_and_offered_without_asking(
     assert_eq!(
         tools,
         [
+            "omarchy__bar",
+            "omarchy__idle_lock",
             "omarchy__kill_window",
             "omarchy__layout",
             "omarchy__list_windows",
+            "omarchy__night_light",
+            "omarchy__screenshot",
+            "omarchy__theme",
             "omarchy__window",
             "omarchy__workspace",
         ]
@@ -200,6 +215,21 @@ fn a_window_call_reaches_hyprland_without_a_confirmation() {
         desktop.dispatched(),
         ["hl.dsp.window.move({ workspace = \"1\", follow = false, window = \"address:0xb3\" })"]
     );
+}
+
+#[test]
+fn a_settings_call_runs_omarchys_command_in_the_sandbox_without_a_confirmation() {
+    let desktop = Omarchy::new();
+    let lucyd = desktop.lucyd();
+    let _events = in_a_session(&lucyd);
+
+    let result = lucyd
+        .thinking
+        .call_tool_with("omarchy__bar", json!({"action": "hide"}))
+        .unwrap();
+
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    assert_eq!(desktop.bar_toggles(), "on\n");
 }
 
 #[test]

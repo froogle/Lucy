@@ -1,16 +1,20 @@
 //! The Omarchy Plugin: Lucy's shipped Plugin for the Omarchy desktop. It
 //! manages windows and workspaces by dispatching to Hyprland over its IPC
-//! socket, and changes the tiling layout through Omarchy's own commands. It
-//! runs only the `omarchy-*` commands named here, never arbitrary ones, and
-//! offers no logout, reboot or shutdown.
+//! socket, and changes the tiling layout, theme, bar, night light,
+//! screenshots and screen lock through Omarchy's own commands. It runs only
+//! the `omarchy-*` commands named here, never arbitrary ones, and offers no
+//! logout, reboot or shutdown.
 //!
 //! Its tests drive it through MCP against a fake Hyprland socket and fake
 //! `omarchy-*` commands (`tests/`).
 
+mod command;
 mod hyprland;
 mod layout;
+mod settings;
 
 use std::ffi::OsString;
+use std::future::Future;
 use std::path::PathBuf;
 
 use rmcp::model::{
@@ -241,6 +245,17 @@ impl Omarchy {
         Ok(json!({"done": if changed { "changed" } else { "already so" }}))
     }
 
+    async fn theme(&self, args: &JsonObject) -> Result<Value, String> {
+        match choice(args, &settings::Theme::ALL, settings::Theme::as_str)? {
+            settings::Theme::List => settings::themes(&self.path).await,
+            settings::Theme::Set => {
+                let name = string(args, "name")?.ok_or("set needs the theme's name")?;
+                let theme = settings::set_theme(&self.path, name).await?;
+                Ok(json!({"done": "switched", "theme": theme}))
+            }
+        }
+    }
+
     async fn target(&self, args: &JsonObject) -> Result<Window, String> {
         let windows = self.hyprland.windows().await?;
         let target = string(args, "target")?.unwrap_or("active");
@@ -301,6 +316,35 @@ fn lua_workspace(args: &JsonObject) -> Result<String, String> {
     Ok(lua_string(&workspace))
 }
 
+async fn setting<T: Copy, F, Done>(
+    args: &JsonObject,
+    all: &[T],
+    as_str: fn(T) -> &'static str,
+    change: F,
+) -> Result<Value, String>
+where
+    F: FnOnce(T) -> Done,
+    Done: Future<Output = Result<&'static str, String>>,
+{
+    let done = change(choice(args, all, as_str)?).await?;
+    Ok(json!({"done": done}))
+}
+
+fn choice<T: Copy>(
+    args: &JsonObject,
+    all: &[T],
+    as_str: fn(T) -> &'static str,
+) -> Result<T, String> {
+    let named = string(args, "action")?;
+    all.iter()
+        .copied()
+        .find(|action| Some(as_str(*action)) == named)
+        .ok_or_else(|| {
+            let names: Vec<&str> = all.iter().map(|action| as_str(*action)).collect();
+            format!("action is {}", one_of(&names))
+        })
+}
+
 fn one_of(names: &[&str]) -> String {
     match names {
         [] => String::new(),
@@ -335,6 +379,11 @@ fn string<'a>(args: &'a JsonObject, name: &str) -> Result<Option<&'a str>, Strin
 fn schema(properties: Value, required: &[&str]) -> std::sync::Arc<JsonObject> {
     let schema = json!({"type": "object", "properties": properties, "required": required});
     std::sync::Arc::new(serde_json::from_value(schema).expect("built as an object"))
+}
+
+fn action<T: Copy>(all: &[T], as_str: fn(T) -> &'static str) -> Value {
+    let names: Vec<&str> = all.iter().map(|action| as_str(*action)).collect();
+    json!({"action": {"type": "string", "enum": names}})
 }
 
 fn tools() -> Vec<Tool> {
@@ -394,6 +443,52 @@ fn tools() -> Vec<Tool> {
                 &["mode"],
             ),
         ),
+        Tool::new(
+            "theme",
+            "Lists Omarchy's installed themes and the current one, or switches to an \
+             installed theme by its name.",
+            schema(
+                json!({
+                    "action": {"type": "string", "enum": settings::Theme::ALL.map(settings::Theme::as_str)},
+                    "name": {"type": "string", "description": "The theme's name, for set, as list gives it."},
+                }),
+                &["action"],
+            ),
+        ),
+        Tool::new(
+            "bar",
+            "Shows, hides or toggles Omarchy's bar.",
+            schema(
+                action(&settings::Bar::ALL, settings::Bar::as_str),
+                &["action"],
+            ),
+        ),
+        Tool::new(
+            "night_light",
+            "Turns Omarchy's night light (a warmer screen) on or off, or toggles it.",
+            schema(
+                action(&settings::NightLight::ALL, settings::NightLight::as_str),
+                &["action"],
+            ),
+        ),
+        Tool::new(
+            "screenshot",
+            "Takes a screenshot and saves it: the whole screen, or a region or window the \
+             user then picks with the mouse.",
+            schema(
+                action(&settings::Screenshot::ALL, settings::Screenshot::as_str),
+                &["action"],
+            ),
+        ),
+        Tool::new(
+            "idle_lock",
+            "Locks the screen now, or keeps the computer awake (no idle lock or screensaver) \
+             until idling is allowed again.",
+            schema(
+                action(&settings::IdleLock::ALL, settings::IdleLock::as_str),
+                &["action"],
+            ),
+        ),
     ]
 }
 
@@ -431,6 +526,43 @@ impl ServerHandler for Omarchy {
             "kill_window" => self.kill_window(&args).await,
             "workspace" => self.workspace(&args).await,
             "layout" => self.layout(&args).await,
+            "theme" => self.theme(&args).await,
+            "bar" => {
+                setting(
+                    &args,
+                    &settings::Bar::ALL,
+                    settings::Bar::as_str,
+                    |action| settings::bar(&self.path, action),
+                )
+                .await
+            }
+            "night_light" => {
+                setting(
+                    &args,
+                    &settings::NightLight::ALL,
+                    settings::NightLight::as_str,
+                    |action| settings::night_light(&self.path, action),
+                )
+                .await
+            }
+            "screenshot" => {
+                setting(
+                    &args,
+                    &settings::Screenshot::ALL,
+                    settings::Screenshot::as_str,
+                    |action| settings::screenshot(&self.path, action),
+                )
+                .await
+            }
+            "idle_lock" => {
+                setting(
+                    &args,
+                    &settings::IdleLock::ALL,
+                    settings::IdleLock::as_str,
+                    |action| settings::idle_lock(&self.path, action),
+                )
+                .await
+            }
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };
         Ok(answer(outcome).into())

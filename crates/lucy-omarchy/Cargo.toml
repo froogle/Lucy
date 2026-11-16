@@ -1,6 +1,6 @@
 [package]
 name = "lucy-omarchy"
-description = "The Omarchy Plugin: windows, workspaces and layouts on the Omarchy desktop"
+description = "The Omarchy Plugin: windows, workspaces, layouts and Omarchy's settings on the Omarchy desktop"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

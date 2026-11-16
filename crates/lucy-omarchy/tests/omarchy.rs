@@ -30,10 +30,7 @@ fn window(address: &str) -> String {
 #[test]
 fn the_manifest_lists_exactly_the_tools_it_offers_and_only_kill_window_confirms() {
     let omarchy = Plugin::start();
-    let manifest: toml::Table = toml::from_str(
-        &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/manifest.toml")).unwrap(),
-    )
-    .unwrap();
+    let manifest = manifest();
     let tools = manifest["tools"].as_array().unwrap();
     let mut declared: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     let confirmed: Vec<&str> = tools
@@ -49,15 +46,62 @@ fn the_manifest_lists_exactly_the_tools_it_offers_and_only_kill_window_confirms(
     assert_eq!(
         offered,
         [
+            "bar",
+            "idle_lock",
             "kill_window",
             "layout",
             "list_windows",
+            "night_light",
+            "screenshot",
+            "theme",
             "window",
             "workspace"
         ]
     );
     assert_eq!(declared, offered);
     assert_eq!(confirmed, ["kill_window"]);
+}
+
+#[test]
+fn the_manifest_declares_exactly_the_commands_its_tools_run() {
+    let omarchy = desktop();
+    let calls = [
+        ("layout", json!({"mode": "scrolling"})),
+        ("theme", json!({"action": "list"})),
+        ("theme", json!({"action": "set", "name": "Rose Pine"})),
+        ("bar", json!({"action": "toggle"})),
+        ("night_light", json!({"action": "toggle"})),
+        ("screenshot", json!({"action": "screen"})),
+        ("idle_lock", json!({"action": "lock"})),
+        ("idle_lock", json!({"action": "stay_awake"})),
+    ];
+    for (tool, arguments) in calls {
+        omarchy.call(tool, arguments);
+    }
+
+    let mut ran: Vec<String> = omarchy
+        .ran()
+        .iter()
+        .map(|ran| ran.split(' ').next().unwrap().to_owned())
+        .collect();
+    ran.sort();
+    ran.dedup();
+    let manifest = manifest();
+    let mut declared: Vec<&str> = manifest["access"]["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|command| command.as_str().unwrap())
+        .collect();
+    declared.sort();
+    assert_eq!(declared, ran);
+}
+
+fn manifest() -> toml::Table {
+    toml::from_str(
+        &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/manifest.toml")).unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]
@@ -260,4 +304,128 @@ fn layout_already_in_the_mode_asked_for_changes_nothing() {
 
     assert_eq!(done["done"], "already so");
     assert_eq!(omarchy.toggles(), Vec::<String>::new());
+}
+
+#[test]
+fn bar_shows_hides_or_toggles_it_through_omarchys_bar_toggle() {
+    let omarchy = desktop();
+
+    omarchy.call("bar", json!({"action": "hide"}));
+    omarchy.call("bar", json!({"action": "show"}));
+    omarchy.call("bar", json!({"action": "toggle"}));
+
+    assert_eq!(
+        omarchy.ran(),
+        [
+            "omarchy-toggle-bar on",
+            "omarchy-toggle-bar off",
+            "omarchy-toggle-bar toggle"
+        ]
+    );
+}
+
+#[test]
+fn night_light_turns_on_and_off_by_toggling_only_when_it_must() {
+    let omarchy = desktop();
+
+    let on = omarchy.call("night_light", json!({"action": "on"}));
+    let again = omarchy.call("night_light", json!({"action": "on"}));
+    assert!(omarchy.night_light());
+    let off = omarchy.call("night_light", json!({"action": "off"}));
+
+    assert_eq!(on["done"], "now on");
+    assert_eq!(again["done"], "already so");
+    assert_eq!(off["done"], "now off");
+    assert!(!omarchy.night_light());
+    let toggles: Vec<String> = omarchy
+        .ran()
+        .into_iter()
+        .filter(|ran| ran != "omarchy-toggle-nightlight --status")
+        .collect();
+    assert_eq!(
+        toggles,
+        ["omarchy-toggle-nightlight ", "omarchy-toggle-nightlight "]
+    );
+}
+
+#[test]
+fn night_light_toggle_says_which_way_it_went() {
+    let omarchy = desktop();
+
+    let first = omarchy.call("night_light", json!({"action": "toggle"}));
+    let second = omarchy.call("night_light", json!({"action": "toggle"}));
+
+    assert_eq!(first["done"], "now on");
+    assert_eq!(second["done"], "now off");
+}
+
+#[test]
+fn screenshot_saves_the_screen_a_region_or_a_window_through_omarchys_capture() {
+    let omarchy = desktop();
+
+    omarchy.call("screenshot", json!({"action": "screen"}));
+    omarchy.call("screenshot", json!({"action": "region"}));
+    omarchy.call("screenshot", json!({"action": "window"}));
+
+    assert_eq!(
+        omarchy.ran(),
+        [
+            "omarchy-capture-screenshot fullscreen save",
+            "omarchy-capture-screenshot region save",
+            "omarchy-capture-screenshot windows save",
+        ]
+    );
+}
+
+#[test]
+fn theme_list_gives_the_installed_themes_and_the_current_one() {
+    let omarchy = desktop();
+
+    let listed = omarchy.call("theme", json!({"action": "list"}));
+
+    assert_eq!(
+        listed,
+        json!({"themes": ["Catppuccin", "Rose Pine", "Tokyo Night"], "current": "Catppuccin"})
+    );
+}
+
+#[test]
+fn theme_set_switches_to_the_installed_theme_named_in_any_case() {
+    let omarchy = desktop();
+
+    let done = omarchy.call("theme", json!({"action": "set", "name": "tokyo night"}));
+
+    assert_eq!(omarchy.theme(), "Tokyo Night");
+    assert_eq!(done["theme"], "Tokyo Night");
+}
+
+#[test]
+fn theme_set_to_a_theme_not_installed_is_refused_naming_the_installed_ones() {
+    let omarchy = desktop();
+
+    let refused = omarchy.refused("theme", json!({"action": "set", "name": "Dracula"}));
+
+    assert!(
+        refused.contains("Dracula") && refused.contains("Rose Pine"),
+        "{refused}"
+    );
+    assert_eq!(omarchy.theme(), "Catppuccin");
+}
+
+#[test]
+fn idle_lock_locks_the_screen_or_keeps_it_awake() {
+    let omarchy = desktop();
+
+    omarchy.call("idle_lock", json!({"action": "lock"}));
+    omarchy.call("idle_lock", json!({"action": "stay_awake"}));
+    omarchy.call("idle_lock", json!({"action": "allow_idle"}));
+
+    assert_eq!(
+        omarchy.ran(),
+        [
+            "omarchy-system-lock ",
+            "omarchy-toggle-idle stay-awake",
+            "omarchy-toggle-idle allow-idle",
+        ]
+    );
 }

@@ -313,6 +313,32 @@ fn landlock_confines_a_plugin_to_its_declared_paths() {
 }
 
 #[test]
+fn a_declared_path_under_xdg_runtime_dir_is_writable_where_it_points() {
+    let runtime = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let runtime_dir = runtime.path().display().to_string();
+    let lucyd = Harness::with_env(&[("XDG_RUNTIME_DIR", &runtime_dir)]);
+    lucyd.install_plugin(
+        "fixture",
+        &manifest("fixture", &["write_file"], "write = [\"$XDG_RUNTIME_DIR\"]"),
+    );
+    lucyd.approve("fixture");
+    lucyd.client().start_session().unwrap();
+    let write = |path: &std::path::Path| {
+        lucyd
+            .thinking
+            .call_tool_with("fixture__write_file", json!({"path": path, "text": "x"}))
+            .unwrap()
+    };
+
+    let written = write(&runtime.path().join("omarchy-theme-set.lock"));
+    let refused = write(&elsewhere.path().join("note"));
+
+    assert_eq!(written.is_error, Some(false), "{}", text(&written));
+    assert_eq!(refused.is_error, Some(true));
+}
+
+#[test]
 fn each_plugin_gets_a_private_writable_state_dir() {
     use std::os::unix::fs::PermissionsExt;
     let lucyd = Harness::start();

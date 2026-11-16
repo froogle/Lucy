@@ -136,32 +136,57 @@ impl Plugin {
         let hyprland = Hyprland::serve(&dir.path().join(".socket.sock"));
         let bin = dir.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
-        write_executable(
-            &bin.join("omarchy-hyprland-workspace-layout-current"),
-            &format!(
-                "#!/bin/sh\nread layout < '{}/layout'\necho \"$layout\"\n",
-                dir.path().display()
-            ),
+        let fake = |command: &str, body: &str| {
+            write_executable(
+                &bin.join(command),
+                &format!(
+                    "#!/bin/sh\ncd '{}'\necho \"{command} $*\" >> ran\n{body}",
+                    dir.path().display()
+                ),
+            );
+        };
+        fake(
+            "omarchy-hyprland-workspace-layout-current",
+            "read layout < layout\necho \"$layout\"\n",
         );
-        write_executable(
-            &bin.join("omarchy-hyprland-workspace-layout-toggle"),
-            &format!(
-                "#!/bin/sh\n\
-                 cd '{}'\n\
-                 echo \"toggle $*\" >> toggles\n\
-                 read layout < layout\n\
-                 case \"$1:$layout\" in\n\
-                 back:dwindle) next=floating ;;\n\
-                 back:floating) next=scrolling ;;\n\
-                 back:*) next=dwindle ;;\n\
-                 *:dwindle) next=scrolling ;;\n\
-                 *:scrolling) next=floating ;;\n\
-                 *) next=dwindle ;;\n\
-                 esac\n\
-                 echo $next > layout\n",
-                dir.path().display()
-            ),
+        fake(
+            "omarchy-hyprland-workspace-layout-toggle",
+            "echo \"toggle $*\" >> toggles\n\
+             read layout < layout\n\
+             case \"$1:$layout\" in\n\
+             back:dwindle) next=floating ;;\n\
+             back:floating) next=scrolling ;;\n\
+             back:*) next=dwindle ;;\n\
+             *:dwindle) next=scrolling ;;\n\
+             *:scrolling) next=floating ;;\n\
+             *) next=dwindle ;;\n\
+             esac\n\
+             echo $next > layout\n",
         );
+        fake(
+            "omarchy-theme-list",
+            "printf 'Catppuccin\\nRose Pine\\nTokyo Night\\n'\n",
+        );
+        fake(
+            "omarchy-theme-current",
+            "read theme < theme\necho \"$theme\"\n",
+        );
+        fake("omarchy-theme-set", "echo \"$1\" > theme\n");
+        std::fs::write(dir.path().join("theme"), "Catppuccin\n").unwrap();
+        fake("omarchy-toggle-bar", "");
+        fake("omarchy-capture-screenshot", "");
+        fake("omarchy-system-lock", "");
+        fake("omarchy-toggle-idle", "");
+        fake(
+            "omarchy-toggle-nightlight",
+            "read on < nightlight\n\
+             if [ \"$1\" = --status ]; then\n\
+             echo \"{\\\"enabled\\\":$on,\\\"temperature\\\":4000}\"\n\
+             elif [ \"$on\" = true ]; then echo false > nightlight\n\
+             else echo true > nightlight\n\
+             fi\n",
+        );
+        std::fs::write(dir.path().join("nightlight"), "false\n").unwrap();
         std::fs::write(dir.path().join("layout"), "dwindle\n").unwrap();
 
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -205,6 +230,25 @@ impl Plugin {
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    pub fn ran(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.path().join("ran"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    pub fn theme(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("theme"))
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    pub fn night_light(&self) -> bool {
+        std::fs::read_to_string(self.dir.path().join("nightlight")).unwrap() == "true\n"
     }
 
     pub fn layout(&self) -> String {

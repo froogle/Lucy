@@ -598,6 +598,7 @@ impl Host {
             &plugin.folder,
             &state_dir,
             &plugin.manifest.access,
+            &self.environment,
         )
         .map_err(|e| format!("its sandbox can't be set up: {e}"))?;
         let transport =
