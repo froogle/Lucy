@@ -483,7 +483,7 @@ fn dialog_error(e: input::Refusal) -> RpcError {
             error_code::NO_DIALOG,
             "no Input dialog with that id is open; Lucy may have closed it",
         ),
-        input::Refusal::Fields => RpcError::new(
+        input::Refusal::WrongFields => RpcError::new(
             error_code::INVALID_PARAMS,
             "values must hold a value for each of the dialog's fields, and nothing else",
         ),

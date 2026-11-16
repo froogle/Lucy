@@ -204,7 +204,7 @@ impl Runner {
             Command::TurnOrNextSession(text, kept) => {
                 self.keep(Parked::Turn(text, When::QuietOrNextSession(kept)));
             }
-            Command::Say(_aside_without_a_turn) => {}
+            Command::Say(_) => {}
             command => return Some(command),
         }
         None
@@ -268,7 +268,7 @@ impl Runner {
         let (events_tx, mut events) = mpsc::unbounded_channel();
         let start::Started {
             mut model,
-            token: _revoked_when_the_session_ends,
+            token: _relay_token,
             settings,
             first_run,
             opened,

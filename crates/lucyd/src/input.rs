@@ -29,7 +29,7 @@ pub enum TypedAnswer {
 #[derive(Debug)]
 pub enum Refusal {
     NoDialog,
-    Fields,
+    WrongFields,
 }
 
 #[derive(Clone)]
@@ -173,7 +173,7 @@ impl InputClaim {
         };
         let names = open.request.fields.iter().map(|field| &field.name);
         if !names.eq(values.keys()) {
-            return Err(Refusal::Fields);
+            return Err(Refusal::WrongFields);
         }
         let open = inner.take(id).expect("checked above");
         let _ = open.reply.send(Answer::Typed(values));

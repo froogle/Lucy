@@ -73,14 +73,14 @@ fn open(
     lost: mpsc::Sender<()>,
 ) -> Result<cpal::Stream, Error> {
     let device = find(Direction::Input, mic).map_err(Error)?;
-    let mono_16k = cpal::StreamConfig {
+    let lucys_format = cpal::StreamConfig {
         channels: 1,
         sample_rate: SAMPLE_RATE,
         buffer_size: cpal::BufferSize::Default,
     };
     let stream = device
         .build_input_stream(
-            mono_16k,
+            lucys_format,
             move |data: &[f32], _| push_until_full(&mut ring, data),
             move |e| {
                 eprintln!("lucyd: microphone error: {e}");

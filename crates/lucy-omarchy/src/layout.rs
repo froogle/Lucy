@@ -5,6 +5,8 @@ use tokio::process::Command;
 const CURRENT: &str = "omarchy-hyprland-workspace-layout-current";
 const TOGGLE: &str = "omarchy-hyprland-workspace-layout-toggle";
 
+const MOST_TOGGLES: usize = Mode::ALL.len();
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Tiling,
@@ -47,7 +49,7 @@ impl Mode {
 
 pub async fn set(path: &OsStr, mode: Mode) -> Result<bool, String> {
     let mut changed = false;
-    for _ in 0..3 {
+    for _ in 0..MOST_TOGGLES {
         let current = run(path, CURRENT, &[]).await?;
         let current = Mode::from_omarchy(current.trim());
         if current == Some(mode) {

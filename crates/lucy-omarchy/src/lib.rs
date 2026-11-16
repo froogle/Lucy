@@ -136,18 +136,20 @@ impl Omarchy {
         let at = lua_window(&window);
         let done = match action {
             Action::Focus => {
-                self.dispatch(&format!("hl.dsp.focus({{ window = {at} }})"))
+                self.hyprland
+                    .dispatch(&format!("hl.dsp.focus({{ window = {at} }})"))
                     .await?;
                 "focused"
             }
             Action::Close => {
-                self.dispatch(&format!("hl.dsp.window.close({{ window = {at} }})"))
+                self.hyprland
+                    .dispatch(&format!("hl.dsp.window.close({{ window = {at} }})"))
                     .await?;
                 "asked to close; the app may ask about unsaved work"
             }
             Action::MoveToWorkspace => {
                 let workspace = lua_workspace(args)?;
-                self.dispatch(&format!(
+                self.hyprland.dispatch(&format!(
                     "hl.dsp.window.move({{ workspace = {workspace}, follow = false, window = {at} }})"
                 ))
                 .await?;
@@ -155,10 +157,12 @@ impl Omarchy {
             }
             Action::Fullscreen => {
                 if self.hyprland.active_window().await?.as_ref() != Some(&window.address) {
-                    self.dispatch(&format!("hl.dsp.focus({{ window = {at} }})"))
+                    self.hyprland
+                        .dispatch(&format!("hl.dsp.focus({{ window = {at} }})"))
                         .await?;
                 }
-                self.dispatch("hl.dsp.window.fullscreen({ mode = \"fullscreen\" })")
+                self.hyprland
+                    .dispatch("hl.dsp.window.fullscreen({ mode = \"fullscreen\" })")
                     .await?;
                 if window.fullscreen != 0 {
                     "no longer full screen"
@@ -167,10 +171,11 @@ impl Omarchy {
                 }
             }
             Action::Float => {
-                self.dispatch(&format!(
-                    "hl.dsp.window.float({{ action = \"toggle\", window = {at} }})"
-                ))
-                .await?;
+                self.hyprland
+                    .dispatch(&format!(
+                        "hl.dsp.window.float({{ action = \"toggle\", window = {at} }})"
+                    ))
+                    .await?;
                 if window.floating {
                     "now tiled"
                 } else {
@@ -178,7 +183,8 @@ impl Omarchy {
                 }
             }
             Action::Pin => {
-                self.dispatch(&format!("hl.dsp.window.pin({{ window = {at} }})"))
+                self.hyprland
+                    .dispatch(&format!("hl.dsp.window.pin({{ window = {at} }})"))
                     .await?;
                 if window.pinned {
                     "no longer pinned"
@@ -193,7 +199,8 @@ impl Omarchy {
     async fn kill_window(&self, args: &JsonObject) -> Result<Value, String> {
         let window = self.target(args).await?;
         let at = lua_window(&window);
-        self.dispatch(&format!("hl.dsp.window.kill({{ window = {at} }})"))
+        self.hyprland
+            .dispatch(&format!("hl.dsp.window.kill({{ window = {at} }})"))
             .await?;
         Ok(json!({"window": described(&window), "done": "force-quit"}))
     }
@@ -202,17 +209,19 @@ impl Omarchy {
         let workspace = lua_workspace(args)?;
         match string(args, "action")? {
             Some("switch") => {
-                self.dispatch(&format!("hl.dsp.focus({{ workspace = {workspace} }})"))
+                self.hyprland
+                    .dispatch(&format!("hl.dsp.focus({{ workspace = {workspace} }})"))
                     .await?;
                 Ok(json!({"done": "switched"}))
             }
             Some("rename") => {
                 let name = string(args, "name")?.ok_or("rename needs the new name")?;
                 let name = lua_string(one_line(name)?);
-                self.dispatch(&format!(
-                    "hl.dsp.workspace.rename({{ workspace = {workspace}, name = {name} }})"
-                ))
-                .await?;
+                self.hyprland
+                    .dispatch(&format!(
+                        "hl.dsp.workspace.rename({{ workspace = {workspace}, name = {name} }})"
+                    ))
+                    .await?;
                 Ok(json!({"done": "renamed"}))
             }
             _ => Err("action is switch or rename".into()),
@@ -273,10 +282,6 @@ impl Omarchy {
             .into_iter()
             .find(|w| w.address == address)
             .ok_or_else(|| format!("no window has the address {address}"))
-    }
-
-    async fn dispatch(&self, dispatcher: &str) -> Result<(), String> {
-        self.hyprland.dispatch(dispatcher).await
     }
 }
 
