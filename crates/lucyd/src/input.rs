@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use lucy_ipc::{Event, Field, FieldKind, InputClose, InputOpen};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use serde_json::json;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::mcp::{error, tool};
 use crate::runner::{self, Command};
@@ -41,6 +41,7 @@ pub enum Refusal {
 #[derive(Clone)]
 pub struct Dialogs {
     inner: Arc<Mutex<Inner>>,
+    held: Arc<watch::Sender<bool>>,
     page: Vec<String>,
 }
 
@@ -75,12 +76,20 @@ impl Dialogs {
     pub fn new(page: Vec<String>) -> Self {
         Dialogs {
             inner: Arc::default(),
+            held: Arc::new(watch::Sender::new(false)),
             page,
         }
     }
 
     pub fn page(&self) -> &[String] {
         &self.page
+    }
+
+    pub fn claimed(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut held = self.held.subscribe();
+        async move {
+            let _ = held.wait_for(|held| *held).await;
+        }
     }
 
     pub fn claim(&self) -> Option<InputClaim> {
@@ -90,6 +99,7 @@ impl Dialogs {
         }
         let (holder, events) = mpsc::unbounded_channel();
         inner.holder = Some(holder);
+        self.held.send_replace(true);
         if let Some(open) = &inner.open {
             inner.send(Event::InputOpen(open.request.clone()));
         }
@@ -123,6 +133,7 @@ impl Dialogs {
     fn release(&self) {
         let mut inner = self.inner.locked();
         inner.holder = None;
+        self.held.send_replace(false);
         let closed_by_user = inner.open.take();
         if let Some(open) = closed_by_user {
             let _ = open.reply.send(Typed::Cancelled);

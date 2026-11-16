@@ -4,6 +4,8 @@ mod start;
 
 use std::collections::VecDeque;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -314,6 +316,7 @@ impl Runner {
         let mut answer_timer = SilenceTimer::new(answer_timeout, clock.clone());
         let mut dialog: Option<OpenDialog> = None;
         let mut due: Option<Dialog> = None;
+        let mut claim_wait: Option<Box<dyn Timer>> = None;
         let mut unshown: Option<String> = None;
 
         let mut introducing = first_run;
@@ -377,6 +380,15 @@ impl Runner {
                         return;
                     }
                 },
+                () = self.buses.dialogs.claimed(), if claim_wait.is_some() => {
+                    claim_wait = None;
+                    continue;
+                }
+                () = waited(&claim_wait) => {
+                    dialog = None;
+                    claim_wait = None;
+                    Input::Unshown(NO_TERMINAL.to_owned())
+                }
                 command = self.commands.recv() => match command {
                     Some(Command::Start(reply)) => {
                         let _ = reply.send(Err(StartError));
@@ -570,10 +582,14 @@ impl Runner {
             if session.state() != State::Typing {
                 dialog = None;
                 due = None;
+                claim_wait = None;
             } else if session.box_line_said() {
                 if let Some(typed) = due.take() {
                     match self.open_dialog(typed) {
-                        Ok(opened) => dialog = Some(opened),
+                        Ok(showing) => {
+                            dialog = Some(showing.dialog);
+                            claim_wait = showing.claim_wait;
+                        }
                         Err(why) => unshown = Some(why),
                     }
                 }
@@ -587,17 +603,27 @@ impl Runner {
         }
     }
 
-    fn open_dialog(&self, typed: Dialog) -> Result<OpenDialog, String> {
-        let (opened, held) = self.buses.dialogs.open(typed);
+    fn open_dialog(&self, typed: Dialog) -> Result<Showing, String> {
+        let (dialog, held) = self.buses.dialogs.open(typed);
         if held {
-            return Ok(opened);
+            return Ok(Showing {
+                dialog,
+                claim_wait: None,
+            });
         }
         match self
             .adapters
             .launcher
             .open_terminal(self.buses.dialogs.page())
         {
-            Ok(()) => Ok(opened),
+            Ok(()) => {
+                let mut claim_wait = self.adapters.clock.timer();
+                claim_wait.set(Some(self.adapters.clock.now() + CLAIM_WAIT));
+                Ok(Showing {
+                    dialog,
+                    claim_wait: Some(claim_wait),
+                })
+            }
             Err(e) => {
                 eprintln!("lucyd: can't open lucy input in a terminal: {e}");
                 Err(NO_TERMINAL.to_owned())
@@ -635,8 +661,22 @@ impl Runner {
     }
 }
 
+struct Showing {
+    dialog: OpenDialog,
+    claim_wait: Option<Box<dyn Timer>>,
+}
+
+const CLAIM_WAIT: Duration = Duration::from_secs(5);
+
 const NO_TERMINAL: &str =
     "I couldn't put a box on screen: no terminal opened, and nothing else can show one.";
+
+fn waited(timer: &Option<Box<dyn Timer>>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    match timer {
+        Some(timer) => timer.fired(),
+        None => Box::pin(std::future::pending()),
+    }
+}
 
 async fn typed(dialog: &mut Option<OpenDialog>) -> Typed {
     match dialog {

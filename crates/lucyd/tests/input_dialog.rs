@@ -344,6 +344,43 @@ fn the_box_opens_only_once_lucy_has_said_she_put_it_there() {
 }
 
 #[test]
+fn when_no_page_claims_the_box_soon_the_model_gets_cancelled_and_lucy_says_why() {
+    let lucyd = Harness::start();
+    let mut events = session(&lucyd);
+    let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
+    wait_until("a terminal to open", || lucyd.launcher.terminals().pop());
+
+    lucyd.clock.advance_once_set(secs(5));
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(structured(&result), json!({"result": "cancelled"}));
+    let said = lucyd.tts.next_sentence();
+    assert!(said.contains("couldn't put a box on screen"), "{said}");
+}
+
+#[test]
+fn a_page_that_claims_the_box_in_time_keeps_it() {
+    let lucyd = Harness::start();
+    let mut events = session(&lucyd);
+    let call = model_asks(&lucyd, &mut events, url_question());
+    line_said(&lucyd);
+    wait_until("a terminal to open", || lucyd.launcher.terminals().pop());
+    let mut page = lucyd.input("lucy input");
+    let open = next_open(&mut page);
+    lucyd.barrier();
+
+    lucyd.clock.advance(secs(5));
+
+    lucyd.answer_input(&mut page, &open.id, "https://example.com");
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(
+        structured(&result),
+        json!({"answer": "https://example.com"})
+    );
+}
+
+#[test]
 fn with_no_terminal_the_model_gets_cancelled_and_lucy_says_why() {
     let lucyd = Harness::start();
     lucyd.launcher.no_terminal();
