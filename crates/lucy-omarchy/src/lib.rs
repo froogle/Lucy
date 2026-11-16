@@ -146,23 +146,31 @@ impl Omarchy {
                 }
                 self.dispatch("hl.dsp.window.fullscreen({ mode = \"fullscreen\" })")
                     .await?;
-                toggled(
-                    window.fullscreen != 0,
-                    "now full screen",
-                    "no longer full screen",
-                )
+                if window.fullscreen != 0 {
+                    "no longer full screen"
+                } else {
+                    "now full screen"
+                }
             }
             Action::Float => {
                 self.dispatch(&format!(
                     "hl.dsp.window.float({{ action = \"toggle\", window = {at} }})"
                 ))
                 .await?;
-                toggled(window.floating, "now floating", "now tiled")
+                if window.floating {
+                    "now tiled"
+                } else {
+                    "now floating"
+                }
             }
             Action::Pin => {
                 self.dispatch(&format!("hl.dsp.window.pin({{ window = {at} }})"))
                     .await?;
-                toggled(window.pinned, "now pinned", "no longer pinned")
+                if window.pinned {
+                    "no longer pinned"
+                } else {
+                    "now pinned"
+                }
             }
         };
         Ok(json!({"window": described(&window), "done": done}))
@@ -250,14 +258,6 @@ impl Omarchy {
 
     async fn dispatch(&self, dispatcher: &str) -> Result<(), String> {
         self.hyprland.dispatch(dispatcher).await
-    }
-}
-
-fn toggled(was_on: bool, on: &'static str, off: &'static str) -> &'static str {
-    if was_on {
-        off
-    } else {
-        on
     }
 }
 
