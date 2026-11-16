@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 use super::Runner;
+use crate::notifications;
 
 /// A `test.mic_level` or `test.wake_word` request.
 pub enum SetupTest {
@@ -57,8 +58,12 @@ impl Runner {
             .as_mut()
             .ok_or(SetupTestError::NoMicrophone)?;
         let settings = lucy_config::load(&self.files.config_path).unwrap_or_default();
-        hearing.configure(&settings.audio, &settings.endpointing, &settings.barge_in);
-        Ok(hearing.take_level())
+        let devices = hearing.configure(&settings.audio, &settings.endpointing, &settings.barge_in);
+        let level = hearing.take_level();
+        if !devices.missing.is_empty() {
+            self.notify(notifications::devices_missing(&devices.missing));
+        }
+        Ok(level)
     }
 
     fn forget_earlier_wake_words(&mut self) {

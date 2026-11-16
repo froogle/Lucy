@@ -51,6 +51,69 @@ fn a_missing_pinned_mic_falls_back_to_the_default_with_one_notification_and_keep
 }
 
 #[test]
+fn losing_the_pinned_mic_outside_a_session_notifies_at_once() {
+    let lucyd = Harness::hearing(PINNED);
+    let _indicator = lucyd.indicator("lucy-indicator");
+
+    lucyd.mic.unplug(MIC);
+    lucyd.mic.lose();
+
+    let shown = lucyd.notifier.next_notification();
+    assert_eq!(shown.summary, "Lucy is using the default device");
+    assert!(shown.body.contains(MIC), "{shown:?}");
+    assert_eq!(lucyd.mic.opened().as_deref(), Some("default"));
+}
+
+#[test]
+fn the_session_after_a_pinned_mic_loss_does_not_notify_again() {
+    let lucyd = Harness::hearing(PINNED);
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let mut client = lucyd.client();
+    lucyd.mic.unplug(MIC);
+    lucyd.mic.lose();
+    lucyd.notifier.next_notification();
+
+    client.start_session().unwrap();
+
+    assert_eq!(lucyd.mic.opened().as_deref(), Some("default"));
+    lucyd.notifier.assert_no_notification();
+}
+
+#[test]
+fn a_pinned_mic_that_comes_back_and_goes_again_notifies_again() {
+    let lucyd = Harness::hearing(PINNED);
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let mut client = lucyd.client();
+    lucyd.mic.unplug(MIC);
+    lucyd.mic.lose();
+    lucyd.notifier.next_notification();
+    lucyd.mic.plug_in(MIC);
+    client.start_session().unwrap();
+    client.end_session().unwrap();
+
+    lucyd.mic.unplug(MIC);
+    lucyd.mic.lose();
+
+    let shown = lucyd.notifier.next_notification();
+    assert!(shown.body.contains(MIC), "{shown:?}");
+}
+
+#[test]
+fn a_missing_pinned_mic_found_by_the_mic_level_test_still_notifies_once() {
+    let lucyd = Harness::hearing(PINNED);
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let mut client = lucyd.client();
+    lucyd.mic.unplug(MIC);
+
+    client.mic_level().unwrap();
+    client.start_session().unwrap();
+
+    let shown = lucyd.notifier.next_notification();
+    assert!(shown.body.contains(MIC), "{shown:?}");
+    lucyd.notifier.assert_no_notification();
+}
+
+#[test]
 fn a_missing_pinned_speaker_falls_back_to_the_default_and_keeps_the_pin() {
     let lucyd = Harness::hearing(PINNED);
     let _indicator = lucyd.indicator("lucy-indicator");

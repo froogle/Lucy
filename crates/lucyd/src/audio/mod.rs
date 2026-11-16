@@ -240,6 +240,8 @@ pub fn listen(
         .map_err(|e| Error(format!("can't start the DSP thread: {e}")))?;
     let hearing = Hearing {
         io,
+        pin: audio.mic.clone(),
+        told_missing: false,
         mic,
         endpointing: endpointing.clone(),
         changes,
@@ -276,6 +278,8 @@ struct Listeners {
 /// Changes the running DSP thread's microphone and endpointing.
 pub struct Hearing {
     io: Box<dyn AudioIo + Send>,
+    pin: String,
+    told_missing: bool,
     mic: String,
     endpointing: Endpointing,
     changes: std::sync::mpsc::Sender<Change>,
@@ -310,15 +314,17 @@ impl Hearing {
         endpointing: &Endpointing,
         barge_in: &BargeIn,
     ) -> Devices {
-        let mut missing = vec![];
-        let mut pick = |direction, name| {
-            resolve(self.io.as_ref(), direction, name).unwrap_or_else(|name| {
-                missing.push((direction, name));
+        if audio.mic != self.pin {
+            self.pin = audio.mic.clone();
+            self.told_missing = false;
+        }
+        let (mic, untold) = self.pick_mic();
+        let mut missing: Vec<_> = untold.into_iter().collect();
+        let speaker =
+            resolve(self.io.as_ref(), Direction::Output, &audio.speaker).unwrap_or_else(|name| {
+                missing.push((Direction::Output, name));
                 DEFAULT.to_owned()
-            })
-        };
-        let mic = pick(Direction::Input, &audio.mic);
-        let speaker = pick(Direction::Output, &audio.speaker);
+            });
         if mic != self.mic || *self.lost.borrow() {
             self.open(mic);
         }
@@ -381,10 +387,26 @@ impl Hearing {
         }
     }
 
-    pub fn reopen(&mut self) {
-        let mic = resolve(self.io.as_ref(), Direction::Input, &self.mic)
-            .unwrap_or_else(|_| DEFAULT.to_owned());
+    pub fn reopen(&mut self) -> Option<(Direction, String)> {
+        let (mic, untold) = self.pick_mic();
         self.open(mic);
+        untold
+    }
+
+    fn pick_mic(&mut self) -> (String, Option<(Direction, String)>) {
+        match resolve(self.io.as_ref(), Direction::Input, &self.pin) {
+            Ok(mic) => {
+                self.told_missing = false;
+                (mic, None)
+            }
+            Err(pin) => {
+                let untold = !std::mem::replace(&mut self.told_missing, true);
+                (
+                    DEFAULT.to_owned(),
+                    untold.then_some((Direction::Input, pin)),
+                )
+            }
+        }
     }
 
     fn open(&mut self, mic: String) {

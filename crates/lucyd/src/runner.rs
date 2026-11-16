@@ -253,8 +253,8 @@ impl Runner {
     }
 
     fn reopen_mic(&mut self) {
-        if let Some(hearing) = &mut self.adapters.hearing {
-            hearing.reopen();
+        if let Some(missing) = self.adapters.hearing.as_mut().and_then(Hearing::reopen) {
+            self.notify(notifications::devices_missing(&[missing]));
         }
     }
 
