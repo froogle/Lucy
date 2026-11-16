@@ -12,6 +12,10 @@
 //! - `reject`: answers with an MCP error.
 //! - `ask {question}`: asks the user `question` mid-call (MCP
 //!   `input_required`), then returns `heard: <answer>`, or `no answer`.
+//! - `ask_url {question}`, `ask_two {question}` and `ask_secret {name}` ask a
+//!   form: one `uri` field `url`; a string `name` and an integer `count`; or
+//!   Lucy's `secret` field on the credential `name`. Each returns `answered:`
+//!   and the response it got, as JSON.
 //! - `wait {path}`: writes `<path>.waiting`, then returns `done` once `path`
 //!   exists. If the call is cancelled first, it writes `<path>.cancelled`.
 
@@ -41,7 +45,8 @@ fn tool(name: &str) -> Tool {
     let string = json!({"type": "string"});
     let properties = match name {
         "echo" | "save_state" => json!({"text": string}),
-        "ask" => json!({"question": string}),
+        "ask" | "ask_url" | "ask_two" => json!({"question": string}),
+        "ask_secret" => json!({"name": string}),
         "read_file" | "wait" => json!({"path": string}),
         "write_file" => json!({"path": string, "text": string}),
         _ => json!({}),
@@ -140,6 +145,10 @@ impl ServerHandler for Fixture {
                     .map(|answer| format!("heard: {answer}"))
                     .unwrap_or_else(|| "no answer".into())),
             },
+            "ask_url" | "ask_two" | "ask_secret" => match &request.input_responses {
+                None => return Ok(ask_form(&request).into()),
+                Some(responses) => Ok(format!("answered: {}", responses["answer"])),
+            },
             "crash" => std::process::exit(1),
             "reject" => return Err(ErrorData::invalid_params("rejected", None)),
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
@@ -149,13 +158,48 @@ impl ServerHandler for Fixture {
 }
 
 fn ask(question: &str) -> InputRequiredResult {
+    elicit(
+        question.to_owned(),
+        json!({"answer": {"type": "string"}}),
+        None,
+    )
+}
+
+fn ask_form(request: &CallToolRequestParams) -> InputRequiredResult {
+    let question = arg(request, "question");
+    match &*request.name {
+        "ask_url" => elicit(
+            question,
+            json!({"url": {"type": "string", "format": "uri"}}),
+            None,
+        ),
+        "ask_two" => elicit(
+            question,
+            json!({
+                "name": {"type": "string", "title": "Name"},
+                "count": {"type": "integer"},
+            }),
+            None,
+        ),
+        _ => {
+            let name = arg(request, "name");
+            let meta = json!({"lucy/secret": [name]});
+            elicit(
+                format!("Your {name}?"),
+                json!({ name: {"type": "string"} }),
+                Some(meta),
+            )
+        }
+    }
+}
+
+fn elicit(message: String, properties: Value, meta: Option<Value>) -> InputRequiredResult {
     let request = ElicitRequest::new(ElicitRequestParams::FormElicitationParams {
-        meta: None,
-        message: question.to_owned(),
+        meta: meta.map(|meta| serde_json::from_value(meta).expect("the literal is an object")),
+        message,
         requested_schema: serde_json::from_value(json!({
             "type": "object",
-            "properties": {"answer": {"type": "string"}},
-            "required": ["answer"],
+            "properties": properties,
         }))
         .expect("the literal is a valid form schema"),
     });

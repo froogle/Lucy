@@ -2,11 +2,12 @@
 //! A page changes a few settings through [`settings`] or tests something
 //! inside lucyd. The screen is a model driven by key presses and drawn with
 //! ratatui, so tests drive it with scripted keys. [`panel`] is what the
-//! Omarchy bar panel reads, through `lucy status --follow --json`.
+//! Omarchy bar panel reads, through `lucy status --follow --json`, and
+//! [`input::hold`] draws its Input dialog through, as `lucy input --json`.
 
 mod credentials;
 mod devices;
-mod input;
+pub mod input;
 pub mod menu;
 pub mod panel;
 mod piper;

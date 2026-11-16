@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use landlock::{
     Access, AccessFs, BitFlags, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreated,
@@ -7,6 +7,7 @@ use landlock::{
 };
 
 use super::manifest::Access as Declared;
+use super::Environment;
 use crate::adapters::Workspace;
 
 const ABI_VERSION: ABI = ABI::V5;
@@ -20,14 +21,15 @@ pub fn confine(
     folder: &Path,
     state_dir: &Path,
     declared: &Declared,
+    environment: &Environment,
 ) -> io::Result<()> {
     let readable = [folder.to_owned()]
         .into_iter()
-        .chain(declared.read.iter().map(|p| expand(p)));
+        .chain(declared.read.iter().filter_map(|p| expand(p, environment)));
     let writable = declared
         .write
         .iter()
-        .map(|p| expand(p))
+        .filter_map(|p| expand(p, environment))
         .chain([state_dir.to_owned()]);
     restrict(command.as_std_mut(), readable, writable)
 }
@@ -133,11 +135,21 @@ fn add(
     Ok(ruleset)
 }
 
-fn expand(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => home().join(rest),
-        None => PathBuf::from(path),
+fn expand(path: &str, environment: &Environment) -> Option<PathBuf> {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return Some(base(home())?.join(rest));
     }
+    let Some(var) = path.strip_prefix('$') else {
+        return Some(PathBuf::from(path));
+    };
+    let (name, rest) = var.split_once('/').unwrap_or((var, ""));
+    let dir = base(PathBuf::from(environment.var(name)?))?;
+    Some(if rest.is_empty() { dir } else { dir.join(rest) })
+}
+
+fn base(dir: PathBuf) -> Option<PathBuf> {
+    let climbs = dir.components().any(|c| c == Component::ParentDir);
+    (dir.is_absolute() && !climbs).then_some(dir)
 }
 
 pub fn program_dir(program: &Path) -> Option<PathBuf> {

@@ -1,10 +1,17 @@
 name = "omarchy"
 version = "0.1.0"
 author = "human"
-summary = "Manages windows, workspaces and layouts on the Omarchy desktop"
+summary = "Manages windows, workspaces, layouts and Omarchy's own settings on the Omarchy desktop"
 command = ["./lucy-omarchy"]
-# Only on Omarchy: Hyprland running, with Omarchy's layout commands.
-requires = { env = ["HYPRLAND_INSTANCE_SIGNATURE", "XDG_RUNTIME_DIR"], commands = [
+# Only on Omarchy: Hyprland running, with Omarchy's layout commands. Omarchy's
+# commands find its themes and shell through OMARCHY_PATH, and the screenshot
+# tool reaches the display through WAYLAND_DISPLAY.
+requires = { env = [
+    "HYPRLAND_INSTANCE_SIGNATURE",
+    "XDG_RUNTIME_DIR",
+    "OMARCHY_PATH",
+    "WAYLAND_DISPLAY",
+], commands = [
     "omarchy-hyprland-workspace-layout-current",
     "omarchy-hyprland-workspace-layout-toggle",
 ] }
@@ -36,15 +43,58 @@ name = "layout"
 handles = "changing a workspace's layout to tiling, scrolling or floating"
 examples = ["switch to tiling", "make this workspace scrolling"]
 
+[[tools]]
+name = "theme"
+handles = "listing Omarchy's themes or switching to one"
+examples = ["switch to the Tokyo Night theme", "what themes have I got?"]
+
+[[tools]]
+name = "bar"
+handles = "showing or hiding Omarchy's bar"
+examples = ["hide the bar", "bring the bar back"]
+
+[[tools]]
+name = "night_light"
+handles = "turning the night light on or off"
+examples = ["turn on night light", "night light off"]
+
+[[tools]]
+name = "screenshot"
+handles = "taking a screenshot of the screen, a region or a window"
+examples = ["take a screenshot", "screenshot a window"]
+
+[[tools]]
+name = "idle_lock"
+handles = "locking the screen, or keeping the computer awake"
+examples = ["lock the screen", "keep the computer awake"]
+
 [access]
-# $XDG_RUNTIME_DIR/hypr holds Hyprland's IPC socket. The sandbox doesn't
-# expand $XDG_RUNTIME_DIR, and Landlock in v0.1 doesn't confine connecting
-# to a socket, so that path is declared, not enforced. Omarchy's layout
-# toggle saves each workspace's layout under ~/.local/state/omarchy and
-# reads its language from ~/.config/omarchy.
-write = ["$XDG_RUNTIME_DIR/hypr", "~/.local/state/omarchy"]
-read = ["~/.config/omarchy"]
+# omarchy-theme-set takes these locks in $XDG_RUNTIME_DIR, each only once it
+# exists there (Omarchy makes it on the first theme change after login). The
+# rest of $XDG_RUNTIME_DIR, Hyprland's and the Omarchy shell's sockets
+# included, stays out: Landlock in v0.1 doesn't confine connecting to a socket.
+# Omarchy's commands keep their state (layouts, themes, toggles) under
+# ~/.local/state/omarchy and caches under ~/.cache/omarchy, read their themes
+# and language from ~/.config/omarchy, and save screenshots in ~/Pictures. The
+# night light checks whether hyprsunset is running through /proc.
+write = [
+    "$XDG_RUNTIME_DIR/omarchy-theme-set.lock",
+    "$XDG_RUNTIME_DIR/omarchy-theme-set-retint.lock",
+    "$XDG_RUNTIME_DIR/omarchy-theme-set-herdr-machines.lock",
+    "~/.local/state/omarchy",
+    "~/.cache/omarchy",
+    "~/Pictures",
+]
+read = ["~/.config/omarchy", "~/.config/user-dirs.dirs", "/proc"]
 commands = [
+    "omarchy-capture-screenshot",
     "omarchy-hyprland-workspace-layout-current",
     "omarchy-hyprland-workspace-layout-toggle",
+    "omarchy-system-lock",
+    "omarchy-theme-current",
+    "omarchy-theme-list",
+    "omarchy-theme-set",
+    "omarchy-toggle-bar",
+    "omarchy-toggle-idle",
+    "omarchy-toggle-nightlight",
 ]

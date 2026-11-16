@@ -1,7 +1,7 @@
 //! `lucy`: a thin client of lucyd's public socket. With no arguments it is
 //! a full-screen list of sections to set Lucy up with; `lucy setup` walks
 //! them in order. Every other command prints plain lines, but for the JSON
-//! the bar panel reads: `status --json`, `set` and `unset`.
+//! the bar panel reads: `status --json`, `set`, `unset` and `input --json`.
 
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -111,6 +111,13 @@ enum Command {
             help = "lucyd's socket; defaults to `$XDG_RUNTIME_DIR/lucy/lucyd.sock`"
         )]
         socket: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Hold the box for a client that draws it, such as the bar panel, and keep running: print \
+                    each input.open and input.close as a JSON line, and send each input.answer \
+                    or input.cancel line read on stdin"
+        )]
+        json: bool,
     },
     #[command(
         hide = true,
@@ -144,7 +151,7 @@ fn main() -> ExitCode {
         Some(Command::Set { key, value }) => return write(settings::parse_set(&key, value)),
         Some(Command::Unset { key }) => return write(settings::parse_unset(&key)),
         Some(Command::Service { verb }) => return service(verb),
-        Some(Command::Input { socket }) => return input(socket),
+        Some(Command::Input { socket, json }) => return input(socket, json),
         Some(Command::Events) => events(),
         Some(Command::Listen) => connect().and_then(|mut client| client.start_session().map(drop)),
         Some(Command::End) => connect().and_then(|mut client| client.end_session()),
@@ -204,10 +211,17 @@ fn full_screen_page(page: &str, open: Open, env: &Env) -> ExitCode {
     }
 }
 
-fn input(socket: Option<PathBuf>) -> ExitCode {
+fn input(socket: Option<PathBuf>, json: bool) -> ExitCode {
     let mut env = Env::of_process(Path::new(OS_RELEASE));
     if socket.is_some() {
         env.socket = socket;
+    }
+    if json {
+        let replies = std::io::BufReader::new(std::io::stdin());
+        return match lucy::input::hold(&env, replies, &mut std::io::stdout().lock()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_reader_gone) => ExitCode::FAILURE,
+        };
     }
     full_screen_page("lucy input", Open::Input, &env)
 }

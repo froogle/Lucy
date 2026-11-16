@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Public IPC (Roles),
 
 **Seams:** uses the `input` role and messages (owned by 34). The bar plugin's own files only.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -23,3 +23,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Public IPC (Roles),
 - [ ] Once, by hand: a Plugin with a missing credential asks for it in the bar, and the call carries on
 
 ## Comments
+
+2026-11-16: built in slice 9 (`lucy-v0-1-slice-9`). The bar talks to lucyd through `lucy input --json` (holds the role, JSON lines on stdin/stdout). Hand checks left: a missing credential asked for in the bar (needs 44), and focus landing on the first box.

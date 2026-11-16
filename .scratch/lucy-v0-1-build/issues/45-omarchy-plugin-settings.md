@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Omarchy Plugin (shi
 
 **Seams:** none new. Extends the Omarchy Plugin (owned by 35).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -23,3 +23,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md) as amended 2026-11-16: Omarchy Plugin (shi
 - [ ] Once, by hand on Omarchy: switch the theme, toggle the bar and night light, take a screenshot
 
 ## Comments
+
+2026-11-16: built in slice 9 (`lucy-v0-1-slice-9`). Declared paths may start with `$NAME` (absolute values only, no `..`; spec amended). Write access is narrowed to the three `omarchy-theme-set` lock files, `~/.local/state/omarchy`, `~/.cache/omarchy` and `~/Pictures`. Hand checks left: switch the theme, toggle the bar and night light, take a screenshot, and lock the screen. Some apps may keep old colours, and omasnap may need more read paths.

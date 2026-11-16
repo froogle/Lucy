@@ -7,6 +7,7 @@ mod authored;
 mod environment;
 mod manage;
 mod manifest;
+mod questions;
 pub(crate) mod sandbox;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -18,7 +19,7 @@ use std::time::Duration;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ElicitRequestParams, ElicitResult,
     ElicitationAction, InputRequest, InputRequests, InputResponses, JsonObject, ProtocolVersion,
-    Tool,
+    RequestMetaObject, Tool,
 };
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, Peer, RunningService};
 use rmcp::transport::TokioChildProcess;
@@ -29,6 +30,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use crate::adapters::{CredentialStore, Notification, NotificationKind};
+use crate::input::{self, Filled};
 use crate::mcp;
 use crate::model_text::CALL_FINISHED;
 use crate::runner::{self, Command, When};
@@ -528,6 +530,15 @@ impl Host {
         self.verdicts.locked().insert(hash.to_owned(), Err(reason));
     }
 
+    async fn keep(&self, plugin: &str, name: &str, value: &str) -> Result<(), String> {
+        let store = self.credentials.clone();
+        let (plugin, name, value) = (plugin.to_owned(), name.to_owned(), value.to_owned());
+        let kept = tokio::task::spawn_blocking(move || store.set(&plugin, &name, &value)).await;
+        kept.map_err(|e| e.to_string())
+            .flatten()
+            .map_err(|e| format!("What the user typed can't be kept: {e}."))
+    }
+
     async fn credentials(&self, plugin: &Usable) -> Result<Vec<(String, String)>, String> {
         let store = self.credentials.clone();
         let name = plugin.name.clone();
@@ -598,6 +609,7 @@ impl Host {
             &plugin.folder,
             &state_dir,
             &plugin.manifest.access,
+            &self.environment,
         )
         .map_err(|e| format!("its sandbox can't be set up: {e}"))?;
         let transport =
@@ -814,7 +826,10 @@ impl SessionTools {
                     Ok(CallToolResponse::Complete(result)) => return Ok(result),
                     Ok(CallToolResponse::InputRequired(asked)) => {
                         let requests = asked.input_requests.unwrap_or_default();
-                        request.input_responses = Some(self.answers(requests).await);
+                        match self.answers(&plugin, requests).await {
+                            Ok(answers) => request.input_responses = Some(answers),
+                            Err(unkept) => return Ok(mcp::error(unkept)),
+                        }
                         request.request_state = asked.request_state;
                     }
                     Ok(_) => return Err("it answered with a task, which Lucy can't follow".into()),
@@ -857,38 +872,71 @@ impl SessionTools {
         })
     }
 
-    async fn answers(&self, requests: InputRequests) -> InputResponses {
+    async fn answers(
+        &self,
+        plugin: &Usable,
+        requests: InputRequests,
+    ) -> Result<InputResponses, String> {
         let mut answers = InputResponses::new();
         for (key, request) in requests {
-            let mut answer = ElicitResult::new(ElicitationAction::Decline);
-            if let InputRequest::Elicitation(request) = request {
-                if let ElicitRequestParams::FormElicitationParams {
-                    message,
-                    requested_schema,
-                    ..
-                } = request.params
-                {
-                    let mut fields = requested_schema.properties.into_keys();
-                    if let (Some(field), None) = (fields.next(), fields.next()) {
-                        let question = Question {
-                            prompt: message,
-                            expects: Expects::Words,
-                        };
-                        if let Some(Answer::Said(said)) =
-                            runner::ask(&self.host.commands, question, None).await
-                        {
-                            answer = ElicitResult::new(ElicitationAction::Accept)
-                                .with_content(serde_json::json!({ field: said }));
-                        }
-                    }
+            let answer = match request {
+                InputRequest::Elicitation(request) => {
+                    let meta = request.extensions.get::<RequestMetaObject>().cloned();
+                    self.answer(plugin, request.params, meta).await?
                 }
-            }
+                _ => ElicitResult::new(ElicitationAction::Decline),
+            };
             answers.insert(
                 key,
                 serde_json::to_value(answer).expect("an ElicitResult always serialises"),
             );
         }
-        answers
+        Ok(answers)
+    }
+
+    async fn answer(
+        &self,
+        plugin: &Usable,
+        params: ElicitRequestParams,
+        meta: Option<RequestMetaObject>,
+    ) -> Result<ElicitResult, String> {
+        let declined = ElicitResult::new(ElicitationAction::Decline);
+        let ElicitRequestParams::FormElicitationParams {
+            message,
+            requested_schema,
+            meta: in_params,
+        } = params
+        else {
+            return Ok(declined);
+        };
+        let meta = meta.or(in_params);
+        let credentials = &plugin.manifest.access.credentials;
+        match questions::read(requested_schema, meta.as_ref(), credentials) {
+            None => Ok(declined),
+            Some(questions::Question::Spoken { field }) => {
+                let question = Question {
+                    prompt: message,
+                    expects: Expects::Words,
+                };
+                Ok(
+                    match runner::ask(&self.host.commands, question, None).await {
+                        Some(Answer::Said(said)) => ElicitResult::new(ElicitationAction::Accept)
+                            .with_content(serde_json::json!({ field: said })),
+                        _ => declined,
+                    },
+                )
+            }
+            Some(questions::Question::Typed(asked)) => {
+                let (fields, replies) = asked.split();
+                let filled = input::fill(&self.host.commands, &message, fields).await;
+                if let Filled::Values(values) = &filled {
+                    for (name, value) in replies.secrets(values) {
+                        self.host.keep(&plugin.name, name, value).await?;
+                    }
+                }
+                Ok(replies.answer(filled))
+            }
+        }
     }
 
     async fn confirmed(

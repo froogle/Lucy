@@ -173,4 +173,47 @@ Item {
     interval: 5000
     onTriggered: follow.running = true
   }
+
+  // The Input dialog lucyd has open on the bar, as `input.open` gave it, or
+  // null. What is typed stays in the panel's boxes until it is sent.
+  property var dialog: null
+
+  function inputEvent(line) {
+    var event
+    try { event = JSON.parse(String(line)) } catch (e) { return }
+    if (!event || !event.params) return
+    if (event.method === "input.open") dialog = event.params
+    else if (event.method === "input.close" && dialog && event.params.id === dialog.id) dialog = null
+  }
+
+  function answerInput(values) {
+    if (dialog) _reply("input.answer", { id: dialog.id, values: values })
+  }
+
+  function cancelInput() {
+    if (dialog) _reply("input.cancel", { id: dialog.id })
+  }
+
+  function _reply(method, params) {
+    input.write(JSON.stringify({ method: method, params: params }) + "\n")
+    dialog = null
+  }
+
+  Process {
+    id: input
+    command: ["lucy", "input", "--json"]
+    running: true
+    stdinEnabled: true
+    stdout: SplitParser { onRead: function (line) { root.inputEvent(line) } }
+    onExited: {
+      root.dialog = null
+      inputAgain.restart()
+    }
+  }
+
+  Timer {
+    id: inputAgain
+    interval: 5000
+    onTriggered: input.running = true
+  }
 }

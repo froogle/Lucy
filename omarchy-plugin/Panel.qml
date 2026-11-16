@@ -46,7 +46,25 @@ Panel {
     root.close()
   }
 
+  readonly property var dialog: lucy.dialog
+  readonly property bool asking: dialog !== null
+  property string inputProblem: ""
+  property bool openedToAsk: false
+
   onOpenedChanged: if (!opened) openList = ""
+  onAskingChanged: {
+    if (asking) {
+      openedToAsk = !opened
+      root.open()
+    } else if (openedToAsk) {
+      openedToAsk = false
+      root.close()
+    }
+  }
+  onDialogChanged: {
+    inputProblem = ""
+    if (dialog !== null) Qt.callLater(inputBox.focusFirst)
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -73,11 +91,12 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(620))
+    contentHeight: panel.fittedContentHeight(flick.contentHeight, Style.space(620))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.asking
       onCloseRequested: root.close()
       onTabRequested: function (direction) { root.switchPanel(direction) }
 
@@ -85,18 +104,26 @@ Panel {
         id: flick
         anchors.fill: parent
         contentWidth: width
-        contentHeight: column.implicitHeight
+        contentHeight: root.asking ? inputBox.implicitHeight : column.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+        InputBox {
+          id: inputBox
+          x: Style.space(2)
+          width: flick.width - Style.space(4)
+          visible: root.asking
+        }
+
         Column {
           id: column
           x: Style.space(2)
           width: flick.width - Style.space(4)
           spacing: Style.space(12)
+          visible: !root.asking
 
           PanelHero {
             width: parent.width
@@ -394,6 +421,160 @@ Panel {
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.body
+    }
+  }
+
+  // The Input dialog lucyd opened on the bar: its question, a box or a row
+  // of choices per field, Send and Cancel. Esc cancels. A secret is masked,
+  // and every box is emptied as the dialog goes.
+  component InputBox: FocusScope {
+    id: box
+    implicitHeight: boxColumn.implicitHeight
+    Keys.onEscapePressed: lucy.cancelInput()
+
+    function focusFirst() {
+      for (var i = 0; i < entries.count; i++) {
+        var entry = entries.itemAt(i)
+        if (entry && entry.typed) return entry.focusBox()
+      }
+      box.forceActiveFocus()
+    }
+
+    function send() {
+      var values = {}
+      for (var i = 0; i < entries.count; i++) {
+        var entry = entries.itemAt(i)
+        var problem = entry.problem()
+        if (problem !== "") {
+          root.inputProblem = problem
+          return
+        }
+        values[entry.field.name] = entry.value
+      }
+      for (var j = 0; j < entries.count; j++) entries.itemAt(j).clear()
+      lucy.answerInput(values)
+    }
+
+    Column {
+      id: boxColumn
+      width: parent.width
+      spacing: Style.space(10)
+
+      Header { text: strings.t("input.title") }
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: root.asking ? String(root.dialog.message) : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        wrapMode: Text.WordWrap
+      }
+
+      Repeater {
+        id: entries
+        model: root.asking ? root.dialog.fields : []
+
+        delegate: Column {
+          id: entry
+          required property var modelData
+          readonly property var field: modelData
+          readonly property bool typed: field.kind !== "choice"
+          readonly property bool secret: field.kind === "secret"
+          readonly property var choices: field.kind === "choice" ? field.choices : []
+          property string picked: ""
+          readonly property string value: !typed ? picked : secret ? typedBox.text : typedBox.text.trim()
+          width: parent ? parent.width : implicitWidth
+          spacing: Style.space(4)
+
+          function focusBox() { typedBox.forceActiveFocus() }
+          function clear() {
+            typedBox.text = ""
+            picked = ""
+          }
+          function problem() {
+            if (value === "") return typed ? strings.t("input.empty") : strings.t("input.pick")
+            if (field.kind === "number" && isNaN(Number(value))) return strings.t("input.notNumber").arg(value)
+            return ""
+          }
+
+          Component.onDestruction: typedBox.text = ""
+
+          Caption { text: entry.field.description ? String(entry.field.description) : strings.t("input." + entry.field.kind) }
+
+          TextField {
+            id: typedBox
+            objectName: "inputField"
+            visible: entry.typed
+            width: parent.width
+            password: entry.secret
+            foreground: root.foreground
+            font.family: root.fontFamily
+            inputMethodHints: entry.secret ? Qt.ImhSensitiveData | Qt.ImhNoPredictiveText : Qt.ImhNone
+            onAccepted: box.send()
+          }
+
+          Row {
+            id: choiceRow
+            visible: !entry.typed
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: entry.choices
+
+              delegate: Button {
+                required property var modelData
+                objectName: "inputChoice"
+                text: String(modelData)
+                fontSize: Style.font.bodySmall
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                bordered: true
+                active: entry.picked === String(modelData)
+                onClicked: entry.picked = String(modelData)
+              }
+            }
+          }
+        }
+      }
+
+      Text {
+        visible: root.inputProblem !== ""
+        width: parent.width
+        textFormat: Text.PlainText
+        text: root.inputProblem
+        color: root.urgent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        wrapMode: Text.WordWrap
+      }
+
+      RowLayout {
+        width: parent.width
+        spacing: Style.space(8)
+
+        Button {
+          objectName: "inputCancel"
+          Layout.fillWidth: true
+          text: strings.t("input.cancel")
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          bordered: true
+          onClicked: lucy.cancelInput()
+        }
+
+        Button {
+          objectName: "inputSend"
+          Layout.fillWidth: true
+          text: strings.t("input.send")
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          bordered: true
+          onClicked: box.send()
+        }
+      }
     }
   }
 }

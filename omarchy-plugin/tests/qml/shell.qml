@@ -1,10 +1,12 @@
 import Quickshell
 import QtQuick
+import QtTest
 
 // Drives the real Panel.qml offscreen, against the fake lucy, systemctl and
 // omarchy-launch-tui that tests/run.sh puts on PATH. Each step runs after
 // the commands the one before started have finished; tests/run.sh then
-// checks the commands that ran.
+// checks the commands that ran and the replies sent to `lucy input --json`.
+// The panel sits in a window so TestEvent's keys reach it.
 ShellRoot {
   Item {
     id: harness
@@ -66,6 +68,28 @@ ShellRoot {
       var children = item.children || []
       for (var i = 0; i < children.length; i++) texts(children[i], out)
       return out
+    }
+
+    readonly property string secret: "sk-test-not-a-real-key"
+
+    function ask(id, message, fields) {
+      lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.open", params: { id: id, message: message, fields: fields } }))
+    }
+
+    function shown(text) {
+      return texts(barPanel, []).some(function (t) { return t.visible && t.text === text })
+    }
+
+    function plainly(text) {
+      return texts(barPanel, []).some(function (t) { return t.visible && t.text === text && t.textFormat === Text.PlainText })
+    }
+
+    function holding(item, text) {
+      if (!item) return 0
+      var count = typeof item.text === "string" && item.text.indexOf(text) >= 0 ? 1 : 0
+      var children = item.children || []
+      for (var i = 0; i < children.length; i++) count += holding(children[i], text)
+      return count
     }
 
     readonly property var lucy: find(barPanel, "service")
@@ -190,6 +214,75 @@ ShellRoot {
         barPanel.moreSettings()
       },
       function () {
+        console.log("the Input dialog: a secret")
+        ask("secret-1", "Lucy needs your Linear API key", [{ name: "LINEAR_API_KEY", kind: "secret" }])
+        check("a question opens the panel", barPanel.opened, true)
+        check("it shows the question", shown("Lucy needs your Linear API key"), true)
+        check("not the settings", shown(barPanel.stateLine.toUpperCase()), false)
+        check("a secret is masked", find(barPanel, "inputField").echoMode, TextInput.Password)
+      },
+      function () {
+        var box = find(barPanel, "inputField")
+        check("its box has the keys", box.activeFocus, true)
+        keys.keyClickChar("s", Qt.NoModifier, -1)
+        check("what's typed reaches it", box.text, "s")
+        box.text = harness.secret
+        find(barPanel, "inputSend").clicked()
+        check("sending clears its box", box.text, "")
+        check("sending closes the dialog", lucy.dialog, null)
+        check("and the panel", barPanel.opened, false)
+        check("nothing in the panel holds the secret any more", holding(barPanel, harness.secret), 0)
+
+        console.log("the Input dialog: Cancel and Esc")
+        ask("cancel-1", "Which page shall I open?", [{ name: "url", kind: "url" }])
+        find(barPanel, "inputCancel").clicked()
+        check("Cancel closes it", lucy.dialog, null)
+        ask("esc-1", "Which page shall I open?", [{ name: "url", kind: "url" }])
+      },
+      function () {
+        keys.keyClick(Qt.Key_Escape, Qt.NoModifier, -1)
+        check("Esc closes it", lucy.dialog, null)
+        check("and the panel", barPanel.opened, false)
+
+        console.log("the Input dialog: closed by lucyd")
+        ask("closed-1", "Which page shall I open?", [{ name: "url", kind: "url" }])
+        lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.close", params: { id: "another" } }))
+        check("another dialog's close leaves it open", lucy.dialog !== null, true)
+        lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.close", params: { id: "closed-1" } }))
+        check("its own close closes it", lucy.dialog, null)
+        check("and the panel", barPanel.opened, false)
+
+        console.log("the Input dialog: over the settings the user opened")
+        barPanel.open()
+        ask("over-1", "Which page shall I open?", [{ name: "url", kind: "url" }])
+        lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.close", params: { id: "over-1" } }))
+        check("lucyd's close leaves the panel open", barPanel.opened, true)
+        barPanel.close()
+
+        console.log("the Input dialog: text, number and choice")
+        ask("kinds-1", "Tell me about the cat", [
+          { name: "name", kind: "text" },
+          { name: "age", kind: "number", description: "<b>Age</b> in years" },
+          { name: "colour", kind: "choice", choices: ["black", "ginger"] }
+        ])
+        var boxes = findAll(barPanel, "inputField", [])
+        check("a box for each typed field", boxes.filter(function (b) { return b.visible }).length, 2)
+        check("none masked", boxes.filter(function (b) { return b.echoMode !== TextInput.Normal }).length, 0)
+        check("a field's description is its label, as plain text", plainly("<b>Age</b> in years"), true)
+        check("its choices", findAll(barPanel, "inputChoice", []).map(function (c) { return c.text }), ["black", "ginger"])
+        boxes[0].text = "Tibbles"
+        boxes[1].text = "lots"
+        find(barPanel, "inputSend").clicked()
+        check("a number that isn't one is refused", lucy.dialog !== null, true)
+        check("and says why", shown("lots isn't a number."), true)
+        boxes[1].text = "12"
+        find(barPanel, "inputSend").clicked()
+        check("a choice must be picked", lucy.dialog !== null, true)
+        findAll(barPanel, "inputChoice", [])[1].clicked()
+        find(barPanel, "inputSend").clicked()
+        check("then it goes", lucy.dialog, null)
+      },
+      function () {
         console.log(failures === 0 ? "ALL OK" : failures + " FAILED")
       }
     ]
@@ -203,7 +296,14 @@ ShellRoot {
     }
   }
 
-  BarPanel {
-    id: barPanel
+  TestEvent { id: keys }
+
+  FloatingWindow {
+    implicitWidth: 400
+    implicitHeight: 700
+
+    BarPanel {
+      id: barPanel
+    }
   }
 }

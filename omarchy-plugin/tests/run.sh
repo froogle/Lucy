@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Runs the panel offscreen in Quickshell against a fake lucy, systemctl and
-# omarchy-launch-tui (tests/qml/shell.qml), then checks the commands it ran:
-# every one through lucy, none through systemctl.
+# omarchy-launch-tui (tests/qml/shell.qml), then checks the commands it ran
+# (every one through lucy, none through systemctl) and what its Input dialog
+# sent to `lucy input --json`.
 # Needs quickshell and Omarchy's shell modules; OMARCHY_SHELL points at them.
 set -euo pipefail
 plugin="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,6 +34,7 @@ fake lucy 'case "$1 $2" in
   "set nope") echo "lucy: nope is not a setting" >&2; exit 2;;
   "set stt") [ "$3" = superwhisper ] && echo '"'"'{"applies":"next_session","message":"Applies at the next Session."}'"'"' || echo '"'"'{"applies":"restart","message":"Applies after restarting lucyd."}'"'"';;
   "unset stt") echo '"'"'{"applies":"restart","message":"Applies after restarting lucyd."}'"'"';;
+  "input --json") exec cat >> "'"$dir"'/replies.log";;
   set*) echo '"'"'{"applies":"next_session","message":"Applies at the next Session."}'"'"';;
 esac'
 fake systemctl ''
@@ -71,7 +73,8 @@ for call in \
     'lucy unset stt' \
     'lucy service restart' \
     'lucy set audio.mic alsa_input.usb-Yeti' \
-    'omarchy-launch-tui --app-id=TUI.float lucy'; do
+    'omarchy-launch-tui --app-id=TUI.float lucy' \
+    'lucy input --json'; do
     if grep -qxF "$call" "$calls"; then
         echo "ran: $call"
     else
@@ -81,6 +84,24 @@ for call in \
 done
 if grep '^systemctl' "$calls" >&2; then
     echo "the panel ran systemctl itself, not through lucy" >&2
+    status=1
+fi
+# What the Input dialog sent: each reply once, in order; nothing for a
+# dialog lucyd closed.
+cat > "$dir/replies.want" <<'EOF'
+{"method":"input.answer","params":{"id":"secret-1","values":{"LINEAR_API_KEY":"sk-test-not-a-real-key"}}}
+{"method":"input.cancel","params":{"id":"cancel-1"}}
+{"method":"input.cancel","params":{"id":"esc-1"}}
+{"method":"input.answer","params":{"id":"kinds-1","values":{"name":"Tibbles","age":"12","colour":"ginger"}}}
+EOF
+if diff "$dir/replies.want" "$dir/replies.log" >&2; then
+    echo "sent: each answer and cancel once"
+else
+    echo "the Input dialog's replies differ (want, got)" >&2
+    status=1
+fi
+if grep -l 'sk-test-not-a-real-key' "$calls" "$out" >&2; then
+    echo "the secret reached a command line or the log" >&2
     status=1
 fi
 exit $status
