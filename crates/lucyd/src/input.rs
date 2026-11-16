@@ -291,10 +291,8 @@ pub async fn ask(
     }
 }
 
-/// How the Input dialog was filled in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filled {
-    /// Each field's value, by its name.
     Values(BTreeMap<String, String>),
     Cancelled,
     TimedOut,
