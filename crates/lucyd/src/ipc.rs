@@ -21,6 +21,7 @@ use crate::notifications::{IndicatorClaim, Indicators};
 use crate::plugins::{self, Host};
 use crate::runner::{self, Command, PreviewError, SetupTest, SetupTestError, WakeWordHeard};
 use crate::status::Buses;
+use crate::sync::or_pending;
 
 #[derive(Clone)]
 pub struct Providers {
@@ -104,10 +105,10 @@ async fn connection(
             Some(rms) = next_level(&mut conn.level_events) => {
                 conn.send_event(Event::Level(LevelEvent { rms })).await
             }
-            Some(()) = next_change(&mut conn.plugin_events) => {
+            Some(()) = or_pending(conn.plugin_events.as_mut().map(|changes| changes.recv())) => {
                 conn.send_event(Event::PluginsChanged(PluginsChanged {})).await
             }
-            Some(event) = next_dialog(&mut conn.input) => conn.send_event(event).await,
+            Some(event) = or_pending(conn.input.as_mut().map(|input| input.events.recv())) => conn.send_event(event).await,
         };
         if sent.is_err() {
             return;
@@ -132,20 +133,6 @@ async fn next_level(level_events: &mut Option<broadcast::Receiver<f32>>) -> Opti
             Err(broadcast::error::RecvError::Lagged(_)) => continue,
             Err(broadcast::error::RecvError::Closed) => return None,
         }
-    }
-}
-
-async fn next_change(changes: &mut Option<mpsc::UnboundedReceiver<()>>) -> Option<()> {
-    match changes {
-        Some(changes) => changes.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
-async fn next_dialog(input: &mut Option<InputClaim>) -> Option<Event> {
-    match input {
-        Some(input) => input.events.recv().await,
-        None => std::future::pending().await,
     }
 }
 

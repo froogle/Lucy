@@ -129,7 +129,7 @@ fn credential_name(name: &str) -> Result<(), String> {
              underscores, not starting with a digit"
         ));
     }
-    if ["PATH", "HOME", "LANG"].contains(&name) || is_lucys(name) {
+    if super::SYSTEM_ENV.contains(&name) || is_lucys(name) {
         return Err(format!(
             "its credential {name:?} names an env var Lucy or the system sets"
         ));

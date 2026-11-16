@@ -11,3 +11,10 @@ impl<T: ?Sized> Locked<T> for Mutex<T> {
         self.lock().expect(POISONED)
     }
 }
+
+pub(crate) async fn or_pending<F: std::future::Future>(future: Option<F>) -> F::Output {
+    match future {
+        Some(future) => future.await,
+        None => std::future::pending().await,
+    }
+}

@@ -1,8 +1,8 @@
 //! The Omarchy Plugin: Lucy's shipped Plugin for the Omarchy desktop. It
 //! manages windows and workspaces by dispatching to Hyprland over its IPC
-//! socket, and changes the tiling layout through Omarchy's own commands. It runs only the
-//! `omarchy-*` commands named here, never arbitrary ones, and offers no
-//! logout, reboot or shutdown.
+//! socket, and changes the tiling layout through Omarchy's own commands. It
+//! runs only the `omarchy-*` commands named here, never arbitrary ones, and
+//! offers no logout, reboot or shutdown.
 //!
 //! Its tests drive it through MCP against a fake Hyprland socket and fake
 //! `omarchy-*` commands (`tests/`).
@@ -119,7 +119,7 @@ impl Omarchy {
             .and_then(Action::parse)
             .ok_or("action is focus, close, move_to_workspace, fullscreen, float or pin")?;
         let window = self.target(args).await?;
-        let at = lua_string(&format!("address:{}", window.address));
+        let at = lua_window(&window);
         let done = match action {
             Action::Focus => {
                 self.dispatch(&format!("hl.dsp.focus({{ window = {at} }})"))
@@ -178,7 +178,7 @@ impl Omarchy {
 
     async fn kill_window(&self, args: &JsonObject) -> Result<Value, String> {
         let window = self.target(args).await?;
-        let at = lua_string(&format!("address:{}", window.address));
+        let at = lua_window(&window);
         self.dispatch(&format!("hl.dsp.window.kill({{ window = {at} }})"))
             .await?;
         Ok(json!({"window": described(&window), "done": "force-quit"}))
@@ -282,6 +282,10 @@ fn one_line(text: &str) -> Result<&str, String> {
         return Err(format!("{text:?} must be one line of text"));
     }
     Ok(text)
+}
+
+fn lua_window(window: &Window) -> String {
+    lua_string(&format!("address:{}", window.address))
 }
 
 fn lua_string(text: &str) -> String {

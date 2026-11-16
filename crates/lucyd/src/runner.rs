@@ -4,8 +4,6 @@ mod start;
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,7 +18,7 @@ use crate::adapters::{
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
 use crate::authoring::{Authoring, Building};
-use crate::input::{Dialog, OpenDialog, Opened, Typed};
+use crate::input::{Dialog, OpenDialog, Opened};
 use crate::limits;
 use crate::mcp::Relays;
 use crate::notifications;
@@ -28,6 +26,7 @@ use crate::persona;
 use crate::plugins;
 use crate::session::{Answer, Expects, Input, Output, Question, Session};
 use crate::status::Buses;
+use crate::sync::or_pending;
 use crate::wake;
 pub use preview::{PreviewError, VoicePreview};
 pub use setup::{SetupTest, SetupTestError, WakeWordHeard};
@@ -384,7 +383,7 @@ impl Runner {
                     claim_wait = None;
                     continue;
                 }
-                () = waited(&claim_wait) => {
+                () = or_pending(claim_wait.as_ref().map(|wait| wait.fired())) => {
                     dialog = None;
                     claim_wait = None;
                     Input::Unshown(NO_TERMINAL.to_owned())
@@ -465,7 +464,7 @@ impl Runner {
                         Input::TranscribeFailed
                     }
                 },
-                heard = heard(&mut self.adapters.hearing) => match heard {
+                heard = or_pending(self.adapters.hearing.as_mut().map(Hearing::next)) => match heard {
                     Heard::Lost => {
                         self.end_on_lost_device(Direction::Input, id);
                         return;
@@ -493,7 +492,7 @@ impl Runner {
                 () = answer_timer.fired() => {
                     Input::AnswerTimedOut
                 }
-                typed = typed(&mut dialog) => Input::Typed(typed),
+                typed = or_pending(dialog.as_mut().map(OpenDialog::typed)) => Input::Typed(typed),
                 }
             };
             let input = match input {
@@ -673,36 +672,8 @@ const CLAIM_WAIT: Duration = Duration::from_secs(5);
 const NO_TERMINAL: &str =
     "I couldn't put a box on screen: no terminal opened, and nothing else can show one.";
 
-fn waited(timer: &Option<Box<dyn Timer>>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-    match timer {
-        Some(timer) => timer.fired(),
-        None => Box::pin(std::future::pending()),
-    }
-}
-
-async fn typed(dialog: &mut Option<OpenDialog>) -> Typed {
-    match dialog {
-        Some(dialog) => dialog.typed().await,
-        None => std::future::pending().await,
-    }
-}
-
-async fn heard(hearing: &mut Option<Hearing>) -> Heard {
-    match hearing {
-        Some(hearing) => hearing.next().await,
-        None => std::future::pending().await,
-    }
-}
-
-async fn mic_lost(hearing: &mut Option<Hearing>) {
-    match hearing {
-        Some(hearing) => hearing.lost().await,
-        None => std::future::pending().await,
-    }
-}
-
 async fn mic_lost_for(hearing: &mut Option<Hearing>, wait: Duration) {
-    mic_lost(hearing).await;
+    or_pending(hearing.as_mut().map(Hearing::lost)).await;
     tokio::time::sleep(wait).await;
 }
 

@@ -41,6 +41,8 @@ use manifest::{Manifest, ToolEntry};
 
 const MAX_QUESTIONS: usize = 10;
 
+const SYSTEM_ENV: [&str; 3] = ["PATH", "HOME", "LANG"];
+
 const DECLINED: &str = "declined: the user didn't say yes, so nothing was done, and you've \
                         already told them so.";
 
@@ -585,7 +587,7 @@ impl Host {
             .env_clear()
             .env("LUCY_PLUGIN_STATE_DIR", &state_dir);
         let required = plugin.manifest.requires.env.iter().map(String::as_str);
-        for var in ["PATH", "HOME", "LANG"].into_iter().chain(required) {
+        for var in SYSTEM_ENV.into_iter().chain(required) {
             if let Some(value) = self.environment.var(var) {
                 command.env(var, value);
             }
