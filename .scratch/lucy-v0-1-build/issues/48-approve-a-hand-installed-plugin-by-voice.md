@@ -10,7 +10,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Plugins (Approval, hand-installed Plugins
 
 **Seams:** owns the `approve_plugin` Built-in tool. Uses `Host::request_approval` and the spoken Approval as they are.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -25,3 +25,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Plugins (Approval, hand-installed Plugins
 - [ ] Once, by hand: drop a Plugin in, "Hey Lucy, approve the demo-key plugin", hear the summary, say yes, and use it
 
 ## Comments
+
+2026-11-16: hand-checked on the redeployed build; passed.

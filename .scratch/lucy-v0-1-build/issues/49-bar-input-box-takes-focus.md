@@ -8,7 +8,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Public IPC (Roles), Testing (Input dialog
 
 **Seams:** none (the bar plugin's own files).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Acceptance:**
 
@@ -16,3 +16,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Public IPC (Roles), Testing (Input dialog
 - [ ] Once, by hand: "I'll type a URL for you", start typing at once, and Esc on a second box cancels it
 
 ## Comments
+
+2026-11-16: hand-checked on the redeployed build; passed.

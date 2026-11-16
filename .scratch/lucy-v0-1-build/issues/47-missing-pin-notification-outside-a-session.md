@@ -10,7 +10,7 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Audio pipeline, Devices ("A missing pin f
 
 **Seams:** none expected.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Acceptance:**
 
@@ -21,3 +21,5 @@ Spec: [v0.1](../../lucy-v0-1/spec.md): Audio pipeline, Devices ("A missing pin f
 ## Comments
 
 2026-11-16: diagnosed (no lucyd bug): the Session-start notification was sent at 18:47:43.785 and expired after 8 s (Omarchy notification history). `has_device` and `Hearing::configure` report the missing pin correctly on the real headset. Reworked by user decision: notify on the loss.
+
+2026-11-16: hand-checked on the redeployed build; passed.

@@ -8,7 +8,7 @@ Spec: none; found in the hand checks for tickets 34 and 42.
 
 **Seams:** none.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Acceptance:**
 
@@ -16,3 +16,5 @@ Spec: none; found in the hand checks for tickets 34 and 42.
 - [ ] Once, by hand: `omarchy-restart-shell` twice leaves exactly one of each running
 
 ## Comments
+
+2026-11-16: hand-checked on the redeployed build; passed.
