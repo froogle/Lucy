@@ -63,7 +63,11 @@ impl Default for Config {
 }
 
 impl Config {
-    /// The Provider `tier` names, or why there isn't one, ready to speak.
+    /// The Provider `tier` names.
+    ///
+    /// # Errors
+    ///
+    /// Why there isn't one, ready to speak.
     pub fn provider(&self, tier: Tier) -> Result<&Provider, String> {
         let name = self.tiers.name(tier);
         self.providers.get(name).ok_or_else(|| {
@@ -207,6 +211,10 @@ pub const RECOMMENDATIONS: &[Recommendation] = &[
 ];
 
 /// The recommended model for `kind` in `tier`.
+///
+/// # Panics
+///
+/// If `RECOMMENDATIONS` lacks a row for `kind` in `tier`.
 pub fn recommended_model(kind: Kind, tier: Tier) -> &'static str {
     RECOMMENDATIONS
         .iter()
@@ -215,7 +223,6 @@ pub fn recommended_model(kind: Kind, tier: Tier) -> &'static str {
         .expect("every kind has a recommendation for every tier")
 }
 
-/// How `config.toml` spells `variant`, a plain enum variant.
 fn config_name(variant: impl Serialize) -> String {
     match toml::Value::try_from(variant) {
         Ok(toml::Value::String(name)) => name,
@@ -264,7 +271,7 @@ pub enum EchoCancellation {
 #[serde(default)]
 pub struct BargeIn {
     pub mode: BargeInMode,
-    /// Lets speech barge in on PulseAudio or ALSA, where it is off by
+    /// Lets speech barge in on PulseAudio or ALSA. It is off there by
     /// default because the echo canceller works less well there.
     pub force: bool,
     /// Speech probability that counts while Lucy speaks.
@@ -275,11 +282,11 @@ pub struct BargeIn {
     pub unconverged_threshold: f32,
     /// How long speech must stay above `unconverged_threshold`.
     pub unconverged_sustain_ms: u64,
-    /// The echo canceller has converged once its echo return loss
-    /// enhancement reaches this, or once it hears no echo of Lucy at all.
+    /// The echo return loss enhancement at which the echo canceller has
+    /// converged. It has also converged once it hears no echo of Lucy at all.
     pub converged_erle_db: f32,
-    /// The echo canceller counts as unconverged for this much of Lucy's
-    /// speech at the start of each Session.
+    /// How much of Lucy's speech the echo canceller counts as unconverged.
+    /// It counts from the start of each Session.
     pub warm_up_ms: u64,
     /// How long after Lucy stops speaking her echo may still be heard.
     pub tail_ms: u64,
@@ -508,8 +515,7 @@ impl Default for Confirmation {
     }
 }
 
-/// `[input]`: the Input dialog, the box Lucy puts on screen for the user to
-/// type in.
+/// `[input]`: the Input dialog, the box Lucy puts on screen to type in.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Input {
@@ -579,6 +585,10 @@ pub fn xdg_dir(var: &str, fallback: &str) -> PathBuf {
 }
 
 /// Loads the config at `path`. A missing file means all defaults.
+///
+/// # Errors
+///
+/// If the file can't be read or parsed.
 pub fn load(path: &Path) -> Result<Config, Error> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -588,9 +598,10 @@ pub fn load(path: &Path) -> Result<Config, Error> {
     toml::from_str(&text).map_err(|e| Error::Parse(path.to_owned(), e))
 }
 
-/// Sets the value at `key` (the names of the tables it is in, then its own)
-/// in the config file at `path`, keeping every comment and all other
-/// formatting. A missing file or table is created.
+/// Sets the value at `key` in the config file at `path`.
+///
+/// `key` names the tables it is in, then its own. Every comment and all other
+/// formatting stay. A missing file or table is created.
 ///
 /// # Errors
 ///
@@ -617,8 +628,8 @@ fn replace_keeping_decor(old: &mut toml_edit::Value, new: toml_edit::Value) {
     *old.decor_mut() = decor;
 }
 
-/// Removes `key` from the config file at `path`, so its default applies,
-/// keeping every comment and all other formatting.
+/// Removes `key` from the config file at `path`, so its default applies.
+/// Every comment and all other formatting stay.
 ///
 /// # Errors
 ///
@@ -659,7 +670,6 @@ fn edit(
     write_atomically(path, &doc.to_string()).map_err(|e| Error::Write(path.to_owned(), e))
 }
 
-/// Writes beside `path` and renames over it, so lucyd never reads half a file.
 fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -941,8 +951,11 @@ mod tests {
         let options = |dirs: &[&Path]| SttKind::options(Some(&path(dirs)));
 
         assert_eq!(options(&[empty.path()]), [SttKind::Whisper]);
-        // Not executable, so not installed.
-        assert_eq!(options(&[installed.path()]), [SttKind::Whisper]);
+        assert_eq!(
+            options(&[installed.path()]),
+            [SttKind::Whisper],
+            "not executable, so not installed"
+        );
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
