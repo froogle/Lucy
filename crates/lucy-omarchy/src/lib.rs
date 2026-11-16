@@ -23,7 +23,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{json, Value};
 
-use hyprland::{Hyprland, Window};
+use hyprland::{Address, Hyprland, Window};
 
 /// Where the Plugin reaches the desktop.
 pub struct Desktop {
@@ -222,7 +222,7 @@ impl Omarchy {
                 .active_window()
                 .await?
                 .ok_or("no window is focused")?,
-            address if address.starts_with("0x") => address.to_owned(),
+            address if address.starts_with("0x") => Address::new(address),
             name => {
                 let wanted = name.to_lowercase();
                 let found: Vec<&Window> = windows

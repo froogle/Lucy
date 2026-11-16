@@ -52,7 +52,23 @@ struct Inner {
     opened: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DialogId(u64);
+
+impl DialogId {
+    fn parse(wire: &str) -> Option<DialogId> {
+        wire.parse().ok().map(DialogId)
+    }
+}
+
+impl std::fmt::Display for DialogId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 struct Open {
+    id: DialogId,
     request: InputOpen,
     reply: oneshot::Sender<Typed>,
 }
@@ -64,9 +80,9 @@ impl Inner {
         }
     }
 
-    fn take(&mut self, id: &str) -> Option<Open> {
+    fn take(&mut self, id: DialogId) -> Option<Open> {
         match &self.open {
-            Some(open) if open.request.id == id => self.open.take(),
+            Some(open) if open.id == id => self.open.take(),
             _ => None,
         }
     }
@@ -112,15 +128,15 @@ impl Dialogs {
     pub fn open(&self, dialog: Dialog) -> (OpenDialog, bool) {
         let mut inner = self.inner.locked();
         inner.opened += 1;
+        let id = DialogId(inner.opened);
         let request = InputOpen {
-            id: inner.opened.to_string(),
+            id: id.to_string(),
             message: dialog.message,
             fields: dialog.fields,
         };
         let (reply, typed) = oneshot::channel();
         inner.send(Event::InputOpen(request.clone()));
-        let id = request.id.clone();
-        inner.open = Some(Open { request, reply });
+        inner.open = Some(Open { id, request, reply });
         let held = inner.holder.is_some();
         let open = OpenDialog {
             id,
@@ -149,7 +165,8 @@ pub struct InputClaim {
 impl InputClaim {
     pub fn answer(&self, id: &str, values: BTreeMap<String, String>) -> Result<(), Refusal> {
         let mut inner = self.dialogs.inner.locked();
-        let open = inner.open.as_ref().filter(|open| open.request.id == id);
+        let id = DialogId::parse(id).ok_or(Refusal::NoDialog)?;
+        let open = inner.open.as_ref().filter(|open| open.id == id);
         let Some(open) = open else {
             return Err(Refusal::NoDialog);
         };
@@ -164,6 +181,7 @@ impl InputClaim {
 
     pub fn cancel(&self, id: &str) -> Result<(), Refusal> {
         let mut inner = self.dialogs.inner.locked();
+        let id = DialogId::parse(id).ok_or(Refusal::NoDialog)?;
         let open = inner.take(id).ok_or(Refusal::NoDialog)?;
         let _ = open.reply.send(Typed::Cancelled);
         Ok(())
@@ -177,7 +195,7 @@ impl Drop for InputClaim {
 }
 
 pub struct OpenDialog {
-    id: String,
+    id: DialogId,
     dialogs: Dialogs,
     typed: oneshot::Receiver<Typed>,
 }
@@ -191,9 +209,9 @@ impl OpenDialog {
 impl Drop for OpenDialog {
     fn drop(&mut self) {
         let mut inner = self.dialogs.inner.locked();
-        if inner.take(&self.id).is_some() {
+        if inner.take(self.id).is_some() {
             inner.send(Event::InputClose(InputClose {
-                id: self.id.clone(),
+                id: self.id.to_string(),
             }));
         }
     }

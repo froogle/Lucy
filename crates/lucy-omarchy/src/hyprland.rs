@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
@@ -8,9 +10,25 @@ pub struct Hyprland {
     socket: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Address(String);
+
+impl Address {
+    pub fn new(address: &str) -> Address {
+        Address(address.to_owned())
+    }
+}
+
+impl fmt::Display for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Window {
-    pub address: String,
+    pub address: Address,
     pub class: String,
     pub title: String,
     pub workspace: Workspace,
@@ -26,7 +44,7 @@ pub struct Workspace {
 
 #[derive(Deserialize)]
 struct Active {
-    address: Option<String>,
+    address: Option<Address>,
 }
 
 impl Hyprland {
@@ -38,7 +56,7 @@ impl Hyprland {
         self.query("clients").await
     }
 
-    pub async fn active_window(&self) -> Result<Option<String>, String> {
+    pub async fn active_window(&self) -> Result<Option<Address>, String> {
         let active: Active = self.query("activewindow").await?;
         Ok(active.address)
     }
