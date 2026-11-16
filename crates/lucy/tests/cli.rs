@@ -12,8 +12,8 @@ fn lucy(runtime_dir: &Path) -> Command {
 }
 
 fn start_lucyd(runtime_dir: &Path) -> lucyd::Daemon {
-    // Not the first run, so a Session opens in Listening.
-    std::fs::write(runtime_dir.join("persona.md"), "You are Lucy.").unwrap();
+    let not_the_first_run = runtime_dir.join("persona.md");
+    std::fs::write(not_the_first_run, "You are Lucy.").unwrap();
     lucyd::spawn(lucyd::Options {
         socket_path: runtime_dir.join("lucy").join("lucyd.sock"),
         config_path: runtime_dir.join("config.toml"),

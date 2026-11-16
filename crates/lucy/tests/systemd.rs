@@ -3,7 +3,6 @@
 
 use std::path::Path;
 
-/// The unit's `key=value` lines, in order, as (section, key, value).
 fn unit(name: &str) -> Vec<(String, String, String)> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../dist/systemd")
@@ -64,12 +63,17 @@ fn lucyd_starts_after_pipewire_and_its_children_die_with_it() {
 
     let after = values(&unit, "Unit", "After");
     assert!(after.contains(&"pipewire.service".to_owned()), "{after:?}");
-    // Everything in lucyd's control group goes when it stops or dies.
-    assert_eq!(values(&unit, "Service", "KillMode"), ["control-group"]);
+    assert_eq!(
+        values(&unit, "Service", "KillMode"),
+        ["control-group"],
+        "everything in lucyd's control group goes when it stops or dies"
+    );
     assert_eq!(values(&unit, "Service", "Type"), ["exec"]);
     assert!(values(&unit, "Service", "ExecStart")[0].ends_with("/lucyd"));
-    // No socket activation: lucyd owns its socket.
-    assert!(values(&unit, "Unit", "Requires").is_empty());
+    assert!(
+        values(&unit, "Unit", "Requires").is_empty(),
+        "no socket activation: lucyd owns its socket"
+    );
     assert!(!Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../dist/systemd/lucyd.socket")
         .exists());

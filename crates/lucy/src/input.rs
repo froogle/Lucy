@@ -1,8 +1,3 @@
-//! `lucy input`: the Input dialog as a page, which lucyd opens in a terminal
-//! while no other client holds the `input` role. It claims the role for one
-//! dialog, asks each field in turn and sends back what is typed. Esc closes
-//! it unanswered.
-
 use std::collections::BTreeMap;
 
 use lucy_ipc::{error_code, Client, Event, Field, FieldKind, InputOpen, Role};
@@ -53,7 +48,6 @@ fn fields<B: Backend>(ui: &mut Ui<B>, fields: &[Field]) -> Result<BTreeMap<Strin
         .collect()
 }
 
-/// What the user types or picks for `field`.
 fn value<B: Backend>(ui: &mut Ui<B>, field: &Field) -> Result<String, Stop> {
     let label = field.description.as_deref().unwrap_or(match field.kind {
         FieldKind::Text => "Your answer:",

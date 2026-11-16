@@ -1,5 +1,6 @@
-//! What the bar panel runs: `lucy status --json`, which prints lucyd's
-//! state and each choice the panel offers, and `lucy set`, which writes one.
+//! What the bar panel runs: `lucy status --json` and `lucy set`.
+//! The first prints lucyd's state and each choice the panel offers; the
+//! second writes one.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;

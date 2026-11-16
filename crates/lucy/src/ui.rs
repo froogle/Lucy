@@ -52,23 +52,35 @@ impl From<io::Error> for Stop {
 
 /// Where key presses come from.
 pub trait Keys {
-    /// The next key press, waiting for it; None when the screen needs
-    /// drawing again (the terminal was resized).
+    /// The next key press, waiting for it.
+    /// `None` when the screen needs drawing again (the terminal was resized).
+    ///
+    /// # Errors
+    ///
+    /// When the terminal can't be read.
     fn next(&mut self) -> io::Result<Option<KeyEvent>>;
 
     /// Whether Ctrl-C was pressed, without waiting. Other keys pressed
     /// meanwhile are dropped.
+    ///
+    /// # Errors
+    ///
+    /// When the terminal can't be read.
     fn interrupted(&mut self) -> io::Result<bool>;
 
-    /// Runs `run` with the terminal back to normal, for a program that
-    /// talks to the user itself (an installer asking for a password).
+    /// Runs `run` with the terminal back to normal.
+    /// It is for a program that talks to the user itself (an installer asking
+    /// for a password).
+    ///
+    /// # Errors
+    ///
+    /// When the terminal can't be restored or taken back.
     fn outside(&mut self, run: &mut dyn FnMut()) -> io::Result<()> {
         run();
         Ok(())
     }
 }
 
-/// Whether `key` is Ctrl-C, which raw mode delivers as a key press.
 pub fn is_ctrl_c(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL)
 }
@@ -205,8 +217,8 @@ pub enum Prompt {
     Rows(Rows),
 }
 
-/// A list a page shows: a note above its rows, never picked, and the
-/// letters that act on its rows, each with what it does, for the footer.
+/// A list a page shows: a note, its rows and the letters that act on them.
+/// The note is never picked; each letter says what it does, for the footer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
     pub title: String,
@@ -216,7 +228,6 @@ pub struct Rows {
     pub selected: usize,
 }
 
-/// What a question was answered with.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Answer {
     Index(usize),
@@ -225,8 +236,6 @@ pub enum Answer {
     Pick(Pick),
 }
 
-/// What was picked on a [`Rows`]: Enter on a row, or an action's letter on
-/// the selected row.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Pick {
     Row(usize),
@@ -264,7 +273,6 @@ impl Prompt {
         }
     }
 
-    /// Takes a key press; the answer once there is one.
     pub fn key(&mut self, key: KeyEvent) -> Option<Answer> {
         match self {
             Prompt::Choose {
@@ -364,7 +372,6 @@ impl Prompt {
         Some(line)
     }
 
-    /// Every piece of text the question puts on the screen.
     fn text(&self) -> Vec<String> {
         match self {
             Prompt::Choose { title, options, .. } => std::iter::once(title.clone())
@@ -383,17 +390,15 @@ impl Prompt {
     }
 }
 
-/// The screen: lucyd's status, a transcript of what was said and answered,
-/// and the question, list or meter below it.
+/// The screen: lucyd's status, a transcript, and a question, list or meter.
+/// The transcript is what was said and answered.
 #[derive(Debug, Default)]
 pub struct Screen {
     pub title: String,
     pub status: String,
     pub lines: Vec<String>,
     pub prompt: Option<Prompt>,
-    /// The microphone's level, 0 to 1, while the meter runs.
     pub meter: Option<f64>,
-    /// Everything ever shown, for tests.
     shown: Vec<String>,
 }
 
@@ -416,8 +421,6 @@ impl Screen {
         self.prompt = Some(prompt);
     }
 
-    /// Passes `key` to the question; once answered, the question leaves the
-    /// screen and the transcript keeps it with its answer.
     pub fn key(&mut self, key: KeyEvent) -> Option<Answer> {
         let prompt = self.prompt.as_mut()?;
         let answer = prompt.key(key)?;
@@ -435,7 +438,6 @@ impl Screen {
     }
 }
 
-/// Renders `screen` across the whole frame.
 pub fn draw(frame: &mut Frame, screen: &Screen) {
     let bottom = match (&screen.prompt, screen.meter) {
         (Some(Prompt::Choose { options, .. }), _) => options.len() as u16 + 2,
@@ -512,8 +514,6 @@ fn stacked(area: Rect, top: u16, next: u16) -> [Rect; 2] {
     [top, next]
 }
 
-/// `line` broken into rows of at most `width` characters, between words
-/// where it can be.
 fn wrap(line: &str, width: usize) -> Vec<String> {
     let mut rows = vec![String::new()];
     for word in line.split(' ') {
@@ -534,7 +534,6 @@ fn wrap(line: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// Draws the question or list; the keys that answer it.
 fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> String {
     match prompt {
         Prompt::Choose {
@@ -639,7 +638,6 @@ impl<'k, B: Backend> Ui<'k, B> {
         Ok(())
     }
 
-    /// Adds a line to the transcript and shows it at once.
     pub fn say(&mut self, text: impl Into<String>) -> Result<(), Stop> {
         self.screen.say(text);
         self.draw()
@@ -670,7 +668,6 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// The row picked on `rows`, or the action run on it.
     pub fn rows(&mut self, mut rows: Rows) -> Result<Pick, Stop> {
         rows.selected = rows.selected.min(rows.rows.len().saturating_sub(1));
         match self.answer(Prompt::Rows(rows))? {
@@ -679,7 +676,6 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// The index of one of `options`, listed under `title`.
     pub fn choose(&mut self, title: &str, options: &[String]) -> Result<usize, Stop> {
         match self.answer(Prompt::choose(title, options))? {
             Answer::Index(i) => Ok(i),
@@ -694,7 +690,6 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// Text typed in answer to `question`, `default` if none.
     pub fn ask(&mut self, question: &str, default: &str) -> Result<String, Stop> {
         match self.answer(Prompt::ask(question, default))? {
             Answer::Text(text) => Ok(text),
@@ -702,8 +697,6 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// Text typed hidden in answer to `question`; empty if none. It is never
-    /// drawn, and the transcript keeps only whether something was typed.
     pub fn secret(&mut self, question: &str) -> Result<String, Stop> {
         match self.answer(Prompt::secret(question))? {
             Answer::Text(text) => Ok(text),
@@ -711,7 +704,6 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// Shows the meter at `level` (0 to 1), or takes it away.
     pub fn meter(&mut self, level: Option<f64>) -> Result<(), Stop> {
         self.screen.meter = level;
         self.draw()?;
@@ -721,8 +713,6 @@ impl<'k, B: Backend> Ui<'k, B> {
         }
     }
 
-    /// Runs `run` outside the full screen, then comes back to it: for a
-    /// program that may ask for input, such as an installer's password.
     pub fn outside<T>(&mut self, run: impl FnOnce() -> T) -> Result<T, Stop> {
         let mut run = Some(run);
         let mut result = None;

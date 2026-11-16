@@ -1,8 +1,3 @@
-//! A home of its own for `lucy`, with an in-process lucyd: its own XDG
-//! dirs, and a `PATH` holding only the fake tools a test writes. The full
-//! screen runs in-process on ratatui's `TestBackend`, pressed by a
-//! [`Script`], with a fake keyring; plain commands run the real binary.
-
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -24,7 +19,6 @@ pub struct Home {
 }
 
 impl Home {
-    /// A home where lucyd runs, with no adapters that hear or speak.
     pub fn with_lucyd() -> Home {
         Home::with_adapters(lucyd::adapters::Adapters::inert())
     }
@@ -60,9 +54,6 @@ impl Home {
         .unwrap()
     }
 
-    /// Opens a Session and asks `question` in the Input dialog, as the
-    /// model's `ask_typed` does, with one field of `kind`. The answer
-    /// arrives on the returned channel.
     pub fn ask_typed(
         &self,
         question: &str,
@@ -77,8 +68,6 @@ impl Home {
         rx
     }
 
-    /// A home where lucyd hears a microphone that stays at `level` (RMS),
-    /// with nothing else that hears or speaks.
     pub fn with_mic(level: f32) -> Home {
         let ears = lucyd::audio::listen(
             Box::new(SteadyMic(level)),
@@ -126,12 +115,9 @@ impl Home {
         self.dir.path().join("bin")
     }
 
-    /// Puts a fake `name` on `PATH` that runs `body` with `sh`, after
-    /// logging its arguments to `<name>.log` beside it.
     pub fn fake(&self, name: &str, body: &str) {
         let log = self.bin().join(format!("{name}.log"));
         let script = format!("#!/bin/sh\necho \"$@\" >> '{}'\n{body}\n", log.display());
-        // Written by a child, so no fd of this process leaks into a fork.
         let status = Command::new("/bin/sh")
             .arg("-c")
             .arg("cat > \"$1\" && chmod +x \"$1\"")
@@ -147,8 +133,6 @@ impl Home {
         assert!(status.success());
     }
 
-    /// Puts a fake `pactl` on `PATH` listing `sources` and `sinks` as
-    /// (node name, description), with these default source and sink.
     pub fn fake_pactl(
         &self,
         sources: &[(&str, &str)],
@@ -179,7 +163,6 @@ impl Home {
         );
     }
 
-    /// Each run of the fake `name`, as its arguments.
     pub fn calls(&self, name: &str) -> Vec<String> {
         std::fs::read_to_string(self.bin().join(format!("{name}.log")))
             .unwrap_or_default()
@@ -188,8 +171,6 @@ impl Home {
             .collect()
     }
 
-    /// Where `lucy` finds things in this home: its config, its fakes on
-    /// `PATH`, its lucyd, and the `lucyd` cargo builds beside `lucy`.
     pub fn env(&self) -> lucy::Env {
         lucy::Env {
             config: self.config_path(),
@@ -229,17 +210,14 @@ impl Home {
         tui
     }
 
-    /// Runs `lucy args`, answering its questions with `answers`, one a line.
     pub fn lucy(&self, args: &[&str], answers: &[&str]) -> Output {
         let mut child = self.command(args).spawn().unwrap();
         let mut input = answers.join("\n");
         input.push('\n');
-        // It may finish without reading everything.
-        let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+        let _may_stop_reading_early = child.stdin.take().unwrap().write_all(input.as_bytes());
         child.wait_with_output().unwrap()
     }
 
-    /// `lucy args` in this home, its stdio piped, not yet started.
     pub fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_lucy"));
         command
@@ -257,8 +235,6 @@ impl Home {
     }
 }
 
-/// A microphone that hears a steady tone at an RMS level, from when lucyd
-/// opens it until it lets go.
 struct SteadyMic(f32);
 
 impl lucyd::audio::AudioIo for SteadyMic {
@@ -292,7 +268,6 @@ impl lucyd::audio::AudioIo for SteadyMic {
     }
 }
 
-/// A VAD that never hears speech.
 struct DeafVad;
 
 impl lucyd::audio::Vad for DeafVad {
@@ -305,17 +280,12 @@ impl lucyd::audio::Vad for DeafVad {
     }
 }
 
-/// How a run of `lucy` went.
 pub struct Tui {
     pub result: Result<(), String>,
-    /// Everything it showed: what it said, its questions, lists and their
-    /// options.
     pub shown: String,
-    /// The last screen it drew.
     pub screen: String,
 }
 
-/// A keyring in memory, in place of the Secret Service.
 #[derive(Default)]
 pub struct FakeStore(Mutex<HashMap<(String, String), String>>);
 

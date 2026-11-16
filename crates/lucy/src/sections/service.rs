@@ -1,6 +1,3 @@
-//! Service: whether `lucyd.service` starts at login, and starting, stopping
-//! or restarting it.
-
 use ratatui::backend::Backend;
 
 use super::{Context, Page, RESTART, START, STOP};

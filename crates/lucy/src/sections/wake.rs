@@ -1,5 +1,3 @@
-//! Wake word: a test inside lucyd that listens for it and shows its score.
-
 use ratatui::backend::Backend;
 
 use super::{Context, Page};

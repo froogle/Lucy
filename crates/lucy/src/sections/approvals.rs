@@ -1,6 +1,3 @@
-//! Approvals: the ones Lucy holds, each revoked after a yes. They are
-//! granted only by voice, so nothing here grants one.
-
 use ratatui::backend::Backend;
 
 use lucy_ipc::Client;

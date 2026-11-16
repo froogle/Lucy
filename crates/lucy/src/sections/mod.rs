@@ -1,7 +1,3 @@
-//! The sections of `lucy`, each a page: a list of rows the user picks, and
-//! letters that act on them. A section that needs lucyd still opens while
-//! it is stopped, says so, and offers to start it.
-
 mod approvals;
 mod audio;
 mod plugins;

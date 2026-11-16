@@ -1,6 +1,3 @@
-//! The microphones and speakers PipeWire has, by node name, as `pactl`
-//! lists them, each labelled with its description.
-
 use std::collections::HashMap;
 use std::process::Command;
 

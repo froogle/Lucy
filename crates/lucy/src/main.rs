@@ -29,75 +29,101 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Walk every section in order: Providers, speech, voice, devices, the
-    /// Wake word, Plugins, Approvals and the service.
+    #[command(
+        about = "Walk every section in order: Providers, speech, voice, devices, the Wake word, \
+                 Plugins, Approvals and the service"
+    )]
     Setup {
-        /// Where to read the distro from, for installing Piper.
         #[arg(long, hide = true, default_value = OS_RELEASE)]
         os_release: PathBuf,
     },
-    /// Enter the credentials a Plugin declares, such as an API key, in the
-    /// Plugins section. They go into your keyring, never to Lucy's model.
+    #[command(
+        about = "Enter the credentials a Plugin declares, such as an API key, in the Plugins \
+                 section. They go into your keyring, never to Lucy's model"
+    )]
     Credentials {
-        /// The Plugin's name.
+        #[arg(help = "The Plugin's name")]
         plugin: String,
     },
-    /// Print a snapshot of lucyd's state.
+    #[command(about = "Print a snapshot of lucyd's state")]
     Status {
-        /// As one line of JSON, with the settings the bar panel offers and
-        /// their options. lucyd needn't be running.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "As one line of JSON, with the settings the bar panel offers and their \
+                    options. lucyd needn't be running"
+        )]
         json: bool,
-        /// Keep running, printing a snapshot each time one changes.
-        #[arg(long, requires = "json")]
+        #[arg(
+            long,
+            requires = "json",
+            help = "Keep running, printing a snapshot each time one changes"
+        )]
         follow: bool,
     },
-    /// Set one setting in config.toml, keeping its comments, and print as
-    /// JSON when lucyd takes it up. lucyd needn't be running.
+    #[command(
+        about = "Set one setting in config.toml, keeping its comments, and print as JSON when \
+                 lucyd takes it up. lucyd needn't be running"
+    )]
     Set {
-        /// Its dotted path, such as tiers.fast or audio.mic; or stt, for
-        /// superwhisper or one of Whisper's models.
+        #[arg(
+            help = "Its dotted path, such as tiers.fast or audio.mic; or stt, for superwhisper \
+                    or one of Whisper's models"
+        )]
         key: String,
         value: String,
     },
-    /// Remove one setting from config.toml, so its default applies, and
-    /// print as JSON when lucyd takes that up.
+    #[command(
+        about = "Remove one setting from config.toml, so its default applies, and print as JSON \
+                 when lucyd takes that up"
+    )]
     Unset {
-        /// Its dotted path, such as whisper.model.
+        #[arg(help = "Its dotted path, such as whisper.model")]
         key: String,
     },
-    /// Start, stop or restart lucyd.service, as the bar panel's switch and
-    /// Restart button do.
+    #[command(
+        about = "Start, stop or restart lucyd.service, as the bar panel's switch and Restart \
+                 button do"
+    )]
     Service {
         #[arg(value_enum)]
         verb: Verb,
     },
-    /// Print lucyd's raw event stream as NDJSON, for client authors.
+    #[command(about = "Print lucyd's raw event stream as NDJSON, for client authors")]
     Events,
-    /// Open a Session, as if the Wake word had been heard.
+    #[command(about = "Open a Session, as if the Wake word had been heard")]
     Listen,
-    /// End the open Session.
+    #[command(about = "End the open Session")]
     End,
-    /// Have Lucy say `text` outside any Session (a Voice preview), and
-    /// wait until she has.
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        about = "Have Lucy say `text` outside any Session (a Voice preview), and wait until she \
+                 has"
+    )]
     Say { text: String },
-    /// Show the box Lucy puts on screen for you to type in. lucyd opens it
-    /// in a terminal while nothing else draws it.
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        about = "Show the box Lucy puts on screen for you to type in. lucyd opens it in a \
+                 terminal while nothing else draws it"
+    )]
     Input {
-        /// lucyd's socket; defaults to `$XDG_RUNTIME_DIR/lucy/lucyd.sock`.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "lucyd's socket; defaults to `$XDG_RUNTIME_DIR/lucy/lucyd.sock`"
+        )]
         socket: Option<PathBuf>,
     },
-    /// Bridge stdio to lucyd's private MCP socket. A model process that
-    /// lucyd spawns runs this as its MCP server.
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        about = "Bridge stdio to lucyd's private MCP socket. A model process that lucyd spawns \
+                 runs this as its MCP server"
+    )]
     McpRelay {
-        /// The per-spawn token lucyd issued.
+        #[arg(help = "The per-spawn token lucyd issued")]
         token: String,
-        /// The MCP socket; defaults to `$XDG_RUNTIME_DIR/lucy/mcp.sock`.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "The MCP socket; defaults to `$XDG_RUNTIME_DIR/lucy/mcp.sock`"
+        )]
         socket: Option<PathBuf>,
     },
 }
@@ -141,8 +167,6 @@ fn failed(e: lucy_ipc::Error) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// The full screen, or why there can't be one: a pipe would get escape
-/// codes, not a page.
 fn full_screen(page: &str) -> Result<DefaultTerminal, ExitCode> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         eprintln!(
@@ -151,7 +175,6 @@ fn full_screen(page: &str) -> Result<DefaultTerminal, ExitCode> {
         );
         return Err(ExitCode::FAILURE);
     }
-    // Also restores the terminal if lucy panics.
     ratatui::try_init().map_err(|e| {
         eprintln!("lucy: can't take over the terminal: {e}");
         ExitCode::FAILURE
@@ -190,7 +213,6 @@ fn input(socket: Option<PathBuf>) -> ExitCode {
 }
 
 fn connect() -> Result<Client, lucy_ipc::Error> {
-    // With no runtime dir there can be no socket, so lucyd isn't running.
     let path = lucy_ipc::default_socket_path().ok_or(lucy_ipc::Error::NotRunning)?;
     Client::connect(&path, "lucy", None)
 }
@@ -259,15 +281,13 @@ fn events() -> Result<(), lucy_ipc::Error> {
     let mut stdout = std::io::stdout().lock();
     loop {
         let line = client.next_event_line()?;
-        if writeln!(stdout, "{line}").is_err() {
-            // The reader went away (e.g. `lucy events | head`).
+        let reader_gone = writeln!(stdout, "{line}").is_err();
+        if reader_gone {
             return Ok(());
         }
     }
 }
 
-/// Sends `token`, then pipes stdin to the socket and the socket to stdout
-/// until lucyd hangs up.
 fn mcp_relay(token: &str, socket: Option<PathBuf>) -> ExitCode {
     let Some(socket) = socket.or_else(lucy_ipc::default_mcp_socket_path) else {
         eprintln!("lucy: mcp-relay: XDG_RUNTIME_DIR is not set");
@@ -286,17 +306,10 @@ fn mcp_relay(token: &str, socket: Option<PathBuf>) -> ExitCode {
     }
 }
 
-/// `Ok(false)` if lucyd refused the token.
 fn relay(token: &str, socket: &std::path::Path) -> std::io::Result<bool> {
     let mut stream = UnixStream::connect(socket)?;
     writeln!(stream, "{token}")?;
-    // Byte by byte, so nothing after the answer line is consumed.
-    let mut answer = Vec::new();
-    let mut byte = [0u8];
-    while stream.read(&mut byte)? == 1 && byte[0] != b'\n' {
-        answer.push(byte[0]);
-    }
-    if answer != b"ok" {
+    if read_line_unbuffered(&mut stream)? != b"ok" {
         return Ok(false);
     }
     let mut to_lucyd = stream.try_clone()?;
@@ -304,16 +317,27 @@ fn relay(token: &str, socket: &std::path::Path) -> std::io::Result<bool> {
         let _ = std::io::copy(&mut std::io::stdin().lock(), &mut to_lucyd);
         let _ = to_lucyd.shutdown(std::net::Shutdown::Write);
     });
-    // By hand: io::copy from the socket to a stdout pipe stalled, holding
-    // replies back.
-    let mut stdout = std::io::stdout().lock();
+    copy_flushing_each_read(&mut stream, &mut std::io::stdout().lock())?;
+    Ok(true)
+}
+
+fn read_line_unbuffered(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    let mut byte = [0u8];
+    while stream.read(&mut byte)? == 1 && byte[0] != b'\n' {
+        line.push(byte[0]);
+    }
+    Ok(line)
+}
+
+fn copy_flushing_each_read(from: &mut impl Read, to: &mut impl Write) -> std::io::Result<()> {
     let mut buf = [0u8; 8192];
     loop {
-        let n = stream.read(&mut buf)?;
+        let n = from.read(&mut buf)?;
         if n == 0 {
-            return Ok(true);
+            return Ok(());
         }
-        stdout.write_all(&buf[..n])?;
-        stdout.flush()?;
+        to.write_all(&buf[..n])?;
+        to.flush()?;
     }
 }

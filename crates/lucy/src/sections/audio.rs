@@ -1,7 +1,3 @@
-//! Audio devices: the microphone, with its level meter (a mic too quiet
-//! even for the AEC pre-gain is flagged, and keeping it defaults to No),
-//! and the speaker, heard through a Voice preview.
-
 use std::time::Duration;
 
 use lucy_ipc::Client;

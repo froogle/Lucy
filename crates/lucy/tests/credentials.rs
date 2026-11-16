@@ -1,5 +1,5 @@
-//! `lucy credentials <plugin>`: the Plugins section, opened entering the
-//! credentials that Plugin declares, each typed hidden. The values go to
+//! `lucy credentials <plugin>`: entering a Plugin's credentials, typed hidden.
+//! It opens the Plugins section on that Plugin. The values go to
 //! the Secret Service (here a fake), never to lucyd, the screen or the
 //! transcript.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
@@ -11,7 +11,6 @@ use lucy_config::credentials::CredentialStore;
 use ratatui::crossterm::event::KeyCode;
 use support::{FakeStore, Home, Script, Tui};
 
-/// Installs a Plugin declaring `credentials`, as lucyd lists it.
 fn install(home: &Home, name: &str, credentials: &[&str]) {
     let dir = home.dir.path().join("plugins").join(name);
     std::fs::create_dir_all(&dir).unwrap();
@@ -52,7 +51,7 @@ fn it_opens_the_plugins_section_entering_that_plugins_credentials() {
         .enter()
         .typed("c-secret-2")
         .enter()
-        .press(KeyCode::Esc) // back to the list
+        .press(KeyCode::Esc)
         .typed("q");
     let tui = enter(&home, "weather", &store, keys);
 
@@ -82,10 +81,9 @@ fn the_secret_is_hidden_on_screen_while_it_is_typed() {
     let home = configured_home();
     install(&home, "weather", &["WEATHER_KEY"]);
     let store = FakeStore::default();
-    // Ctrl-C mid-entry: the screen still shows what was being typed.
-    let keys = Script::new().typed("w-secret-1").ctrl_c();
+    let ctrl_c_mid_entry = Script::new().typed("w-secret-1").ctrl_c();
 
-    let tui = enter(&home, "weather", &store, keys);
+    let tui = enter(&home, "weather", &store, ctrl_c_mid_entry);
 
     assert!(!tui.screen.contains("w-secret"), "{}", tui.screen);
     assert_eq!(store.value("weather", "WEATHER_KEY"), None);
@@ -143,14 +141,9 @@ fn any_plugins_credentials_can_be_entered_from_its_row() {
     install(&home, "weather", &["WEATHER_KEY"]);
     let store = FakeStore::default();
 
-    // Plugins, then the weather Plugin's row.
-    let keys = Script::new()
-        .down(5)
-        .enter()
-        .enter()
-        .typed("k")
-        .enter()
-        .typed("q");
+    let plugins = Script::new().down(5).enter();
+    let weather_row = Script::new().enter();
+    let keys = plugins.chain(weather_row).typed("k").enter().typed("q");
     home.tui_with(&home.env(), &store, Open::Lucy, keys);
 
     assert_eq!(store.value("weather", "WEATHER_KEY").unwrap(), "k");

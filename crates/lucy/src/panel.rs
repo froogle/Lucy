@@ -1,5 +1,6 @@
-//! What the bar panel shows: a snapshot of whether lucyd runs, whether a
-//! Session is open, and each choice the panel offers, with its options.
+//! What the bar panel shows: a snapshot of lucyd and the panel's choices.
+//! It says whether lucyd runs, whether a Session is open, and each choice
+//! the panel offers, with its options.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -124,6 +125,10 @@ impl Snapshot {
     }
 
     /// One line of JSON.
+    ///
+    /// # Panics
+    ///
+    /// Only if `serde_json` can't write plain data.
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).expect("a snapshot is plain data")
     }
@@ -167,8 +172,8 @@ enum Change {
     Devices,
 }
 
-/// Writes a snapshot to `out` as a line of JSON, then another each time it
-/// changes, until `out` can't be written to.
+/// Writes a snapshot to `out` as a line of JSON, then one per change.
+/// It stops when `out` can't be written to.
 ///
 /// # Errors
 ///

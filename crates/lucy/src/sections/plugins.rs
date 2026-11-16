@@ -1,5 +1,3 @@
-//! Plugins: each one's state, and entering the credentials it declares.
-
 use lucy_ipc::{Client, PluginInfo, PluginStatus};
 use ratatui::backend::Backend;
 

@@ -1,6 +1,3 @@
-//! Speech-to-text: the STT Provider, warning about Superwhisper when it is
-//! chosen, and Whisper's model.
-
 use lucy_config::SttKind;
 use ratatui::backend::Backend;
 
