@@ -63,7 +63,7 @@ Panel {
   }
   onDialogChanged: {
     inputProblem = ""
-    if (dialog !== null) Qt.callLater(inputBox.focusFirst)
+    if (dialog !== null) Qt.callLater(inputBox.forceActiveFocus)
   }
 
   implicitWidth: button.implicitWidth
@@ -89,7 +89,7 @@ Panel {
     owner: root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: root.asking ? inputBox : keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(flick.contentHeight, Style.space(620))
 
@@ -430,15 +430,9 @@ Panel {
   component InputBox: FocusScope {
     id: box
     implicitHeight: boxColumn.implicitHeight
+    readonly property var fields: root.asking ? root.dialog.fields : []
+    readonly property int firstTyped: fields.findIndex(function (field) { return field.kind !== "choice" })
     Keys.onEscapePressed: lucy.cancelInput()
-
-    function focusFirst() {
-      for (var i = 0; i < entries.count; i++) {
-        var entry = entries.itemAt(i)
-        if (entry && entry.typed) return entry.focusBox()
-      }
-      box.forceActiveFocus()
-    }
 
     function send() {
       var values = {}
@@ -474,11 +468,12 @@ Panel {
 
       Repeater {
         id: entries
-        model: root.asking ? root.dialog.fields : []
+        model: box.fields
 
         delegate: Column {
           id: entry
           required property var modelData
+          required property int index
           readonly property var field: modelData
           readonly property bool typed: field.kind !== "choice"
           readonly property bool secret: field.kind === "secret"
@@ -488,7 +483,6 @@ Panel {
           width: parent ? parent.width : implicitWidth
           spacing: Style.space(4)
 
-          function focusBox() { typedBox.forceActiveFocus() }
           function clear() {
             typedBox.text = ""
             picked = ""
@@ -507,6 +501,7 @@ Panel {
             id: typedBox
             objectName: "inputField"
             visible: entry.typed
+            focus: entry.index === box.firstTyped
             width: parent.width
             password: entry.secret
             foreground: root.foreground

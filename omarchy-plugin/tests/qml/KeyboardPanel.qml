@@ -2,7 +2,8 @@ import QtQuick
 
 // Stands in for qs.Ui's KeyboardPanel in the harness: the real one is a
 // layer shell window, which needs a compositor. Same properties and sizing
-// helpers the panel uses, holding its content in a plain Item.
+// helpers the panel uses, holding its content in a plain Item. Like the
+// real one, it gives focusTarget the keys once it opens.
 Item {
   id: root
   required property Item anchorItem
@@ -16,6 +17,10 @@ Item {
   width: contentWidth
   height: contentHeight
   default property alias contentItem: holder.children
+
+  onOpenChanged: if (open && focusTarget) Qt.callLater(function () {
+    if (root.open && root.focusTarget) root.focusTarget.forceActiveFocus()
+  })
 
   function fittedContentWidth(width, cap) {
     var desired = Math.max(1, Number(width) || 1)
