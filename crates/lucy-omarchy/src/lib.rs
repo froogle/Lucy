@@ -1,7 +1,6 @@
-//! The Omarchy Plugin: Lucy's shipped Plugin for the Omarchy desktop. It is
-//! the pattern for Plugins for other desktops. It manages windows and
-//! workspaces by dispatching to Hyprland over its IPC socket, and changes
-//! the tiling layout through Omarchy's own commands. It runs only the
+//! The Omarchy Plugin: Lucy's shipped Plugin for the Omarchy desktop. It
+//! manages windows and workspaces by dispatching to Hyprland over its IPC
+//! socket, and changes the tiling layout through Omarchy's own commands. It runs only the
 //! `omarchy-*` commands named here, never arbitrary ones, and offers no
 //! logout, reboot or shutdown.
 //!
