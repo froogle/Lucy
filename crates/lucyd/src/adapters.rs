@@ -26,6 +26,10 @@ pub struct SpeechSegment {
 /// Speech-to-text. Blocking; lucyd calls it off the async runtime.
 pub trait Stt: Send + Sync {
     /// The words heard, or an empty string if no speech was recognised.
+    ///
+    /// # Errors
+    ///
+    /// When the STT Provider fails.
     fn transcribe(&self, segment: SpeechSegment) -> Result<String, SttError>;
 }
 
@@ -75,8 +79,8 @@ pub enum RateLimitStatus {
     Unknown,
 }
 
-/// The command a model process runs as its one MCP server, to reach Lucy's
-/// tools: `lucy mcp-relay` with a token that names this caller.
+/// The command a model process runs as its one MCP server, to reach Lucy's tools.
+/// It is `lucy mcp-relay` with a token that names this caller.
 #[derive(Debug, Clone)]
 pub struct Relay {
     pub program: PathBuf,
@@ -85,8 +89,8 @@ pub struct Relay {
 
 /// A Thinking Provider.
 pub trait Thinking: Send + Sync {
-    /// Starts the model process for a new Session with the settings in
-    /// `provider`, configured with `relay` as its MCP server and following
+    /// Starts the model process for a new Session with the settings in `provider`.
+    /// It is configured with `relay` as its MCP server and follows
     /// `instructions` (the Persona) all Session. The process streams its
     /// replies into `events`. Dropping the SessionModel ends the process. If
     /// the Provider can't be used, it sends `Unavailable`.
@@ -98,18 +102,25 @@ pub trait Thinking: Send + Sync {
         instructions: String,
     ) -> Box<dyn SessionModel>;
 
-    /// Checks without a model call that the CLI is installed and signed in
-    /// as `provider` requires. Blocking. The error is a reason ready to
-    /// speak, with the fix.
+    /// Checks without a model call that the CLI is installed and signed in.
+    /// It checks as `provider` requires. Blocking.
+    ///
+    /// # Errors
+    ///
+    /// A reason ready to speak, with the fix.
     fn health(&self, provider: &Provider) -> Result<(), String>;
 
     /// A real "Reply OK" round trip, with the subscription guard's checks
-    /// on it. Blocking. The error is a reason ready to speak, with the fix.
+    /// on it. Blocking.
+    ///
+    /// # Errors
+    ///
+    /// A reason ready to speak, with the fix.
     fn check(&self, provider: &Provider) -> Result<(), String>;
 
-    /// Starts a Delegate's model process, as `open` starts a Session's, but
-    /// with the CLI's own file and shell tools, working in `workspace.dir`,
-    /// and confined by Landlock to `workspace` plus the CLI's own program
+    /// Starts a Delegate's model process, as `open` starts a Session's.
+    /// It has the CLI's own file and shell tools, works in `workspace.dir`,
+    /// and is confined by Landlock to `workspace` plus the CLI's own program
     /// and config. A Provider that can't run Delegates sends `Unavailable`.
     fn open_delegate(
         &self,
@@ -125,8 +136,8 @@ pub trait Thinking: Send + Sync {
         Box::new(InertSessionModel::new(events))
     }
 
-    /// lucyd is stopping: ends every model process still open, and what
-    /// they keep on disk, as dropping each SessionModel would.
+    /// lucyd is stopping: ends every model process still open.
+    /// It also ends what they keep on disk, as dropping each SessionModel would.
     fn shutdown(&self) {}
 }
 
@@ -144,8 +155,6 @@ pub struct Workspace {
     pub readable: Vec<PathBuf>,
 }
 
-/// What a Thinking Provider's process is for: a Session's model, or with a
-/// `workspace`, a Delegate.
 pub(crate) struct Role {
     pub relay: Relay,
     pub instructions: String,
@@ -165,8 +174,8 @@ pub trait SessionModel: Send {
 
 /// A TTS Provider together with playback.
 pub trait Tts: Send + Sync {
-    /// Opens playback on `speaker` (`"default"` or a pinned node name), in
-    /// `voice`, for a new Session or a Voice preview. A voice that isn't
+    /// Opens playback on `speaker` in `voice`, for a new Session or a Voice preview.
+    /// `speaker` is `"default"` or a pinned node name. A voice that isn't
     /// there yet is fetched first. Each sentence sends one `Played` or
     /// `Failed` on `events`, in order, and `Level` about 30 times a second
     /// while it plays. If the device goes away it sends `DeviceLost`.
@@ -180,19 +189,12 @@ pub trait Tts: Send + Sync {
 }
 
 pub trait Speaker: Send {
-    /// Queues a sentence to be synthesised and played.
     fn speak(&mut self, sentence: String);
 
-    /// Queues a short cue. It sends no event, and if it is the last thing
-    /// queued it plays out even if the Speaker is dropped straight after.
     fn sound(&mut self, sound: Sound);
 
-    /// Turns playback down (true), as the user may be cutting in, or back up
-    /// (false). The echo canceller's reference is what actually plays.
     fn duck(&mut self, ducked: bool);
 
-    /// Stops playback at once and drops everything queued, for a Barge-in.
-    /// Nothing dropped sends an event. Unducks.
     fn stop(&mut self);
 }
 
@@ -211,12 +213,7 @@ pub enum SpeakerEvent {
     /// The oldest queued sentence finished playing.
     Played,
     /// The oldest queued sentence couldn't be synthesised or played.
-    Failed {
-        /// Its text.
-        sentence: String,
-        /// Why, e.g. "Piper isn't installed".
-        reason: String,
-    },
+    Failed { sentence: String, reason: String },
     /// RMS of the samples just played, from 0.0 to 1.0.
     Level(f32),
     /// The output device went away; the Session ends.
@@ -235,27 +232,15 @@ pub struct Notification {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
-    /// Session start, Confirming or end, from the notification fallback.
-    /// Each replaces the last one that offered an action, so a stale End
-    /// button doesn't linger.
     Status,
-    /// A reply Lucy couldn't speak. It replaces nothing, so the End button
-    /// stays.
     Reply,
-    /// Something went wrong, such as a lost device or Provider. It replaces
-    /// nothing, so the Session end that may follow doesn't hide it.
     Problem,
-    /// What a Confirmation or Approval is about, too long to say: a call's
-    /// full arguments, or the diff of a Plugin update. It replaces nothing.
     Details,
-    /// About an Authoring build: its progress, or that it is ready or has
-    /// a question for the next Session. It replaces nothing.
     Build,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationAction {
-    /// "End": ends the Session.
     EndSession,
 }
 
@@ -275,7 +260,6 @@ pub trait Timer: Send {
     fn fired(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
-/// The monotonic clock, through tokio.
 pub struct SystemClock;
 
 impl Clock for SystemClock {
@@ -308,7 +292,6 @@ impl Timer for SystemTimer {
                     },
                     None => {
                         if deadline.changed().await.is_err() {
-                            // The timer is gone: it never goes off.
                             std::future::pending::<()>().await;
                         }
                     }
@@ -333,11 +316,24 @@ pub trait Notifier: Send + Sync {
 /// async runtime.
 pub trait Launcher: Send + Sync {
     /// Opens an http(s) URL in the user's browser.
+    ///
+    /// # Errors
+    ///
+    /// When the opener can't be started.
     fn open_url(&self, url: &str) -> io::Result<()>;
-    /// Starts the app whose desktop entry is at `entry`, through `launcher`
-    /// (`[desktop] launcher`, with the entry's path appended) if it is set.
+    /// Starts the app whose desktop entry is at `entry`.
+    /// It goes through `launcher` (`[desktop] launcher`, with the entry's path
+    /// appended) if it is set.
+    ///
+    /// # Errors
+    ///
+    /// When the app can't be started.
     fn launch(&self, entry: &Path, launcher: Option<&[String]>) -> io::Result<()>;
     /// Runs `command` in a new window of the user's terminal.
+    ///
+    /// # Errors
+    ///
+    /// When no terminal can be started.
     fn open_terminal(&self, command: &[String]) -> io::Result<()>;
 }
 
@@ -349,8 +345,8 @@ pub struct Adapters {
     /// Whether the user is in the middle of an utterance. It turns false
     /// once the utterance is on `speech`, or dropped.
     pub speaking: watch::Receiver<bool>,
-    /// What `speech` comes from, if it is the microphone: it takes
-    /// `[audio]` and `[endpointing]` at each Session start.
+    /// What `speech` comes from, if it is the microphone.
+    /// It takes `[audio]` and `[endpointing]` at each Session start.
     pub hearing: Option<Hearing>,
     /// The `whisper` STT Provider.
     pub stt: Arc<dyn Stt>,
@@ -432,8 +428,6 @@ impl Thinking for Inert {
 
 const INERT_THINKING: &str = "This lucyd has no Thinking Provider.";
 
-/// A model that hears nothing and says nothing: it stands in for one that
-/// couldn't be opened.
 pub(crate) struct InertSessionModel {
     _events: mpsc::UnboundedSender<ThinkingEvent>,
 }

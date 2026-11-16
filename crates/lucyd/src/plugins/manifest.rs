@@ -1,5 +1,3 @@
-//! A Plugin's `manifest.toml` (ADR 0004).
-
 use std::path::{Component, Path};
 
 use serde::Deserialize;
@@ -8,11 +6,9 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: String,
-    /// Shown only; Approval uses the hash.
     pub version: String,
     pub author: Author,
     pub summary: String,
-    /// The executable, relative to the Plugin's folder, then its arguments.
     pub command: Vec<String>,
     #[serde(default)]
     pub tools: Vec<ToolEntry>,
@@ -38,7 +34,6 @@ pub struct ToolEntry {
     pub examples: Vec<String>,
     #[serde(default)]
     pub confirm: bool,
-    /// Said to ask for the Confirmation, with each `{arg}` filled in.
     pub confirm_prompt: Option<String>,
 }
 
@@ -49,18 +44,14 @@ pub struct Access {
     pub read: Vec<String>,
     #[serde(default)]
     pub write: Vec<String>,
-    /// Hosts: declared and shown, not enforced in v0.1.
     #[serde(default)]
     pub network: Vec<String>,
-    /// Names only.
     #[serde(default)]
     pub credentials: Vec<String>,
     #[serde(default)]
     pub commands: Vec<String>,
 }
 
-/// Where a Plugin applies: lucyd's environment must set each of `env` and
-/// find each of `commands` on `PATH`. The Plugin is given the `env` vars.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Requires {
@@ -71,7 +62,6 @@ pub struct Requires {
 }
 
 impl Manifest {
-    /// Parses and validates the Manifest of the Plugin in folder `folder_name`.
     pub fn parse(text: &str, folder_name: &str) -> Result<Manifest, String> {
         let manifest: Manifest =
             toml::from_str(text).map_err(|e| format!("its Manifest doesn't parse: {e}"))?;
@@ -79,7 +69,6 @@ impl Manifest {
         Ok(manifest)
     }
 
-    /// The executable, relative to the Plugin's folder.
     pub fn executable(&self) -> &Path {
         Path::new(&self.command[0])
     }
@@ -133,8 +122,6 @@ impl Manifest {
     }
 }
 
-/// Checks that `name` can be passed as an env var without replacing one
-/// Lucy sets for every Plugin, or the dynamic loader reads.
 fn credential_name(name: &str) -> Result<(), String> {
     if !is_env_name(name) {
         return Err(format!(
@@ -150,8 +137,6 @@ fn credential_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks that `name` can be passed on from lucyd's environment without
-/// replacing one Lucy sets, or one the dynamic loader reads.
 fn required_var(name: &str) -> Result<(), String> {
     if !is_env_name(name) || is_lucys(name) {
         return Err(format!(

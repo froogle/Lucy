@@ -65,13 +65,17 @@ pub struct Daemon {
     mcp_socket_path: PathBuf,
     runtime: Option<Runtime>,
     plugins: std::sync::Arc<plugins::Host>,
-    /// Ended first on shutdown, so no model process outlives lucyd.
     thinking: std::sync::Arc<dyn adapters::Thinking>,
     sessions: mpsc::UnboundedSender<runner::Command>,
 }
 
 /// Starts lucyd on its own runtime and returns once its sockets are
 /// listening. The private MCP socket sits beside the public one.
+///
+/// # Errors
+///
+/// When the runtime can't start or a socket can't be bound, as when lucyd
+/// is already running there.
 pub fn spawn(options: Options) -> io::Result<Daemon> {
     let Options {
         socket_path,
@@ -178,11 +182,17 @@ impl Daemon {
         &self.mcp_socket_path
     }
 
-    /// Asks the user's spoken Approval of the Plugin `plugin` as it is now,
-    /// in the open Session (setup approves shipped Plugins this way). The
-    /// answer is `Ok(true)` once they said yes and it is recorded, or why
-    /// they couldn't be asked. Approvals are granted only by voice, so no
-    /// IPC request or model tool leads here.
+    /// Asks the user's spoken Approval of the Plugin `plugin` as it is now.
+    ///
+    /// It is asked in the open Session (setup approves shipped Plugins this
+    /// way). The answer is `Ok(true)` once they said yes and it is recorded,
+    /// or why they couldn't be asked. Approvals are granted only by voice, so
+    /// no IPC request or model tool leads here.
+    ///
+    /// # Panics
+    ///
+    /// If the `Daemon`'s runtime has gone, which it can't while the `Daemon`
+    /// lives.
     pub fn request_approval(&self, plugin: &str) -> oneshot::Receiver<Result<bool, String>> {
         let (reply, answer) = oneshot::channel();
         let host = self.plugins.clone();
@@ -194,9 +204,15 @@ impl Daemon {
         answer
     }
 
-    /// Asks `question` in the Input dialog, in the open Session, as the
-    /// `ask_typed` tool does: one field of `kind`, with `choices` for a
-    /// choice. With no Session open, it is cancelled.
+    /// Asks `question` in the Input dialog, in the open Session.
+    ///
+    /// It asks as the `ask_typed` tool does: one field of `kind`, with
+    /// `choices` for a choice. With no Session open, it is cancelled.
+    ///
+    /// # Panics
+    ///
+    /// If the `Daemon`'s runtime has gone, which it can't while the `Daemon`
+    /// lives.
     pub fn ask_typed(
         &self,
         question: &str,
@@ -214,6 +230,15 @@ impl Daemon {
     }
 
     /// Blocks until SIGINT or SIGTERM.
+    ///
+    /// # Errors
+    ///
+    /// When the signal handlers can't be installed.
+    ///
+    /// # Panics
+    ///
+    /// If the `Daemon`'s runtime has gone, which it can't while the `Daemon`
+    /// lives.
     pub fn wait_for_shutdown_signal(&self) -> io::Result<()> {
         use tokio::signal::unix::{signal, SignalKind};
         let runtime = self.runtime.as_ref().expect("runtime lives until drop");
@@ -238,7 +263,6 @@ impl Drop for Daemon {
     }
 }
 
-/// Binds the socket with mode 0600 inside a 0700 runtime dir.
 fn bind(socket_path: &Path) -> io::Result<UnixListener> {
     if let Some(dir) = socket_path.parent() {
         std::fs::DirBuilder::new()
@@ -252,12 +276,15 @@ fn bind(socket_path: &Path) -> io::Result<UnixListener> {
             format!("lucyd is already running on {}", socket_path.display()),
         ));
     }
-    // A socket file left by a lucyd that didn't shut down cleanly.
-    match std::fs::remove_file(socket_path) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-        _ => {}
-    }
+    remove_stale_socket(socket_path)?;
     let listener = UnixListener::bind(socket_path)?;
     std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
+}
+
+fn remove_stale_socket(socket_path: &Path) -> io::Result<()> {
+    match std::fs::remove_file(socket_path) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }

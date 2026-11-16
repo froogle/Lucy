@@ -1,5 +1,5 @@
-//! A tiny Plugin executable for the lucyd harness: an MCP stdio server that
-//! offers the tools named on its command line, from this fixed set:
+//! A tiny Plugin executable for the lucyd harness, an MCP stdio server.
+//! It offers the tools named on its command line, from this fixed set:
 //!
 //! - `echo {text}`: returns `text`.
 //! - `read_file {path}`: returns the file's contents.
@@ -66,11 +66,12 @@ fn result(outcome: std::io::Result<String>) -> CallToolResult {
     }
 }
 
+const INPUT_REQUIRED_VERSION: ProtocolVersion = ProtocolVersion::V_2026_07_28;
+
 impl ServerHandler for Fixture {
     fn get_info(&self) -> ServerConfig {
         let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
-        // `input_required` needs this protocol version.
-        info.protocol_version = ProtocolVersion::V_2026_07_28;
+        info.protocol_version = INPUT_REQUIRED_VERSION;
         info
     }
 
@@ -147,7 +148,6 @@ impl ServerHandler for Fixture {
     }
 }
 
-/// Asks the user `question`, wanting a string `answer`.
 fn ask(question: &str) -> InputRequiredResult {
     let request = ElicitRequest::new(ElicitRequestParams::FormElicitationParams {
         meta: None,

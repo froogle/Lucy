@@ -1,6 +1,3 @@
-//! The desktop Built-in tools: `open_url`, `launch_app` and `system_status`.
-//! None of them needs Confirmation.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,13 +9,10 @@ use crate::desktop_entries::{self, Found};
 use crate::mcp::{error, text, tool};
 use crate::system_status;
 
-/// What the desktop tools act on in one Session.
 #[derive(Clone)]
 pub struct Desktop {
     pub launcher: Arc<dyn Launcher>,
-    /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
-    /// `[desktop] launcher`, as read at Session start.
     pub launcher_command: Option<Vec<String>>,
 }
 
@@ -58,7 +52,6 @@ impl Desktop {
         ]
     }
 
-    /// Runs the desktop tool `name`, or returns `None` if there is none.
     pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
         match name {
             "open_url" => Some(self.open_url(string(arguments, "url")).await),
@@ -119,7 +112,6 @@ async fn system_status(topic: String) -> CallToolResult {
     }
 }
 
-/// An http or https URL with a host, and no whitespace or control characters.
 fn is_web_url(url: &str) -> bool {
     let Some((scheme, rest)) = url.split_once("://") else {
         return false;
@@ -129,7 +121,6 @@ fn is_web_url(url: &str) -> bool {
     web && !host.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-/// The string argument `key`, or an empty string.
 fn string(arguments: &JsonObject, key: &str) -> String {
     arguments
         .get(key)

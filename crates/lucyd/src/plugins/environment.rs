@@ -27,7 +27,6 @@ impl Environment {
         self.0.get(OsStr::new(name)).map(OsString::as_os_str)
     }
 
-    /// Whether a Plugin with `requires` applies here.
     pub(super) fn meets(&self, requires: &Requires) -> bool {
         requires.env.iter().all(|name| self.var(name).is_some())
             && requires.commands.iter().all(|name| self.on_path(name))

@@ -9,8 +9,6 @@ use harness::{next_state, Harness};
 use lucy_ipc::{PluginInfo, PluginStatus, State};
 use serde_json::json;
 
-/// The fixture Plugin `desk`, offering `echo` and `env`, with `requires` as
-/// its `requires` value.
 fn manifest(requires: &str) -> String {
     format!(
         "name = \"desk\"\n\
@@ -35,7 +33,6 @@ fn listed(lucyd: &Harness) -> PluginInfo {
     plugins.into_iter().find(|p| p.name == "desk").unwrap()
 }
 
-/// Opens a Session and returns whether its model is offered `desk__echo`.
 fn offered_in_a_session(lucyd: &Harness) -> bool {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();

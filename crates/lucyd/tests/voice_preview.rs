@@ -12,7 +12,6 @@ use harness::{next_state, Harness, Queued, FAKE_TTS_FAILURE};
 use lucy_ipc::{error_code, Event, State, Topic};
 use lucyd::adapters::Sound;
 
-/// Starts a Voice preview of `text` on a fresh client, without waiting for it.
 fn preview(lucyd: &Harness, text: &str) -> JoinHandle<Result<(), lucy_ipc::Error>> {
     let mut client = lucyd.client();
     let text = text.to_owned();
@@ -31,9 +30,8 @@ fn a_voice_preview_plays_start_the_text_and_closing_and_replies_once_played() {
 
     assert_eq!(lucyd.tts.next_sentence(), "hello");
     lucyd.tts.level(0.5);
-    // A request the runner handles after the preview's: once it returns,
-    // a preview that replied without waiting for playback has replied.
-    assert!(lucyd.client().end_session().is_err());
+    let handled_after_the_preview = lucyd.client().end_session();
+    assert!(handled_after_the_preview.is_err());
     assert!(
         replied.recv_timeout(Duration::from_millis(100)).is_err(),
         "replied before playback finished"
@@ -50,9 +48,9 @@ fn a_voice_preview_plays_start_the_text_and_closing_and_replies_once_played() {
         ]
     );
     assert_eq!(lucyd.client().status().unwrap().state, State::Idle);
-    // Nothing was sent during the preview: the first event is the Session's.
     lucyd.client().start_session().unwrap();
-    match observer.next_event().unwrap() {
+    let first_event_after_the_preview = observer.next_event().unwrap();
+    match first_event_after_the_preview {
         Event::State(status) => assert_eq!(status.state, State::Listening),
         other => panic!("expected the Session's state, got {other:?}"),
     }
@@ -60,7 +58,6 @@ fn a_voice_preview_plays_start_the_text_and_closing_and_replies_once_played() {
     lucyd.assert_nothing_private_on_bus();
 }
 
-/// The JSON-RPC error a refused request got.
 fn refusal(outcome: Result<(), lucy_ipc::Error>) -> (i64, String) {
     match outcome {
         Err(lucy_ipc::Error::Rpc { code, message }) => (code, message),
@@ -174,8 +171,11 @@ fn a_session_started_mid_preview_cuts_it_short_and_runs_normally() {
     assert_eq!(code, error_code::INTERRUPTED);
     assert!(message.contains("interrupted"), "{message}");
     assert_eq!(next_state(&mut events).state, State::Listening);
-    // The preview's Closing sound never plays; the Session's Start does.
-    assert_eq!(lucyd.tts.sounds(), [Sound::Start, Sound::Start]);
+    assert_eq!(
+        lucyd.tts.sounds(),
+        [Sound::Start, Sound::Start],
+        "the preview's Closing sound never plays; the Session's Start does"
+    );
     lucyd.say("what time is it");
     assert_eq!(lucyd.thinking.next_turn(), "what time is it");
     lucyd.thinking.delta("Three o'clock.");

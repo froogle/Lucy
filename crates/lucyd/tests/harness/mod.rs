@@ -1,6 +1,3 @@
-//! The lucyd harness: starts lucyd in-process with fake adapters and observes
-//! it only through the real public IPC, using the `lucy-ipc` client.
-
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
@@ -29,41 +26,25 @@ use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
 use tokio::sync::{mpsc, watch};
 
-/// How long the harness waits for something lucyd should do.
 const WAIT: Duration = Duration::from_secs(5);
 
 pub struct Harness {
-    // Dropped first, so lucyd stops before its runtime dir goes away.
     daemon: lucyd::Daemon,
-    /// Dropped once lucyd has stopped: checks every notification it showed.
     _no_model_text: NoModelText,
-    /// Where `say` sends utterances, unless lucyd hears through `mic`.
     speech: Option<mpsc::UnboundedSender<SpeechSegment>>,
-    /// Where `wake` sends scripted detections, unless lucyd hears through
-    /// `mic`.
     wake_word: Option<mpsc::UnboundedSender<()>>,
-    /// Where `start_speaking` and `say` say whether the user is mid
-    /// utterance, unless lucyd hears through `mic`.
     speaking: Option<watch::Sender<bool>>,
     pub mic: FakeMic,
-    /// Lucy's echo canceller, under `hearing`.
     pub echo: FakeEchoCanceller,
     pub stt: FakeStt,
     pub thinking: FakeThinking,
     pub tts: FakeTts,
     pub notifier: FakeNotifier,
     pub launcher: FakeLauncher,
-    /// The Secret Service, as Plugin credentials are kept in it.
     pub credentials: FakeCredentials,
-    /// The clock lucyd's timers count on: the silence timeout, the wait
-    /// for an answer, and Authoring budgets.
     pub clock: FakeClock,
-    /// Where lucyd looks for desktop entries: the user's dir, then the
-    /// system's.
     applications: [PathBuf; 2],
-    /// Every event line seen on the bus by a client subscribed from the start.
     bus: Arc<Mutex<Vec<String>>>,
-    /// Every value typed into an Input dialog through `answer_input`.
     typed: Mutex<Vec<String>>,
     config_path: PathBuf,
     plugin_paths: lucyd::plugins::Paths,
@@ -71,46 +52,34 @@ pub struct Harness {
     _dir: tempfile::TempDir,
 }
 
-/// The `persona.md` of a user who has had a Session before.
 const PERSONA: &str = "You are Lucy.";
 
 impl Harness {
-    /// Starts lucyd with no config file and a socket in a fresh runtime dir,
-    /// for a user who already has a Persona.
     pub fn start() -> Harness {
         Harness::launch(None, Some(PERSONA), None, None, None)
     }
 
-    /// Starts lucyd with only `vars` in the environment its Plugins are
-    /// checked against and start with.
     pub fn with_env(vars: &[(&str, &str)]) -> Harness {
         let env = Environment::new(vars.iter().copied());
         Harness::launch_in(env, None, Some(PERSONA), None, None, None)
     }
 
-    /// Starts lucyd with `config` as its `config.toml`.
     pub fn with_config(config: &str) -> Harness {
         Harness::launch(Some(config), Some(PERSONA), None, None, None)
     }
 
-    /// Starts lucyd for a user who has never had a Session: no `persona.md`.
     pub fn first_run() -> Harness {
         Harness::launch(None, None, None, None, None)
     }
 
-    /// Starts lucyd with a real Thinking adapter in place of the fake.
     pub fn with_thinking(config: Option<&str>, thinking: Arc<dyn Thinking>) -> Harness {
         Harness::launch(config, Some(PERSONA), Some(thinking), None, None)
     }
 
-    /// Starts lucyd with `superwhisper` as its `superwhisper` STT Provider
-    /// and `config` as its `config.toml`.
     pub fn with_superwhisper(config: &str, superwhisper: Arc<dyn Stt>) -> Harness {
         Harness::launch(Some(config), Some(PERSONA), None, None, Some(superwhisper))
     }
 
-    /// Starts lucyd with `superwhisper` as its `superwhisper` STT Provider
-    /// and a real Thinking adapter in place of the fake.
     pub fn with_superwhisper_and_thinking(
         config: &str,
         superwhisper: Arc<dyn Stt>,
@@ -125,11 +94,6 @@ impl Harness {
         )
     }
 
-    /// Starts lucyd hearing through the fake microphone, VAD and wake word,
-    /// with the real DSP thread and endpointing in between, and `config` as
-    /// its `config.toml`. lucyd starts listening with its microphone and
-    /// endpointing, as `main` does, and reads them again at each Session
-    /// start.
     pub fn hearing(config: &str) -> Harness {
         let parsed: Config = toml::from_str(config).expect("config parses");
         let mic = FakeMic::default();
@@ -158,8 +122,6 @@ impl Harness {
         Harness::launch_in(env, config, persona, real_thinking, ears, superwhisper)
     }
 
-    /// `ears` is what lucyd hears through instead of `say`; `env` is what
-    /// its Plugins are checked against and start with.
     fn launch_in(
         env: Environment,
         config: Option<&str>,
@@ -282,7 +244,6 @@ impl Harness {
         self.daemon.socket_path()
     }
 
-    /// The `config.toml` lucyd reads at each Session start.
     pub fn config_path(&self) -> &Path {
         &self.config_path
     }
@@ -291,39 +252,28 @@ impl Harness {
         self.daemon.mcp_socket_path()
     }
 
-    /// A scratch directory for the test's own files, outside every Plugin
-    /// folder and Lucy's state.
     pub fn scratch(&self) -> PathBuf {
         let scratch = self._dir.path().join("scratch");
         std::fs::create_dir_all(&scratch).unwrap();
         scratch
     }
 
-    /// Where user and Lucy-written Plugins live.
     pub fn plugins_dir(&self) -> &Path {
         &self.plugin_paths.user
     }
 
-    /// Lucy's state dir.
     pub fn state_dir(&self) -> &Path {
         &self.plugin_paths.state
     }
 
-    /// Installs a user Plugin: `manifest` plus the fixture Plugin executable
-    /// as `./fixture-plugin`. Returns its folder.
     pub fn install_plugin(&self, name: &str, manifest: &str) -> PathBuf {
         install(&self.plugin_paths.user.join(name), manifest)
     }
 
-    /// Installs a shipped Plugin, as `install_plugin` does.
     pub fn install_shipped_plugin(&self, name: &str, manifest: &str) -> PathBuf {
         install(&self.plugin_paths.shipped.join(name), manifest)
     }
 
-    /// Records an Approval for the Plugin `name` as it is now (the user copy
-    /// if there is one), saving an input schema for each Manifest tool that
-    /// marks it as approved: `{"type": "object", "description": "approved
-    /// <tool>", "properties": {..}}`.
     pub fn approve(&self, name: &str) {
         let user = self.plugin_paths.user.join(name);
         let dir = if user.exists() {
@@ -366,8 +316,6 @@ impl Harness {
         std::fs::write(path, toml::to_string(&approvals).unwrap()).unwrap();
     }
 
-    /// Starts the spoken Approval of the Plugin `name` in the open Session,
-    /// as setup or a finished build would.
     pub fn request_approval(&self, name: &str) -> ApprovalRequest {
         let answer = self.daemon.request_approval(name);
         let (tx, rx) = std_mpsc::channel();
@@ -379,13 +327,10 @@ impl Harness {
         ApprovalRequest(Mutex::new(rx))
     }
 
-    /// The user's `persona.md`.
     pub fn persona_path(&self) -> &Path {
         &self.persona_path
     }
 
-    /// Runs `lucy mcp-relay` against lucyd's MCP socket with `args` after the
-    /// socket option, and no input.
     pub fn relay(&self, args: &[&str]) -> Output {
         Command::new(lucy_binary())
             .arg("mcp-relay")
@@ -397,26 +342,20 @@ impl Harness {
             .unwrap()
     }
 
-    /// Installs a user's desktop entry named `file_name`, of type
-    /// Application, with the given `[Desktop Entry]` keys. Returns its path.
     pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
         write_desktop_entry(&self.applications[0], file_name, keys)
     }
 
-    /// Installs a system-wide desktop entry, as `desktop_entry` does.
     pub fn system_desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
         write_desktop_entry(&self.applications[1], file_name, keys)
     }
 
-    /// A client that has completed the `hello` handshake.
     pub fn client(&self) -> Client {
         let client = Client::connect(self.socket_path(), "harness", None).expect("hello succeeds");
         client.set_read_timeout(Some(WAIT)).unwrap();
         client
     }
 
-    /// A client that claims the `indicator` role, as `lucy-indicator` or a
-    /// third-party Indicator would.
     pub fn indicator(&self, name: &str) -> Client {
         let client = Client::connect(self.socket_path(), name, Some(lucy_ipc::Role::Indicator))
             .expect("hello succeeds");
@@ -424,8 +363,6 @@ impl Harness {
         client
     }
 
-    /// A client that claims the `input` role, as the bar plugin or `lucy
-    /// input` would, to draw the Input dialog.
     pub fn input(&self, name: &str) -> Client {
         let client = Client::connect(self.socket_path(), name, Some(lucy_ipc::Role::Input))
             .expect("hello succeeds");
@@ -433,8 +370,6 @@ impl Harness {
         client
     }
 
-    /// The user types `value` into the Input dialog `id`'s one field, which
-    /// `holder` draws. The value counts as private.
     pub fn answer_input(&self, holder: &mut Client, id: &str, value: &str) {
         self.typed.lock().unwrap().push(value.to_owned());
         let values = std::collections::BTreeMap::from([("answer".to_owned(), value.to_owned())]);
@@ -443,7 +378,6 @@ impl Harness {
             .expect("the answer is taken");
     }
 
-    /// A client subscribed to `state`, with the initial state event consumed.
     pub fn state_client(&self) -> Client {
         let mut client = self.client();
         client.subscribe(&[Topic::State]).unwrap();
@@ -451,33 +385,25 @@ impl Harness {
         client
     }
 
-    /// Makes every command, Thinking event and TTS event sent to the open
-    /// Session before this one take effect first: lucyd handles them ahead
-    /// of a command, in order, and refuses this one.
     pub fn barrier(&self) {
         assert!(self.client().start_session().is_err());
     }
 
-    /// The user starts an utterance, which `say` ends.
     pub fn start_speaking(&self) {
         let speaking = self.speaking.as_ref().expect("lucyd hears through `mic`");
         speaking.send_replace(true);
     }
 
-    /// The user says something that the fake STT will hear as `transcript`.
     pub fn say(&self, transcript: &str) {
         self.stt.script(transcript);
         self.end_utterance();
     }
 
-    /// The user stops speaking with nothing more said.
     pub fn stop_speaking(&self) {
         let speaking = self.speaking.as_ref().expect("lucyd hears through `mic`");
         speaking.send_replace(false);
     }
 
-    /// The user says something that the fake STT will hear as `transcript`,
-    /// and goes on speaking: the next `say`, or `stop_speaking`, ends it.
     pub fn say_and_go_on(&self, transcript: &str) {
         self.start_speaking();
         self.stt.script(transcript);
@@ -485,10 +411,6 @@ impl Harness {
         speech.send(SpeechSegment { samples: vec![] }).unwrap();
     }
 
-    /// As `mumble`, but returns once lucyd has handled the transcript. lucyd
-    /// takes no other utterance before then, so the user mumbles again
-    /// until it takes one. The fake STT holds that one until it is seen, so
-    /// lucyd takes no more of them.
     pub fn mumble_handled(&self) {
         let given = self.stt.segments().len();
         let heard = self.stt.heard().len();
@@ -509,33 +431,26 @@ impl Harness {
         self.stt.hold(false);
     }
 
-    /// The user says something and the fake STT fails on it.
     pub fn say_but_stt_fails(&self) {
         self.stt.script_failure();
         self.end_utterance();
     }
 
-    /// The VAD cuts the utterance, as the DSP thread does: the utterance,
-    /// then the user no longer speaking.
     fn end_utterance(&self) {
         let speech = self.speech.as_ref().expect("lucyd hears through `mic`");
         speech.send(SpeechSegment { samples: vec![] }).unwrap();
         self.speaking.as_ref().unwrap().send_replace(false);
     }
 
-    /// The wake-word engine hears the Wake word.
     pub fn wake(&self) {
         let wake_word = self.wake_word.as_ref().expect("lucyd hears through `mic`");
         wake_word.send(()).unwrap();
     }
 
-    /// The user makes a sound that the fake STT recognises as no speech.
     pub fn mumble(&self) {
         self.say("");
     }
 
-    /// Sends one raw line on a fresh connection and returns the reply line,
-    /// for checking the wire format without the client in the way.
     pub fn raw_exchange(&self, line: &str) -> serde_json::Value {
         use std::io::{BufRead, BufReader, Write};
         let mut stream = UnixStream::connect(self.socket_path()).unwrap();
@@ -558,9 +473,6 @@ impl Harness {
         });
     }
 
-    /// The "never on the bus" rule: no transcript the STT produced, no text
-    /// the Thinking Provider streamed or TTS spoke, no credential value and
-    /// nothing typed into an Input dialog appears in any IPC message. Call it once a Session has ended.
     pub fn assert_nothing_private_on_bus(&self) {
         let deadline = Instant::now() + WAIT;
         while !self.bus_is_idle() {
@@ -594,15 +506,12 @@ impl Harness {
         }
     }
 
-    /// The recorder, subscribed to `state` only, never received a `level`
-    /// event. Call it after `assert_nothing_private_on_bus`.
     pub fn assert_no_level_on_bus(&self) {
         let bus = self.bus.lock().unwrap();
         let level = bus.iter().find(|line| line.contains(r#""method":"level""#));
         assert!(level.is_none(), "a state-only subscriber got {level:?}");
     }
 
-    /// The recorder has seen a Session and then Idle again.
     fn bus_is_idle(&self) -> bool {
         let bus = self.bus.lock().unwrap();
         let idle = |line: &String| line.contains(r#""state":"idle""#);
@@ -610,26 +519,20 @@ impl Harness {
     }
 }
 
-/// A spoken Approval in progress.
 pub struct ApprovalRequest(Mutex<std_mpsc::Receiver<Result<bool, String>>>);
 
 impl ApprovalRequest {
-    /// Waits for it to end: whether the user approved, or why they couldn't
-    /// be asked.
     pub fn outcome(&self) -> Result<bool, String> {
         recv(&self.0, "the Approval to end")
     }
 }
 
-/// A connection to Lucy's tools that the model process keeps open, counting
-/// the `tools/list_changed` notifications it gets.
 pub struct ToolWatch {
     changed: Mutex<std_mpsc::Receiver<()>>,
     _stop: tokio::sync::oneshot::Sender<()>,
 }
 
 impl ToolWatch {
-    /// Waits for a `tools/list_changed`.
     pub fn wait_for_change(&self) {
         recv(&self.changed, "tools/list_changed");
     }
@@ -644,8 +547,6 @@ impl rmcp::ClientHandler for ChangeCounter {
     }
 }
 
-/// Writes a desktop entry of type Application with `keys`; a `Type` key in
-/// `keys` overrides it.
 fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
     let path = dir.join(file_name);
     std::fs::write(
@@ -656,7 +557,6 @@ fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
     path
 }
 
-/// Polls until `found` returns something, or fails saying `what`.
 pub fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -669,7 +569,6 @@ pub fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
     }
 }
 
-/// The next event, which must be a `state` event.
 pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {
         Event::State(state) => state,
@@ -677,9 +576,6 @@ pub fn next_state(client: &mut Client) -> StateEvent {
     }
 }
 
-/// The profile dir cargo puts final binaries in (`target/debug`). Test
-/// binaries sit somewhere below it, and how deep depends on the cargo version,
-/// so walk up to the first ancestor holding `name` as a file.
 fn in_profile_dir(name: &str) -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     exe.ancestors()
@@ -689,8 +585,6 @@ fn in_profile_dir(name: &str) -> PathBuf {
         .unwrap_or_else(|| exe.parent().unwrap().join(name))
 }
 
-/// The real `lucy` binary, which cargo builds when it builds the `lucy`
-/// package.
 fn lucy_binary() -> PathBuf {
     let lucy = in_profile_dir("lucy");
     assert!(
@@ -701,7 +595,6 @@ fn lucy_binary() -> PathBuf {
     lucy
 }
 
-/// The fixture Plugin executable (`examples/fixture-plugin.rs`).
 fn fixture_plugin() -> PathBuf {
     let fixture = in_profile_dir("examples/fixture-plugin");
     assert!(
@@ -715,19 +608,15 @@ fn fixture_plugin() -> PathBuf {
 fn install(dir: &Path, manifest: &str) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();
     std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
-    // `cp` copies it so that no write fd here leaks into a child another
-    // test forks and makes running it fail with "Text file busy".
-    let copied = Command::new("cp")
-        .arg(fixture_plugin())
-        .arg(dir.join("fixture-plugin"))
-        .status()
-        .unwrap();
-    assert!(copied.success());
+    copy_in_a_child(&fixture_plugin(), &dir.join("fixture-plugin"));
     dir.to_owned()
 }
 
-/// What an Approval pins: SHA-256 over the Manifest's length (u64, little
-/// endian), the Manifest, then the executable, as lowercase hex.
+fn copy_in_a_child(from: &Path, to: &Path) {
+    let copied = Command::new("cp").arg(from).arg(to).status().unwrap();
+    assert!(copied.success());
+}
+
 fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -741,7 +630,6 @@ fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
         .collect()
 }
 
-/// Waits for `receiver`, failing the test rather than hanging.
 fn recv<T>(receiver: &Mutex<std_mpsc::Receiver<T>>, what: &str) -> T {
     receiver
         .lock()
@@ -750,34 +638,26 @@ fn recv<T>(receiver: &Mutex<std_mpsc::Receiver<T>>, what: &str) -> T {
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
 
-/// STT that hears whatever the test scripted, in order, or fails where it
-/// was scripted to.
 #[derive(Clone, Default)]
 pub struct FakeStt {
     scripted: Arc<Mutex<VecDeque<Result<String, SttError>>>>,
     heard: Arc<Mutex<Vec<String>>>,
-    /// How long each utterance it was given lasted.
     segments: Arc<Mutex<Vec<Duration>>>,
-    /// How long each transcription takes.
     delay: Arc<Mutex<Duration>>,
-    /// While true, each transcription waits.
     held: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl FakeStt {
-    /// Makes each transcription take `delay`.
     pub fn take(&self, delay: Duration) {
         *self.delay.lock().unwrap() = delay;
     }
 
-    /// While `held`, each utterance it is given waits to be transcribed.
     pub fn hold(&self, held: bool) {
         let (lock, released) = &*self.held;
         *lock.lock().unwrap() = held;
         released.notify_all();
     }
 
-    /// The next utterance will be heard as `transcript`.
     pub fn script(&self, transcript: &str) {
         self.scripted
             .lock()
@@ -785,18 +665,15 @@ impl FakeStt {
             .push_back(Ok(transcript.to_owned()));
     }
 
-    /// The next utterance fails to transcribe.
     pub fn script_failure(&self) {
         let failure = SttError("the fake STT failed".to_owned());
         self.scripted.lock().unwrap().push_back(Err(failure));
     }
 
-    /// Every transcript it has produced so far.
     pub fn heard(&self) -> Vec<String> {
         self.heard.lock().unwrap().clone()
     }
 
-    /// How long each utterance transcribed so far lasted, at 16 kHz.
     pub fn segments(&self) -> Vec<Duration> {
         self.segments.lock().unwrap().clone()
     }
@@ -825,28 +702,18 @@ impl Stt for FakeStt {
     }
 }
 
-/// A scripted Thinking Provider: the test reads each Turn's text and streams
-/// the reply event by event, in the shape the real `claude` adapter streams a
-/// recorded transcript (`tests/claude.rs`): deltas, a `SentenceEnd` after each
-/// sentence, then `TurnEnd`.
 #[derive(Clone)]
 pub struct FakeThinking {
     turns_tx: std_mpsc::Sender<String>,
     turns: Arc<Mutex<std_mpsc::Receiver<String>>>,
-    /// The open SessionModel's event stream.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<ThinkingEvent>>>>,
-    /// How the open SessionModel reaches Lucy's tools.
     relay: Arc<Mutex<Option<Relay>>>,
-    /// The instructions the open SessionModel was given.
     instructions: Arc<Mutex<Option<String>>>,
     streamed: Arc<Mutex<Vec<String>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
-    /// How many times a Turn was interrupted.
     interrupts: Arc<Mutex<usize>>,
-    /// Problems scripted for `health` and `check`, by model.
     unhealthy: Arc<Mutex<HashMap<String, String>>>,
     failing_checks: Arc<Mutex<HashMap<String, String>>>,
-    /// The scripted Delegate, which `open_delegate` opens.
     pub delegate: FakeDelegate,
 }
 
@@ -868,34 +735,28 @@ impl FakeThinking {
         }
     }
 
-    /// Health checks of a Provider using `model` report `problem`.
     pub fn unhealthy(&self, model: &str, problem: &str) {
         let mut unhealthy = self.unhealthy.lock().unwrap();
         unhealthy.insert(model.to_owned(), problem.to_owned());
     }
 
-    /// Round-trip checks of a Provider using `model` report `problem`.
     pub fn fails_check(&self, model: &str, problem: &str) {
         let mut failing = self.failing_checks.lock().unwrap();
         failing.insert(model.to_owned(), problem.to_owned());
     }
 
-    /// The Provider settings of each SessionModel opened, in order.
     pub fn opened(&self) -> Vec<Provider> {
         self.opened.lock().unwrap().clone()
     }
 
-    /// How many times lucyd has interrupted the model's Turn.
     pub fn interrupts(&self) -> usize {
         *self.interrupts.lock().unwrap()
     }
 
-    /// Waits for the text of the next Turn sent to the model.
     pub fn next_turn(&self) -> String {
         recv(&self.turns, "a Turn sent to Thinking")
     }
 
-    /// Fails if a Turn was sent that the test hasn't read.
     pub fn assert_no_turn(&self) {
         let turn = self.turns.lock().unwrap().try_recv();
         assert!(turn.is_err(), "unexpected Turn sent to Thinking: {turn:?}");
@@ -914,22 +775,18 @@ impl FakeThinking {
         self.send(ThinkingEvent::TurnEnd);
     }
 
-    /// The model process ends on its own.
     pub fn dies(&self) {
         self.send(ThinkingEvent::Died);
     }
 
-    /// The model process reports where the subscription stands.
     pub fn rate_limit(&self, limit: RateLimit) {
         self.send(ThinkingEvent::RateLimit(limit));
     }
 
-    /// The Provider turns out to be unusable, for `reason`.
     pub fn unavailable(&self, reason: &str) {
         self.send(ThinkingEvent::Unavailable(reason.to_owned()));
     }
 
-    /// The instructions the last SessionModel was opened with.
     pub fn instructions(&self) -> String {
         self.instructions
             .lock()
@@ -938,12 +795,10 @@ impl FakeThinking {
             .expect("a SessionModel was opened")
     }
 
-    /// The model calls one of Lucy's tools through the real relay.
     pub fn call_tool(&self, name: &str) -> Result<CallToolResult, String> {
         self.call_tool_with(name, serde_json::json!({}))
     }
 
-    /// The model calls one of Lucy's tools with `arguments`, a JSON object.
     pub fn call_tool_with(
         &self,
         name: &str,
@@ -960,7 +815,6 @@ impl FakeThinking {
         })
     }
 
-    /// The tools the model is offered.
     pub fn tools(&self) -> Vec<Tool> {
         self.with_mcp(
             |client| async move { client.list_all_tools().await.map_err(|e| e.to_string()) },
@@ -968,7 +822,6 @@ impl FakeThinking {
         .unwrap()
     }
 
-    /// The names of the tools the model is offered.
     pub fn tool_names(&self) -> Vec<String> {
         self.with_mcp(|client| async move {
             let tools = client.list_all_tools().await.map_err(|e| e.to_string())?;
@@ -980,8 +833,6 @@ impl FakeThinking {
         .unwrap()
     }
 
-    /// Connects to Lucy's tools through the relay and stays connected, as
-    /// the model process does, watching for `tools/list_changed`.
     pub fn watch_tools(&self) -> ToolWatch {
         let relay = self
             .relay
@@ -1014,8 +865,6 @@ impl FakeThinking {
         }
     }
 
-    /// Spawns the relay the last SessionModel was given, as the model
-    /// process would, and runs `f` against it as an MCP client.
     fn with_mcp<F, Fut, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce(RunningService<RoleClient, ()>) -> Fut,
@@ -1090,8 +939,6 @@ impl Thinking for FakeThinking {
     }
 }
 
-/// A scripted Delegate: the test reads each Turn it is sent, does its work
-/// in the workspace, and calls the Delegate tools through its real relay.
 #[derive(Clone)]
 pub struct FakeDelegate {
     turns_tx: std_mpsc::Sender<String>,
@@ -1117,17 +964,14 @@ impl FakeDelegate {
         }
     }
 
-    /// The Provider settings of each Delegate opened, in order.
     pub fn opened(&self) -> Vec<Provider> {
         self.opened.lock().unwrap().clone()
     }
 
-    /// Waits for the text of the next Turn sent to the Delegate.
     pub fn next_turn(&self) -> String {
         recv(&self.turns, "a Turn sent to the Delegate")
     }
 
-    /// Fails if a Turn was sent to the Delegate that the test hasn't read.
     pub fn assert_no_turn(&self) {
         let turn = self.turns.lock().unwrap().try_recv();
         assert!(
@@ -1136,20 +980,16 @@ impl FakeDelegate {
         );
     }
 
-    /// The system prompt the last Delegate was opened with.
     pub fn instructions(&self) -> String {
         let instructions = self.instructions.lock().unwrap();
         instructions.clone().expect("a Delegate was opened")
     }
 
-    /// Where the last Delegate was opened to work.
     pub fn workspace(&self) -> Workspace {
         let workspace = self.workspace.lock().unwrap();
         workspace.clone().expect("a Delegate was opened")
     }
 
-    /// The Delegate calls one of Lucy's tools with `arguments`, a JSON
-    /// object, through its relay.
     pub fn call_tool_with(
         &self,
         name: &str,
@@ -1158,7 +998,6 @@ impl FakeDelegate {
         call_through(&self.relay(), name, arguments)
     }
 
-    /// The names of the tools the Delegate is offered.
     pub fn tool_names(&self) -> Vec<String> {
         with_mcp(&self.relay(), |client| async move {
             let tools = client.list_all_tools().await.map_err(|e| e.to_string())?;
@@ -1170,7 +1009,6 @@ impl FakeDelegate {
         .unwrap()
     }
 
-    /// The Delegate ends its Turn.
     pub fn turn_end(&self) {
         let events = self.events.lock().unwrap();
         let events = events.as_ref().expect("a Delegate is open");
@@ -1185,17 +1023,12 @@ impl FakeDelegate {
     }
 }
 
-/// Writes a Plugin into `dir` as a Delegate would: `manifest`, the fixture
-/// Plugin executable as `./fixture-plugin`, and `build.sh` and `test.sh`
-/// running `build` and `test` (shell commands).
 pub fn stage_plugin(dir: &Path, manifest: &str, build: &str, test: &str) {
     install(dir, manifest);
     std::fs::write(dir.join("build.sh"), format!("{build}\n")).unwrap();
     std::fs::write(dir.join("test.sh"), format!("{test}\n")).unwrap();
 }
 
-/// Spawns `relay` as a model process would, and runs `f` against it as an
-/// MCP client.
 fn with_mcp<F, Fut, T>(relay: &Relay, f: F) -> Result<T, String>
 where
     F: FnOnce(RunningService<RoleClient, ()>) -> Fut,
@@ -1219,7 +1052,6 @@ where
     })
 }
 
-/// Calls the tool `name` with `arguments`, a JSON object, through `relay`.
 fn call_through(
     relay: &Relay,
     name: &str,
@@ -1262,26 +1094,18 @@ impl SessionModel for FakeSessionModel {
     }
 }
 
-/// TTS that records each sentence and "plays" it until the test finishes it,
-/// or fails every sentence once told to.
 #[derive(Clone)]
 pub struct FakeTts {
     sentences_tx: std_mpsc::Sender<String>,
     sentences: Arc<Mutex<std_mpsc::Receiver<String>>>,
     spoken: Arc<Mutex<Vec<String>>>,
     sounds: Arc<Mutex<Vec<Sound>>>,
-    /// Every sentence and cue queued, in order.
     queued: Arc<Mutex<Vec<Queued>>>,
     failing: Arc<AtomicBool>,
-    /// How many times playback was stopped and flushed.
     stops: Arc<Mutex<usize>>,
-    /// Each change to whether playback is ducked, in order.
     ducks: Arc<Mutex<Vec<bool>>>,
-    /// The open Speaker's event channel.
     events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
-    /// The device the open Speaker plays on.
     device: Arc<Mutex<Option<String>>>,
-    /// The voice the open Speaker speaks in, if not the running one.
     voice: Arc<Mutex<Option<String>>>,
 }
 
@@ -1303,62 +1127,50 @@ impl FakeTts {
         }
     }
 
-    /// The voice the last Speaker was opened in.
     pub fn voice(&self) -> Option<String> {
         self.voice.lock().unwrap().clone()
     }
 
-    /// The device the last Speaker was opened on.
     pub fn device(&self) -> Option<String> {
         self.device.lock().unwrap().clone()
     }
 
-    /// The output device goes away.
     pub fn lose_device(&self) {
         self.send(SpeakerEvent::DeviceLost);
     }
 
-    /// Waits for the next sentence handed to TTS.
     pub fn next_sentence(&self) -> String {
         recv(&self.sentences, "a sentence sent to TTS")
     }
 
-    /// Every sentence handed to TTS so far.
     pub fn sentences(&self) -> Vec<String> {
         self.spoken.lock().unwrap().clone()
     }
 
-    /// Every cue played so far.
     pub fn sounds(&self) -> Vec<Sound> {
         self.sounds.lock().unwrap().clone()
     }
 
-    /// Every sentence and cue queued so far, in order.
     pub fn queued(&self) -> Vec<Queued> {
         self.queued.lock().unwrap().clone()
     }
 
-    /// How many times lucyd stopped and flushed playback.
     pub fn stops(&self) -> usize {
         *self.stops.lock().unwrap()
     }
 
-    /// Each time lucyd ducked (true) or unducked (false) playback, in order.
     pub fn ducks(&self) -> Vec<bool> {
         self.ducks.lock().unwrap().clone()
     }
 
-    /// The oldest queued sentence finishes playing.
     pub fn finish_playing(&self) {
         self.send(SpeakerEvent::Played);
     }
 
-    /// Playback reports its level.
     pub fn level(&self, rms: f32) {
         self.send(SpeakerEvent::Level(rms));
     }
 
-    /// From now on, every sentence fails to synthesise.
     pub fn fail(&self) {
         self.failing.store(true, Ordering::SeqCst);
     }
@@ -1384,10 +1196,8 @@ impl Tts for FakeTts {
     }
 }
 
-/// Why the fake TTS fails a sentence, once told to.
 pub const FAKE_TTS_FAILURE: &str = "the fake TTS is failing";
 
-/// Something queued on a Speaker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Queued {
     Sentence(String),
@@ -1427,18 +1237,14 @@ impl Speaker for FakeSpeaker {
     }
 }
 
-/// Notifications that lucyd showed, in order.
 #[derive(Clone)]
 pub struct FakeNotifier {
     shown_tx: std_mpsc::Sender<Notification>,
     shown: Arc<Mutex<std_mpsc::Receiver<Notification>>>,
-    /// The last notification that offered an action.
     offered: Arc<Mutex<Option<OfferedAction>>>,
-    /// Every notification lucyd showed, read or not.
     every: Arc<Mutex<Vec<Notification>>>,
 }
 
-/// An action, and where lucyd listens for it.
 type OfferedAction = (
     NotificationAction,
     mpsc::UnboundedSender<NotificationAction>,
@@ -1455,12 +1261,10 @@ impl FakeNotifier {
         }
     }
 
-    /// Waits for the next notification lucyd shows.
     pub fn next_notification(&self) -> Notification {
         recv(&self.shown, "a notification")
     }
 
-    /// Waits for the next notification of `kind`, skipping any others.
     pub fn next_notification_of(&self, kind: lucyd::adapters::NotificationKind) -> Notification {
         loop {
             let shown = self.next_notification();
@@ -1470,18 +1274,15 @@ impl FakeNotifier {
         }
     }
 
-    /// The notifications lucyd has shown that the test hasn't read.
     pub fn shown(&self) -> Vec<Notification> {
         self.shown.lock().unwrap().try_iter().collect()
     }
 
-    /// Fails if lucyd showed a notification the test hasn't read.
     pub fn assert_no_notification(&self) {
         let shown = self.shown.lock().unwrap().try_recv();
         assert!(shown.is_err(), "unexpected notification: {shown:?}");
     }
 
-    /// The user picks the action of the last notification that offered one.
     pub fn pick_action(&self) {
         let offered = self.offered.lock().unwrap();
         let (action, actions) = offered.as_ref().expect("a notification offered an action");
@@ -1505,9 +1306,6 @@ impl Notifier for FakeNotifier {
     }
 }
 
-/// The "no model text in notifications" rule: no notification lucyd showed
-/// says what Lucy wrote for the model (`lucyd::model_text`). Checked for
-/// every test, when its Harness is dropped.
 struct NoModelText(FakeNotifier);
 
 impl Drop for NoModelText {
@@ -1526,42 +1324,32 @@ impl Drop for NoModelText {
     }
 }
 
-/// A launcher that records what it was asked to open instead of opening it.
 #[derive(Clone, Default)]
 pub struct FakeLauncher {
     opened: Arc<Mutex<Vec<String>>>,
     launched: Arc<Mutex<Vec<PathBuf>>>,
-    /// The configured launcher command of each launch.
     launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
-    /// Each command run in a terminal.
     terminals: Arc<Mutex<Vec<Vec<String>>>>,
-    /// No terminal opens.
     no_terminal: Arc<AtomicBool>,
 }
 
 impl FakeLauncher {
-    /// Every URL opened so far.
     pub fn opened(&self) -> Vec<String> {
         self.opened.lock().unwrap().clone()
     }
 
-    /// The desktop entry of every app launched so far.
     pub fn launched(&self) -> Vec<PathBuf> {
         self.launched.lock().unwrap().clone()
     }
 
-    /// Each command run in a terminal so far.
     pub fn terminals(&self) -> Vec<Vec<String>> {
         self.terminals.lock().unwrap().clone()
     }
 
-    /// From now on, no terminal opens: the user has none.
     pub fn no_terminal(&self) {
         self.no_terminal.store(true, Ordering::SeqCst);
     }
 
-    /// The `[desktop] launcher` command each app was launched through, in
-    /// order; `None` for the default.
     pub fn launched_through(&self) -> Vec<Option<Vec<String>>> {
         self.launched_through.lock().unwrap().clone()
     }
@@ -1592,17 +1380,13 @@ impl Launcher for FakeLauncher {
     }
 }
 
-/// A Secret Service the test fills, never the user's own.
 #[derive(Clone, Default)]
 pub struct FakeCredentials {
-    /// By (Plugin, credential name).
     values: Arc<Mutex<HashMap<(String, String), String>>>,
-    /// Why it can't be read, if it can't.
     failure: Arc<Mutex<Option<String>>>,
 }
 
 impl FakeCredentials {
-    /// The user has entered `value` as `plugin`'s credential `name`.
     pub fn enter(&self, plugin: &str, name: &str, value: &str) {
         self.values
             .lock()
@@ -1610,12 +1394,10 @@ impl FakeCredentials {
             .insert((plugin.into(), name.into()), value.into());
     }
 
-    /// Every value entered.
     pub fn values(&self) -> Vec<String> {
         self.values.lock().unwrap().values().cloned().collect()
     }
 
-    /// From now on it can't be read, for `reason`.
     pub fn fail(&self, reason: &str) {
         *self.failure.lock().unwrap() = Some(reason.into());
     }
@@ -1636,51 +1418,37 @@ impl CredentialStore for FakeCredentials {
     }
 }
 
-/// A level the fake VAD hears as speech.
 pub const SPEECH: f32 = 0.9;
-/// A level the fake VAD hears as silence.
 pub const SILENCE: f32 = 0.0;
-/// A level the fake VAD hears as speech and the fake wake word as the Wake
-/// word.
 pub const WAKE: f32 = 0.95;
 
-/// A sound card with a microphone the test feeds with samples at 16 kHz.
-/// Every device is there unless the test unplugs it.
 #[derive(Clone, Default)]
 pub struct FakeMic {
     ring: Arc<Mutex<Option<rtrb::Producer<f32>>>>,
-    /// The device lucyd asked for.
     opened: Arc<Mutex<Option<String>>>,
     unplugged: Arc<Mutex<Vec<String>>>,
     pulseaudio: Arc<AtomicBool>,
-    /// Samples fed so far.
     fed: Arc<Mutex<usize>>,
-    /// VAD chunks the fake VAD has judged so far, under `Harness::hearing`.
     judged: Arc<Mutex<usize>>,
 }
 
 impl FakeMic {
-    /// The sound server is PulseAudio, not PipeWire.
     pub fn use_pulseaudio(&self) {
         self.pulseaudio.store(true, Ordering::SeqCst);
     }
 
-    /// The device with node name `name` is no longer there.
     pub fn unplug(&self, name: &str) {
         self.unplugged.lock().unwrap().push(name.to_owned());
     }
 
-    /// The device with node name `name` is there again.
     pub fn plug_in(&self, name: &str) {
         self.unplugged.lock().unwrap().retain(|n| n != name);
     }
 
-    /// The open microphone goes away: capture stops.
     pub fn lose(&self) {
         drop(self.ring.lock().unwrap().take());
     }
 
-    /// Waits until lucyd has a microphone open.
     pub fn wait_until_open(&self) {
         let deadline = Instant::now() + WAIT;
         while self.ring.lock().unwrap().is_none() {
@@ -1690,14 +1458,11 @@ impl FakeMic {
         }
     }
 
-    /// Feeds `duration` of samples at `level`, waiting while the ring is full.
     pub fn feed(&self, level: f32, duration: Duration) {
         let len = (duration.as_secs_f64() * 16_000.0).round() as usize;
         self.play(&vec![level; len]);
     }
 
-    /// Waits until the fake VAD has judged every whole chunk fed so far, so
-    /// whatever lucyd is told next applies only to what is fed after.
     pub fn wait_until_heard(&self) {
         let chunks = *self.fed.lock().unwrap() / FAKE_VAD_CHUNK;
         wait_until("the VAD never caught up with the microphone", || {
@@ -1705,7 +1470,6 @@ impl FakeMic {
         });
     }
 
-    /// Feeds `samples`, waiting while the ring is full.
     pub fn play(&self, mut samples: &[f32]) {
         *self.fed.lock().unwrap() += samples.len();
         while !samples.is_empty() {
@@ -1726,7 +1490,6 @@ impl FakeMic {
         }
     }
 
-    /// The device lucyd opened.
     pub fn opened(&self) -> Option<String> {
         self.opened.lock().unwrap().clone()
     }
@@ -1752,8 +1515,6 @@ impl lucyd::audio::AudioIo for FakeMic {
     }
 }
 
-/// An echo canceller that passes the microphone through, or silences it all,
-/// and reports the ERLE and whether Lucy's echo is heard as the test sets.
 #[derive(Clone, Default)]
 pub struct FakeEchoCanceller {
     erle_db: Arc<Mutex<Option<f32>>>,
@@ -1771,12 +1532,10 @@ impl FakeEchoCanceller {
         *self.echo_heard.lock().unwrap() = heard;
     }
 
-    /// From now on it hears everything as Lucy's echo.
     pub fn cancel_everything(&self) {
         self.cancel_everything.store(true, Ordering::SeqCst);
     }
 
-    /// How many 10 ms frames it has cleaned.
     pub fn frames(&self) -> usize {
         *self.frames.lock().unwrap()
     }
@@ -1799,8 +1558,6 @@ impl lucyd::audio::EchoCanceller for FakeEchoCanceller {
     }
 }
 
-/// A VAD that hears each chunk's first sample as its speech probability.
-/// Counts the chunks it judges.
 pub struct FakeVad(Arc<Mutex<usize>>);
 
 const FAKE_VAD_CHUNK: usize = 512;
@@ -1816,9 +1573,7 @@ impl lucyd::audio::Vad for FakeVad {
     }
 }
 
-/// A wake word that hears the Wake word where a run of `WAKE` frames starts.
 #[derive(Default)]
-/// Its score is each frame's first sample.
 pub struct FakeWakeWord {
     in_wake: bool,
     score: f32,
@@ -1836,14 +1591,12 @@ impl lucyd::audio::WakeWord for FakeWakeWord {
     }
 }
 
-/// The clock lucyd's timers count on. It stands still until `advance`.
 #[derive(Clone)]
 pub struct FakeClock(Arc<ClockShared>);
 
 struct ClockShared {
     start: tokio::time::Instant,
     state: Mutex<ClockState>,
-    /// Told when a timer is set or dropped.
     settled: Condvar,
 }
 
@@ -1851,7 +1604,6 @@ struct ClockShared {
 struct ClockState {
     elapsed: Duration,
     next_id: u64,
-    /// Each live timer's deadline, and who waits for it.
     timers: HashMap<u64, (Option<tokio::time::Instant>, Option<Waker>)>,
 }
 
@@ -1870,8 +1622,6 @@ impl FakeClock {
         }))
     }
 
-    /// Moves the clock on by `by`, and returns once every timer that went
-    /// off has been handled: set again, or dropped.
     pub fn advance(&self, by: Duration) {
         let shared = &self.0;
         let mut state = shared.state.lock().unwrap();
@@ -1889,26 +1639,20 @@ impl FakeClock {
                 .any(|(deadline, _)| deadline.is_some_and(|d| d <= now))
         };
         let (state, waited) = shared.settled.wait_timeout_while(state, WAIT, due).unwrap();
-        // Unlocked first, so a failure doesn't poison the clock for lucyd.
         drop(state);
         assert!(!waited.timed_out(), "a timer went off but wasn't handled");
     }
 
-    /// As `advance`, once a timer is set to go off within `by`: for a timer
-    /// lucyd sets on something the test can't see it handle.
     pub fn advance_once_set(&self, by: Duration) {
         self.wait_for("a timer set to go off", true, by);
         self.advance(by);
     }
 
-    /// As `advance`, once no timer is set to go off within `by`: for a
-    /// timer lucyd stops on something the test can't see it handle.
     pub fn advance_once_stopped(&self, by: Duration) {
         self.wait_for("every timer stopped", false, by);
         self.advance(by);
     }
 
-    /// Waits until whether a timer is set to go off within `by` is `due`.
     fn wait_for(&self, what: &str, due: bool, by: Duration) {
         let shared = &self.0;
         let state = shared.state.lock().unwrap();

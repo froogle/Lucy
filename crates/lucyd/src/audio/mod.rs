@@ -1,6 +1,5 @@
-//! The microphone side of the audio pipeline: capture, the DSP thread and
-//! the VAD's endpointing, which together turn the microphone into
-//! utterances for STT.
+//! The microphone side of the audio pipeline, which turns the microphone into utterances.
+//! It holds capture, the DSP thread and the VAD's endpointing, feeding STT.
 
 pub(crate) mod cpal;
 mod endpoint;
@@ -26,32 +25,35 @@ use gate::Gate;
 pub use livekit::{install_bundled_wake_model, LiveKit};
 pub use silero::Silero;
 
-/// Lucy's internal sample rate: mono f32 at 16 kHz.
 pub const SAMPLE_RATE: u32 = 16_000;
 
-/// The DSP thread works in 10 ms frames.
-const FRAME_LEN: usize = SAMPLE_RATE as usize / 100;
+const FRAME_MS: usize = 10;
 
-/// How much capture the ring holds before the callback drops samples.
+const FRAME_LEN: usize = SAMPLE_RATE as usize * FRAME_MS / 1000;
+
 const RING_LEN: usize = SAMPLE_RATE as usize;
 
-/// How long the DSP thread sleeps when it has caught up with capture.
-const POLL: Duration = Duration::from_millis(5);
+const CAUGHT_UP_SLEEP: Duration = Duration::from_millis(5);
 
 /// The sound card. Real capture goes through cpal; the harness feeds
 /// scripted samples.
 pub trait AudioIo {
-    /// Starts capturing `mic` (`"default"` or a pinned node name) as 16 kHz
-    /// mono, pushing samples into `ring` without blocking. Capture runs until
+    /// Starts capturing `mic` (`"default"` or a pinned node name) as 16 kHz mono.
+    /// It pushes samples into `ring` without blocking. Capture runs until
     /// the returned handle is dropped. If the device goes away, capture
     /// stops and drops `ring`.
+    ///
+    /// # Errors
+    ///
+    /// When the microphone can't be opened.
     fn capture(&self, mic: &str, ring: rtrb::Producer<f32>) -> Result<Box<dyn Send>, Error>;
 
     /// Whether a device with the node name `name` is there now.
     fn has_device(&self, direction: Direction, name: &str) -> bool;
 
-    /// Whether the sound server is PipeWire, which keeps capture and
-    /// playback in step for the echo canceller. On PulseAudio or ALSA
+    /// Whether the sound server is PipeWire.
+    /// PipeWire keeps capture and playback in step for the echo canceller. On
+    /// PulseAudio or ALSA
     /// Barge-in by speech is off unless forced.
     fn is_pipewire(&self) -> bool;
 }
@@ -65,19 +67,14 @@ pub enum Direction {
     Output,
 }
 
-/// The devices a Session uses, resolved by name at its start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Devices {
-    /// Where Lucy speaks: `"default"` or a pinned node name.
     pub speaker: String,
-    /// The pinned devices that aren't there, so the default stands in.
     pub missing: Vec<(Direction, String)>,
-    /// Speech, not only the Wake word, can barge in.
     pub speech_barge_in: bool,
 }
 
 impl Devices {
-    /// The devices `audio` names, taken as they are.
     pub fn as_configured(audio: &Audio, barge_in: &BargeIn) -> Devices {
         Devices {
             speaker: audio.speaker.clone(),
@@ -87,10 +84,8 @@ impl Devices {
     }
 }
 
-/// The name that stands for the default device.
 pub(crate) const DEFAULT: &str = "default";
 
-/// `name`, or the default if it is pinned and not there.
 fn resolve(io: &dyn AudioIo, direction: Direction, name: &str) -> Result<String, String> {
     if name == DEFAULT || io.has_device(direction, name) {
         Ok(name.to_owned())
@@ -135,23 +130,24 @@ pub trait WakeWord: Send {
     }
 }
 
-/// The loudest the microphone has been, and the best wake-word score, since
-/// setup last asked. Both are 0 to 1.
 #[derive(Default)]
 struct Meter {
-    /// `f32` bits: for non-negative floats they order as the floats do.
     level: AtomicU32,
     wake_score: AtomicU32,
 }
 
 impl Meter {
     fn raise(cell: &AtomicU32, value: f32) {
-        cell.fetch_max(value.max(0.0).to_bits(), Ordering::Relaxed);
+        cell.fetch_max(as_ordered_bits(value), Ordering::Relaxed);
     }
 
     fn take(cell: &AtomicU32) -> f32 {
         f32::from_bits(cell.swap(0, Ordering::Relaxed))
     }
+}
+
+fn as_ordered_bits(value: f32) -> u32 {
+    value.max(0.0).to_bits()
 }
 
 fn rms(frame: &[f32]) -> f32 {
@@ -185,11 +181,16 @@ pub struct Ears {
     pub speaking: watch::Receiver<bool>,
 }
 
-/// Opens the microphone and starts the DSP thread, which reframes capture to
-/// 10 ms, cancels Lucy's echo with `echo` unless `audio` leaves that to
-/// PipeWire, listens for the Wake word with `wake_word` if there is one,
-/// cuts capture into utterances with `vad`, and runs the Barge-in gate.
-/// Capture stops once the speech receiver is dropped.
+/// Opens the microphone and starts the DSP thread.
+///
+/// The thread reframes capture to 10 ms, cancels Lucy's echo with `echo`
+/// unless `audio` leaves that to PipeWire, listens for the Wake word with
+/// `wake_word` if there is one, cuts capture into utterances with `vad`, and
+/// runs the Barge-in gate. Capture stops once the speech receiver is dropped.
+///
+/// # Errors
+///
+/// When the microphone can't be opened or the DSP thread can't start.
 pub fn listen(
     io: Box<dyn AudioIo + Send>,
     audio: &Audio,
@@ -217,11 +218,11 @@ pub fn listen(
     let listeners = Listeners {
         meter: meter.clone(),
         echo,
-        cancelling: audio.echo_cancellation == EchoCancellation::Lucy,
+        own_canceller_on: audio.echo_cancellation == EchoCancellation::Lucy,
         wake_word,
         endpointer,
         gate: Gate::default(),
-        held: false,
+        maybe_own_voice: false,
         wakes,
         speech,
         speaking,
@@ -252,37 +253,27 @@ pub fn listen(
     })
 }
 
-/// What the DSP thread hands each frame to, and where they report.
 struct Listeners {
     meter: Arc<Meter>,
     echo: Option<Box<dyn EchoCanceller>>,
-    /// Lucy's own echo canceller is on.
-    cancelling: bool,
+    own_canceller_on: bool,
     wake_word: Option<Box<dyn WakeWord>>,
     endpointer: Endpointer,
     gate: Gate,
-    /// The utterance under way started while Lucy's echo could be heard and
-    /// hasn't passed the gate: it may be her own voice, so it is kept from
-    /// the Session, and dropped if it ends that way.
-    held: bool,
+    maybe_own_voice: bool,
     wakes: mpsc::UnboundedSender<()>,
     speech: mpsc::UnboundedSender<SpeechSegment>,
     gate_events: mpsc::UnboundedSender<BargeInEvent>,
-    /// Whether an utterance is under way: set once it starts, cleared once
-    /// it is sent on `speech` or dropped.
     speaking: watch::Sender<bool>,
-    /// Set once the open microphone has gone away.
     lost: Arc<watch::Sender<bool>>,
 }
 
 /// Changes the running DSP thread's microphone and endpointing.
 pub struct Hearing {
     io: Box<dyn AudioIo + Send>,
-    /// The microphone open now.
     mic: String,
     endpointing: Endpointing,
     changes: std::sync::mpsc::Sender<Change>,
-    /// True once the open microphone has gone away.
     lost: Arc<watch::Sender<bool>>,
     lost_rx: watch::Receiver<bool>,
     meter: Arc<Meter>,
@@ -291,29 +282,23 @@ pub struct Hearing {
     lucy_speaking: bool,
 }
 
-/// A change the DSP thread picks up before its next frame.
 enum Change {
     Mic(Box<dyn Send>, rtrb::Consumer<f32>),
     Endpointing(Endpointing),
-    /// A Session starts: the gate's settings, whether speech may barge in,
-    /// and whether Lucy's own echo canceller is on.
-    Session(BargeIn, bool, bool),
+    Session {
+        barge_in: BargeIn,
+        speech_barges_in: bool,
+        own_canceller_on: bool,
+    },
     LucySpeaking(bool),
 }
 
-/// What the microphone reports during a Session.
 pub enum Heard {
-    /// The open microphone has gone away.
     Lost,
     Gate(BargeInEvent),
 }
 
 impl Hearing {
-    /// Applies `[audio]`, `[endpointing]` and `[barge_in]` as read at a
-    /// Session start, resolving the devices by name. A pinned device that
-    /// isn't there gives way to the default, and the pin stays for the next
-    /// Session. A microphone that can't be opened leaves the current one in
-    /// use.
     pub fn configure(
         &mut self,
         audio: &Audio,
@@ -338,14 +323,13 @@ impl Hearing {
         }
         let speech_barge_in = self.speech_barge_in(barge_in);
         let cancelling = audio.echo_cancellation == EchoCancellation::Lucy;
-        let _ = self.changes.send(Change::Session(
-            barge_in.clone(),
-            speech_barge_in,
-            cancelling,
-        ));
+        let _ = self.changes.send(Change::Session {
+            barge_in: barge_in.clone(),
+            speech_barges_in: speech_barge_in,
+            own_canceller_on: cancelling,
+        });
         self.lucy_speaking = false;
-        // Anything from the last Session's tail is stale.
-        while self.gate.try_recv().is_ok() {}
+        self.drop_stale_gate_events();
         Devices {
             speaker,
             missing,
@@ -353,8 +337,10 @@ impl Hearing {
         }
     }
 
-    /// Whether speech may barge in: as `barge_in` says on PipeWire, and
-    /// elsewhere only if forced.
+    fn drop_stale_gate_events(&mut self) {
+        while self.gate.try_recv().is_ok() {}
+    }
+
     fn speech_barge_in(&self, barge_in: &BargeIn) -> bool {
         if barge_in.mode != BargeInMode::Speech {
             return false;
@@ -376,7 +362,6 @@ impl Hearing {
         barge_in.force
     }
 
-    /// Tells the gate whether Lucy is speaking.
     pub fn lucy_speaking(&mut self, speaking: bool) {
         if speaking != self.lucy_speaking {
             self.lucy_speaking = speaking;
@@ -384,7 +369,6 @@ impl Hearing {
         }
     }
 
-    /// What the microphone reports next during a Session.
     pub async fn next(&mut self) -> Heard {
         tokio::select! {
             _ = self.lost_rx.wait_for(|lost| *lost) => Heard::Lost,
@@ -392,16 +376,12 @@ impl Hearing {
         }
     }
 
-    /// Opens the microphone that went away again, or the default if it is
-    /// pinned and not there. If it can't be opened, it stays lost.
     pub fn reopen(&mut self) {
         let mic = resolve(self.io.as_ref(), Direction::Input, &self.mic)
             .unwrap_or_else(|_| DEFAULT.to_owned());
         self.open(mic);
     }
 
-    /// Hands the DSP thread capture of `mic`, or leaves the current
-    /// microphone in use if it can't be opened.
     fn open(&mut self, mic: String) {
         let (producer, consumer) = rtrb::RingBuffer::new(RING_LEN);
         match self.io.capture(&mic, producer) {
@@ -414,29 +394,23 @@ impl Hearing {
         }
     }
 
-    /// The loudest RMS the microphone heard since this was last asked.
     pub fn take_level(&self) -> f32 {
         Meter::take(&self.meter.level)
     }
 
-    /// Whether the Wake word can be heard at all.
     pub fn has_wake_word(&self) -> bool {
         self.has_wake_word
     }
 
-    /// The best wake-word score since this was last asked.
     pub fn take_wake_score(&self) -> f32 {
         Meter::take(&self.meter.wake_score)
     }
 
-    /// Resolves once the open microphone has gone away.
     pub async fn lost(&mut self) {
-        // The sender lives as long as `self`.
         let _ = self.lost_rx.wait_for(|lost| *lost).await;
     }
 }
 
-/// The DSP thread.
 fn dsp(
     mut _capture: Box<dyn Send>,
     mut mic: rtrb::Consumer<f32>,
@@ -444,22 +418,25 @@ fn dsp(
     changes: std::sync::mpsc::Receiver<Change>,
 ) {
     let mut frame = [0.0; FRAME_LEN];
-    // The open microphone has gone away and that has been reported.
-    let mut reported = false;
+    let mut loss_reported = false;
     while !listeners.speech.is_closed() {
         for change in changes.try_iter() {
             match change {
                 Change::Mic(capture, consumer) => {
                     (_capture, mic) = (capture, consumer);
-                    reported = false;
+                    loss_reported = false;
                 }
                 Change::Endpointing(config) => listeners.endpointer.configure(&config),
-                Change::Session(barge_in, on, cancelling) => {
+                Change::Session {
+                    barge_in,
+                    speech_barges_in: on,
+                    own_canceller_on: cancelling,
+                } => {
                     log::debug!(
                         "gate: Session starts, speech barges in={on}, own canceller={cancelling}"
                     );
                     listeners.gate.configure(&barge_in, on);
-                    listeners.cancelling = cancelling;
+                    listeners.own_canceller_on = cancelling;
                 }
                 Change::LucySpeaking(speaking) => {
                     log::debug!("gate: Lucy speaking={speaking}");
@@ -468,13 +445,13 @@ fn dsp(
             }
         }
         listeners.report_speaking();
-        if mic.is_abandoned() && mic.slots() < FRAME_LEN && !reported {
+        if mic.is_abandoned() && mic.slots() < FRAME_LEN && !loss_reported {
             eprintln!("lucyd: the microphone has gone away");
             listeners.lost.send_replace(true);
-            reported = true;
+            loss_reported = true;
         }
         if mic.slots() < FRAME_LEN {
-            std::thread::sleep(POLL);
+            std::thread::sleep(CAUGHT_UP_SLEEP);
             continue;
         }
         let chunk = mic.read_chunk(FRAME_LEN).expect("a frame is ready");
@@ -487,32 +464,17 @@ fn dsp(
 }
 
 impl Listeners {
-    /// Takes the next 10 ms frame of the microphone.
     fn hear(&mut self, frame: &mut [f32]) {
         let level = rms(frame);
         Meter::raise(&self.meter.level, level);
-        let own_canceller = self.echo.is_some() && self.cancelling;
+        let own_canceller = self.echo.is_some() && self.own_canceller_on;
         let (mut erle_db, mut echo_heard) = (None, None);
         if let Some(echo) = self.echo.as_mut().filter(|_| own_canceller) {
             echo.cancel(frame);
             erle_db = echo.erle_db();
             echo_heard = echo.echo_heard();
         }
-        // Heard before the utterance it starts ends, so the Session it
-        // opens gets that utterance.
-        if let Some(wake_word) = &mut self.wake_word {
-            let heard = wake_word.push(frame);
-            // Before the detection, so a test that hears it sees its score.
-            Meter::raise(&self.meter.wake_score, wake_word.score());
-            if heard {
-                log::debug!(
-                    "wake word heard, gate window open={}",
-                    self.gate.window_open()
-                );
-                let _ = self.wakes.send(());
-                self.gate.wake_word();
-            }
-        }
+        self.hear_wake_word_before_its_utterance_ends(frame);
         let was_speaking = self.endpointer.speaking();
         let wake_score = self.wake_word.as_ref().map(|wake_word| wake_word.score());
         let cancelled = rms(frame);
@@ -536,26 +498,40 @@ impl Listeners {
             }
         });
         if !was_speaking && self.endpointer.speaking() {
-            self.held = self.gate.window_open();
+            self.maybe_own_voice = self.gate.window_open();
         }
-        // The user, not Lucy's echo: let the utterance through.
-        if self.gate.is_cut() {
-            self.held = false;
+        let user_cut_in = self.gate.is_cut();
+        if user_cut_in {
+            self.maybe_own_voice = false;
         }
         if let Some(segment) = segment {
-            if !std::mem::take(&mut self.held) {
+            if !std::mem::take(&mut self.maybe_own_voice) {
                 let _ = self.speech.send(segment);
             }
         }
         if !self.endpointer.speaking() {
-            self.held = false;
+            self.maybe_own_voice = false;
         }
         self.report_speaking();
     }
 
-    /// Says whether an utterance is under way, if that changed.
+    fn hear_wake_word_before_its_utterance_ends(&mut self, frame: &[f32]) {
+        if let Some(wake_word) = &mut self.wake_word {
+            let heard = wake_word.push(frame);
+            Meter::raise(&self.meter.wake_score, wake_word.score());
+            if heard {
+                log::debug!(
+                    "wake word heard, gate window open={}",
+                    self.gate.window_open()
+                );
+                let _ = self.wakes.send(());
+                self.gate.cut_by_wake_word();
+            }
+        }
+    }
+
     fn report_speaking(&self) {
-        let speaking = self.endpointer.speaking() && !self.held;
+        let speaking = self.endpointer.speaking() && !self.maybe_own_voice;
         self.speaking
             .send_if_modified(|was| std::mem::replace(was, speaking) != speaking);
     }

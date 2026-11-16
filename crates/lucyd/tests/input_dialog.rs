@@ -1,6 +1,6 @@
-//! The Input dialog: `ask_typed` puts a box on screen through the client
-//! holding the `input` role, Lucy waits in Typing, and the typed answer goes
-//! back to the model.
+//! The Input dialog: `ask_typed` puts a box on screen for the user to type in.
+//! The client holding the `input` role shows it, Lucy waits in Typing, and
+//! the typed answer goes back to the model.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
@@ -16,7 +16,6 @@ use serde_json::{json, Value};
 
 type Call = JoinHandle<Result<CallToolResult, String>>;
 
-/// The model, in a Turn, calls `ask_typed` with `arguments`.
 fn model_asks(lucyd: &Harness, events: &mut Client, arguments: Value) -> Call {
     lucyd.say("I'll type a URL for you");
     lucyd.thinking.next_turn();
@@ -29,7 +28,6 @@ fn url_question() -> Value {
     json!({"question": "Which page shall I open?", "kind": "url"})
 }
 
-/// The next `input.open` the holder is sent.
 fn next_open(holder: &mut Client) -> InputOpen {
     loop {
         match holder.next_event().expect("an input.open event") {
@@ -50,7 +48,6 @@ fn structured(result: &CallToolResult) -> Value {
         .expect("a structured result")
 }
 
-/// A Session open, with a client watching its state.
 fn session(lucyd: &Harness) -> Client {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
@@ -82,7 +79,6 @@ fn secs(secs: u64) -> Duration {
     Duration::from_secs(secs)
 }
 
-/// The next `input.close` the holder is sent, as its dialog's id.
 fn next_close(holder: &mut Client) -> String {
     loop {
         match holder.next_event().expect("an input.close event") {

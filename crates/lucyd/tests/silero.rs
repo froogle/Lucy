@@ -15,8 +15,6 @@ fn silence_is_not_speech() {
     assert!(probabilities.iter().all(|&p| p < 0.1), "{probabilities:?}");
 }
 
-/// Set `LUCY_SPEECH_WAV` to a recording of speech, or run from a checkout
-/// with the voice-loop prototype's `hello.wav`.
 #[test]
 #[ignore = "needs a speech recording"]
 fn a_recording_of_speech_is_speech_and_the_silence_after_it_is_not() {

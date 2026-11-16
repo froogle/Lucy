@@ -1,17 +1,3 @@
-//! Authoring: when no Plugin fits a request, the model calls
-//! `request_plugin` and lucyd hands the goal to an advanced-tier Delegate
-//! (ADR 0002 amendment). The Delegate writes the Plugin in a staging dir,
-//! `.build/<name>/` in the Plugins folder, starting from the shipped
-//! template and confined to it by Landlock. It sees only the Delegate
-//! tools. Once its build and tests pass, Lucy asks the user's Approval,
-//! answers the request it was built for, and asks "Is that the one?"; a no
-//! goes back to the Delegate as a fix.
-//!
-//! Lucy speaks for a build only once neither she nor the user is speaking.
-//! A build outlives the Session it started in: its question or Approval
-//! waits for the next one. One build runs at a time, with one more queued;
-//! each has a time budget, and only "cancel it" stops one early.
-
 mod template;
 
 use std::future::Future;
@@ -38,66 +24,49 @@ use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::sync::Locked;
 
-/// The Delegate's system prompt.
 const BRIEF: &str = include_str!("brief.md");
 
-/// What Lucy says once when a build starts.
 const A_FEW_MINUTES: &str = "This is going to take a few minutes.";
 
-/// What Lucy asks after answering the request a new Plugin was built for.
 const IS_THAT_THE_ONE: &str = "Is that the one?";
 
-/// How many lines of a failed build's or test run's output the Delegate,
-/// and then the user, hear.
 const OUTPUT_LINES: usize = 20;
 
-/// Lives as long as lucyd: starts builds, one at a time.
 pub struct Authoring {
     thinking: Arc<dyn Thinking>,
     relays: Relays,
-    /// `config.toml`, for the advanced tier's Provider.
     config_path: PathBuf,
-    /// User and Lucy-written Plugins; staging is under `.build/`.
     plugins_dir: PathBuf,
     host: Arc<Host>,
     commands: mpsc::UnboundedSender<Command>,
-    /// For what a build shows rather than says.
     notifier: Arc<dyn Notifier>,
-    /// What each build's budget counts on.
     clock: Arc<dyn Clock>,
     building: watch::Sender<Building>,
     builds: Mutex<Builds>,
 }
 
-/// What Authoring is doing, for the building mark and the Session.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Building {
     #[default]
     No,
-    /// The Delegate is working on a build, or lucyd is checking it.
     Working,
-    /// A build waits on the user: for an answer, or their Approval.
     Waiting,
 }
 
 #[derive(Default)]
 struct Builds {
     current: Option<Arc<Build>>,
-    /// The one request that waits for the current build to end.
     queued: Option<Request>,
 }
 
-/// What `request_plugin` asked for.
 struct Request {
     name: String,
     goal: String,
     clarifications: String,
-    /// The user's words, answered once the Plugin is approved.
     request: String,
 }
 
 impl Authoring {
-    /// Builds through `adapters`' Thinking, notifier and clock.
     pub fn new(
         adapters: &Adapters,
         relays: Relays,
@@ -120,12 +89,10 @@ impl Authoring {
         })
     }
 
-    /// What Authoring is doing, as it changes.
     pub fn building(&self) -> watch::Receiver<Building> {
         self.building.subscribe()
     }
 
-    /// Publishes what the current build in `builds` is doing.
     fn show_building(&self, builds: &Builds) {
         let building = match &builds.current {
             Some(build) => build.state.locked().stage.building(),
@@ -134,13 +101,11 @@ impl Authoring {
         self.building.send_replace(building);
     }
 
-    /// Shows `notification`, which offers no action.
     fn show(&self, notification: Notification) {
         self.notifier
             .notify(notification, mpsc::unbounded_channel().0);
     }
 
-    /// Shows a `report_progress` line from the build of `plugin`.
     fn show_progress(&self, plugin: &str, progress: String) {
         self.show(build_notification(
             format!("Building the {plugin} Plugin"),
@@ -148,8 +113,6 @@ impl Authoring {
         ));
     }
 
-    /// The Session ended without Lucy saying she'll keep working on the
-    /// build running, if one is: she shows it instead.
     pub fn show_still_building(&self) {
         let building = self.builds.locked().current.clone();
         if let Some(build) = building {
@@ -160,8 +123,6 @@ impl Authoring {
         }
     }
 
-    /// `request_plugin`: starts a build, and Lucy says it will take a few
-    /// minutes; or, while one runs, queues it, and she says so.
     pub fn request(self: &Arc<Self>, arguments: &JsonObject) -> CallToolResult {
         let [name, goal, clarifications, request] =
             ["name", "goal", "clarifications", "request"].map(|key| string(arguments, key));
@@ -196,8 +157,6 @@ impl Authoring {
         )
     }
 
-    /// Queues `request` to start once the `building` Plugin is done, unless
-    /// one is queued already.
     fn queue(&self, builds: &mut Builds, building: &str, request: Request) -> CallToolResult {
         if let Some(queued) = &builds.queued {
             return error(format!(
@@ -222,7 +181,6 @@ impl Authoring {
         )
     }
 
-    /// Starts the Delegate on `request`, or says why it can't start.
     fn start(self: &Arc<Self>, request: Request) -> Result<Arc<Build>, String> {
         let Request {
             name,
@@ -287,7 +245,6 @@ impl Authoring {
         Ok(build)
     }
 
-    /// "cancel it": stops the build that is running, and the one queued.
     pub fn cancel(&self) {
         let current = {
             let mut builds = self.builds.locked();
@@ -299,9 +256,6 @@ impl Authoring {
         }
     }
 
-    /// The staging dir for the Plugin `name`, made from the template if it
-    /// isn't there from an earlier build, and what else it may touch; and
-    /// whether it was there.
     fn workspace(&self, name: &str) -> std::io::Result<(Workspace, bool)> {
         let build_dir = self.plugins_dir.join(".build");
         let dir = build_dir.join(name);
@@ -328,7 +282,6 @@ impl Authoring {
         Ok((workspace, resumed))
     }
 
-    /// The build is over: the queued one, if any, starts.
     fn finished(self: &Arc<Self>, build: &Build) {
         let mut builds = self.builds.locked();
         if !builds
@@ -362,7 +315,6 @@ impl Authoring {
     }
 }
 
-/// The Session model's tool that starts Authoring.
 pub fn request_plugin_tool() -> Tool {
     tool(
         "request_plugin",
@@ -383,7 +335,6 @@ pub fn request_plugin_tool() -> Tool {
     )
 }
 
-/// The tools a Delegate sees, and no others.
 pub fn delegate_tools() -> Vec<Tool> {
     let string = |description: &str| json!({"type": "string", "description": description});
     vec![
@@ -419,35 +370,24 @@ pub fn delegate_tools() -> Vec<Tool> {
     ]
 }
 
-/// One Plugin being built by its Delegate.
 pub struct Build {
     name: String,
-    /// The request it is built for, in the user's words.
     request: String,
     workspace: Workspace,
     authoring: Weak<Authoring>,
-    /// Show `report_progress` lines as notifications.
     progress_notifications: bool,
-    /// How long it may work.
     allowance: Duration,
     state: Mutex<BuildState>,
-    /// Told when the build is over.
     over: Notify,
 }
 
 struct BuildState {
     stage: Stage,
-    /// Turns sent to the Delegate that haven't ended.
     turns: usize,
-    /// Why its last submission failed.
     failure: Option<String>,
-    /// The Delegate's model process, until the build is over.
     model: Option<Box<dyn SessionModel>>,
-    /// Lets the Delegate reach its tools, until the build is over.
     token: Option<Token>,
-    /// What is left of its time, which counts only while it works.
     budget: Budget,
-    /// Tasks waiting on the user for it, stopped when the build is over.
     waiting: Vec<AbortHandle>,
 }
 
@@ -459,18 +399,14 @@ impl BuildState {
     }
 }
 
-/// A countdown that can be paused and resumed.
 struct Budget {
     remaining: Duration,
-    /// When it last resumed, while running.
     resumed: Option<Instant>,
     clock: Arc<dyn Clock>,
-    /// Set to when it runs out, while running.
     timer: Box<dyn Timer>,
 }
 
 impl Budget {
-    /// A running countdown from `allowance`.
     fn new(allowance: Duration, clock: Arc<dyn Clock>) -> Self {
         let mut budget = Budget {
             remaining: allowance,
@@ -496,18 +432,15 @@ impl Budget {
         self.timer.set(self.deadline());
     }
 
-    /// When it runs out, while running.
     fn deadline(&self) -> Option<Instant> {
         self.resumed.map(|resumed| resumed + self.remaining)
     }
 
-    /// Whether it has run out.
     fn is_spent(&self) -> bool {
         self.deadline()
             .is_some_and(|deadline| deadline <= self.clock.now())
     }
 
-    /// Resolves once it may have run out.
     fn fired(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         self.timer.fired()
     }
@@ -515,13 +448,9 @@ impl Budget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
-    /// The Delegate is working on it.
     Working,
-    /// lucyd is building and testing what it submitted.
     Checking,
-    /// Waiting for the user's answer to the Delegate's question.
     Asking,
-    /// It passed; the user is being asked about it.
     Approving,
     Over,
 }
@@ -537,11 +466,8 @@ impl Stage {
 }
 
 impl Build {
-    /// Follows the Delegate's model process until the build is over.
     async fn follow(self: Arc<Self>, mut events: mpsc::UnboundedReceiver<ThinkingEvent>) {
         loop {
-            // Dropped only once its wake-up is handled, which a test's clock
-            // waits for.
             let mut budget_fired = self.state.locked().budget.fired();
             tokio::select! {
                 event = events.recv() => match event {
@@ -561,10 +487,7 @@ impl Build {
         }
     }
 
-    /// If the budget ran out, the build stops, its staging kept, and Lucy
-    /// says so. Returns whether it did.
     fn out_of_time(&self) -> bool {
-        // It may have stopped counting just now.
         if !self.state.locked().budget.is_spent() {
             return false;
         }
@@ -589,7 +512,6 @@ impl Build {
         true
     }
 
-    /// A call to one of the Delegate tools.
     pub async fn call(
         self: &Arc<Self>,
         name: &str,
@@ -613,7 +535,6 @@ impl Build {
         })
     }
 
-    /// Sends the Delegate a Turn.
     fn send_turn(&self, text: String) {
         let mut state = self.state.locked();
         if let Some(model) = &mut state.model {
@@ -622,8 +543,6 @@ impl Build {
         }
     }
 
-    /// Moves from `from` to `to`, or says why the Delegate can't do that
-    /// now.
     fn advance(&self, from: Stage, to: Stage) -> Result<(), CallToolResult> {
         let mut state = self.state.locked();
         if state.stage != from {
@@ -642,7 +561,6 @@ impl Build {
         Ok(())
     }
 
-    /// Stops `task`, which waits on the user, when the build is over.
     fn waits(&self, task: AbortHandle) {
         let mut state = self.state.locked();
         if state.stage == Stage::Over {
@@ -702,8 +620,8 @@ impl Build {
             return error("Lucy is stopping.");
         };
         let checked = self.check(&authoring).await;
-        // It ran out of time, or was cancelled, while being checked.
-        if self.state.locked().stage == Stage::Over {
+        let over_while_checked = self.state.locked().stage == Stage::Over;
+        if over_while_checked {
             return error("The build is over.");
         }
         match checked {
@@ -727,9 +645,6 @@ impl Build {
         }
     }
 
-    /// Builds and tests what the Delegate submitted, in its sandbox, then
-    /// installs it as awaiting Approval and checks its Manifest against the
-    /// tools it lists.
     async fn check(&self, authoring: &Authoring) -> Result<(), String> {
         self.run("build.sh", "Its build").await?;
         self.run("test.sh", "Its tests").await?;
@@ -739,7 +654,6 @@ impl Build {
         authoring.host.check_authored(&self.name).await
     }
 
-    /// Runs `script` in the staging dir, confined as the Delegate is.
     async fn run(&self, script: &str, what: &str) -> Result<(), String> {
         let workspace = &self.workspace;
         let mut command = tokio::process::Command::new("sh");
@@ -769,8 +683,6 @@ impl Build {
         Err(format!("{what} failed ({}):\n{tail}", output.status))
     }
 
-    /// Asks the user's Approval; on a yes, answers the request the Plugin
-    /// was built for and asks whether that was the one.
     async fn approve(self: Arc<Self>, authoring: Arc<Authoring>) {
         let kept = build_notification(
             format!("The {} Plugin is ready", self.name),
@@ -808,7 +720,6 @@ impl Build {
             prompt: IS_THAT_THE_ONE.to_owned(),
             expects: Expects::YesOrWords,
         };
-        // Kept with the answer's Turn, which has shown that it waits.
         match runner::ask_at(&authoring.commands, question, None, When::Kept).await {
             Some(Answer::Said(said)) => {
                 if self.advance(Stage::Approving, Stage::Working).is_ok() {
@@ -846,8 +757,6 @@ impl Build {
         text("Lucy will tell the user. End your turn.")
     }
 
-    /// The Delegate ended a Turn. If it was working and has nothing more to
-    /// do, it has given up.
     fn turn_ended(&self) {
         let reason = {
             let mut state = self.state.locked();
@@ -860,7 +769,6 @@ impl Build {
         self.give_up(reason.unwrap_or_else(|| "the builder stopped without submitting it".into()));
     }
 
-    /// The build failed for `reason`: Lucy says so.
     fn give_up(&self, reason: String) {
         if self.state.locked().stage == Stage::Over {
             return;
@@ -879,8 +787,6 @@ impl Build {
         self.finish();
     }
 
-    /// Starts a Turn of the Session model once neither side is speaking,
-    /// at the next Session if none is open, showing `kept` meanwhile.
     fn tell(&self, text: String, kept: Notification) {
         if let Some(authoring) = self.authoring.upgrade() {
             let _ = authoring
@@ -889,8 +795,6 @@ impl Build {
         }
     }
 
-    /// Ends the build: the Delegate stops and its token is revoked. The
-    /// staging dir is kept.
     fn finish(&self) {
         let (model, token, waiting) = {
             let mut state = self.state.locked();
@@ -909,7 +813,6 @@ impl Build {
     }
 }
 
-/// What a build shows rather than says.
 fn build_notification(summary: String, body: String) -> Notification {
     Notification {
         summary,
@@ -919,7 +822,6 @@ fn build_notification(summary: String, body: String) -> Notification {
     }
 }
 
-/// `duration` as Lucy would say it: in minutes, or seconds if shorter.
 fn spoken_duration(duration: Duration) -> String {
     let secs = duration.as_secs_f64();
     if secs >= 60.0 {
@@ -929,8 +831,6 @@ fn spoken_duration(duration: Duration) -> String {
     }
 }
 
-/// A Plugin name: lowercase letters, digits and dashes, starting with a
-/// letter.
 fn is_plugin_name(name: &str) -> bool {
     name.starts_with(|c: char| c.is_ascii_lowercase())
         && name.len() <= 40
@@ -939,7 +839,6 @@ fn is_plugin_name(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// The string argument `key`, or an empty string.
 fn string(arguments: &JsonObject, key: &str) -> String {
     arguments
         .get(key)

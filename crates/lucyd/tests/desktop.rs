@@ -72,14 +72,16 @@ fn the_desktop_tools_are_offered_and_run_without_confirmation() {
         assert_ne!(result.is_error, Some(true), "{name}: {result:?}");
     }
 
-    // Each ran straight away: nothing was asked and the Turn is still going.
-    assert_eq!(lucyd.launcher.opened(), ["https://github.com"]);
+    assert_eq!(
+        lucyd.launcher.opened(),
+        ["https://github.com"],
+        "each ran straight away"
+    );
     assert_eq!(lucyd.launcher.launched().len(), 1);
     assert!(lucyd.tts.sentences().is_empty());
     assert_eq!(lucyd.client().status().unwrap().state, State::Thinking);
 }
 
-/// Calls `system_status` with `topic` and returns its text.
 fn system_status(lucyd: &Harness, topic: &str) -> Result<String, String> {
     let result = lucyd
         .thinking
@@ -125,7 +127,6 @@ fn system_status_refuses_an_unknown_topic() {
     assert!(refused.contains("battery"), "lists the topics: {refused}");
 }
 
-/// Calls `launch_app` with `name` and returns its structured result.
 fn launch_app(lucyd: &Harness, name: &str) -> serde_json::Value {
     let result = lucyd
         .thinking

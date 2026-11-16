@@ -1,6 +1,3 @@
-//! The tests setup runs inside lucyd, outside any Session: how loud the
-//! microphone is, and whether the Wake word is heard and with what score.
-
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -19,18 +16,14 @@ pub enum SetupTest {
 
 pub struct WakeWordHeard {
     pub heard: bool,
-    /// The best score the engine gave during the test.
     pub score: f32,
 }
 
 pub enum SetupTestError {
     SessionOpen,
-    /// A Voice preview or another setup test is running.
     Busy,
     NoMicrophone,
-    /// The wake-word engine couldn't be loaded.
     WakeWordOff,
-    /// A Session opened and cut the test short.
     Interrupted,
 }
 
@@ -57,8 +50,6 @@ impl Runner {
         }
     }
 
-    /// Switches to the microphone config names now, as a Session start
-    /// would, and takes its level.
     fn mic_level(&mut self) -> Result<f32, SetupTestError> {
         let hearing = self
             .adapters
@@ -70,9 +61,10 @@ impl Runner {
         Ok(hearing.take_level())
     }
 
-    /// Listens for the Wake word until it is heard or `timeout` passes,
-    /// without opening a Session. A Session that opens meanwhile ends the
-    /// test and runs.
+    fn forget_earlier_wake_words(&mut self) {
+        while self.adapters.wake_word.try_recv().is_ok() {}
+    }
+
     async fn wake_word_test(
         &mut self,
         timeout: Duration,
@@ -89,8 +81,7 @@ impl Runner {
             }
             Some(hearing) => hearing.take_wake_score(),
         };
-        // Only what is heard from now on counts.
-        while self.adapters.wake_word.try_recv().is_ok() {}
+        self.forget_earlier_wake_words();
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
         let heard = loop {
@@ -111,9 +102,8 @@ impl Runner {
                     }
                     None => return,
                 },
-                // Speech outside a Session is ignored.
-                speech = self.adapters.speech.recv(), if self.speech_open => {
-                    self.speech_open = speech.is_some();
+                ignored_speech = self.adapters.speech.recv(), if self.speech_open => {
+                    self.speech_open = ignored_speech.is_some();
                 }
             }
         };

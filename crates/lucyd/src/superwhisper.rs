@@ -13,16 +13,11 @@ use serde::Deserialize;
 
 use crate::adapters::{SpeechSegment, Stt, SttError};
 
-/// How often `read` is asked for the result.
 const POLL_EVERY: Duration = Duration::from_millis(20);
-/// How long an utterance may take before it counts as failed. Superwhisper
-/// reports a rejected file only through `read` and `status`, so this also
-/// catches a failure `read` doesn't show.
-const TIMEOUT: Duration = Duration::from_secs(10);
+const UTTERANCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Superwhisper {
     program: PathBuf,
-    /// Where utterances are written for Superwhisper to read.
     dir: PathBuf,
     utterances: AtomicU64,
 }
@@ -69,12 +64,11 @@ impl Superwhisper {
                 ))
             }
         };
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = Instant::now() + UTTERANCE_TIMEOUT;
         loop {
-            // `null` until Superwhisper has a dictation to show.
-            let dictation: Option<Dictation> = parse(&self.run(&["read".as_ref()])?)?;
-            if let Some(dictation) = dictation.filter(|d| d.session_id == Some(session_id)) {
-                return dictation.transcript();
+            let latest_if_any: Option<Dictation> = parse(&self.run(&["read".as_ref()])?)?;
+            if let Some(dictation) = latest_if_any.filter(|d| d.session_id == Some(session_id)) {
+                return dictation.raw_transcript();
             }
             if Instant::now() >= deadline {
                 return Err(format!(
@@ -92,7 +86,7 @@ impl Stt for Superwhisper {
         let file = self
             .dir
             .join(format!("superwhisper-{}-{n}.wav", std::process::id()));
-        let result = write_wav(&file, &segment.samples)
+        let result = write_16k_mono_wav(&file, &segment.samples)
             .map_err(|e| format!("can't write {}: {e}", file.display()))
             .and_then(|()| self.transcribe_file(&file));
         let _ = std::fs::remove_file(&file);
@@ -100,7 +94,6 @@ impl Stt for Superwhisper {
     }
 }
 
-/// What `transcribe FILE` prints.
 #[derive(Deserialize)]
 struct Started {
     ok: bool,
@@ -108,20 +101,16 @@ struct Started {
     error: Option<String>,
 }
 
-/// What `read` prints: the most recent dictation.
 #[derive(Deserialize)]
 struct Dictation {
     session_id: Option<u64>,
-    /// What the ASR heard, before the cleanup model rewrote it.
     raw: Option<String>,
-    /// After the cleanup model.
     text: Option<String>,
     error: Option<String>,
 }
 
 impl Dictation {
-    /// The raw transcript, so the cleanup model can't paraphrase a command.
-    fn transcript(self) -> Result<String, String> {
+    fn raw_transcript(self) -> Result<String, String> {
         match (self.error, self.raw.or(self.text)) {
             (Some(error), _) => Err(format!("Superwhisper failed: {error}")),
             (None, Some(text)) => Ok(text.trim().to_owned()),
@@ -139,9 +128,7 @@ fn parse<'a, T: Deserialize<'a>>(stdout: &'a [u8]) -> Result<T, String> {
     })
 }
 
-/// Writes `samples` as 16-bit PCM at 16 kHz mono, the only format
-/// Superwhisper takes.
-fn write_wav(path: &Path, samples: &[f32]) -> Result<(), hound::Error> {
+fn write_16k_mono_wav(path: &Path, samples: &[f32]) -> Result<(), hound::Error> {
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: crate::audio::SAMPLE_RATE,

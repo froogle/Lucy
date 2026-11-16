@@ -1,5 +1,5 @@
-//! The `claude` Thinking Provider: one persistent `claude -p` stream-json
-//! process per Session, on the user's subscription (ADR 0001).
+//! The `claude` Thinking Provider: one persistent `claude -p` process per Session.
+//! It speaks stream-json, on the user's subscription (ADR 0001).
 
 mod guard;
 
@@ -18,19 +18,11 @@ use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 use crate::sync::Locked;
 
-/// The `claude` tools a Delegate writes and builds a Plugin with, inside
-/// its sandbox. A Session's model has none of them.
 const DELEGATE_TOOLS: &[&str] = &["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
 
-/// Settings that would make `claude` bill something other than the user's
-/// subscription. Everything above `CLAUDE_CODE_OAUTH_TOKEN` in Claude Code's
-/// credential precedence. `apiKeyHelper` lives only in settings files, which
-/// `--setting-sources ""` keeps out.
-/// How long claude gets to acknowledge the control interrupt before it gets
-/// SIGINT instead.
 const INTERRUPT_ACK_WAIT: Duration = Duration::from_secs(1);
 
-const SCRUBBED_ENV: &[&str] = &[
+const BILLING_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
@@ -41,11 +33,8 @@ const SCRUBBED_ENV: &[&str] = &[
 #[derive(Clone)]
 pub struct Claude {
     program: PathBuf,
-    /// A Lucy-owned directory, so no project's `.mcp.json` or hooks apply.
     work_dir: PathBuf,
-    /// claude's config dir, if not the one its env gives it.
     config_dir: Option<PathBuf>,
-    /// Every Session's and Delegate's claude still running.
     live: Arc<Mutex<Vec<Weak<Run>>>>,
 }
 
@@ -59,8 +48,8 @@ impl Claude {
         }
     }
 
-    /// Runs claude with `config_dir` as its config dir
-    /// (`CLAUDE_CONFIG_DIR`), where it keeps its login and conversations.
+    /// Runs claude with `config_dir` as its config dir (`CLAUDE_CONFIG_DIR`).
+    /// claude keeps its login and conversations there.
     pub fn with_config_dir(self, config_dir: PathBuf) -> Claude {
         Claude {
             config_dir: Some(config_dir),
@@ -68,8 +57,6 @@ impl Claude {
         }
     }
 
-    /// Where claude keeps its config and conversations: `CLAUDE_CONFIG_DIR`,
-    /// or `~/.claude`.
     fn config_dir(&self) -> PathBuf {
         self.config_dir
             .clone()
@@ -77,8 +64,6 @@ impl Claude {
             .unwrap_or_else(|| sandbox::home().join(".claude"))
     }
 
-    /// `claude` run in the work dir, with the guard's env scrubbing unless
-    /// the Provider opts out.
     fn base_command(&self, provider: &Provider) -> Command {
         let mut command = Command::new(&self.program);
         command.current_dir(&self.work_dir).stderr(Stdio::null());
@@ -86,17 +71,13 @@ impl Claude {
             command.env("CLAUDE_CONFIG_DIR", config_dir);
         }
         if !provider.allow_api_key {
-            for name in SCRUBBED_ENV {
+            for name in BILLING_ENV {
                 command.env_remove(name);
             }
         }
         command
     }
 
-    /// `claude -p` stream-json, with `relay` as its only MCP server, or none,
-    /// `instructions` appended to its system prompt, and of its own tools
-    /// only `own_tools`. It carries on the conversation `resume` names, if
-    /// any; conversations are kept on disk so that it can.
     fn command(
         &self,
         provider: &Provider,
@@ -147,8 +128,6 @@ impl Claude {
         command
     }
 
-    /// A Delegate's `claude -p`: its own file and shell tools, working in
-    /// the workspace, confined to it, the program and its config.
     fn delegate_command(
         &self,
         provider: &Provider,
@@ -164,11 +143,6 @@ impl Claude {
         Ok(command)
     }
 
-    /// One Session's or Delegate's process: the guard's checks, then
-    /// `claude -p`, fed each Turn and interrupt from `inputs` until the
-    /// SessionModel is dropped. A Turn is interrupted with the stream-json
-    /// control interrupt; if claude doesn't acknowledge it, with SIGINT,
-    /// which ends the process, and a new one carries on the conversation.
     fn run_session(
         &self,
         provider: &Provider,
@@ -186,9 +160,7 @@ impl Claude {
         let Some(mut running) = spawn() else {
             return;
         };
-        // Whether claude understands the control interrupt: until it fails
-        // to, it is assumed to.
-        let mut control_interrupt = true;
+        let mut control_interrupt_works = true;
         let mut interrupts = 0;
         for input in inputs {
             match input {
@@ -207,7 +179,7 @@ impl Claude {
                         }
                         turns.discard_until = turns.sent;
                     }
-                    if control_interrupt {
+                    if control_interrupt_works {
                         interrupts += 1;
                         running.write(&serde_json::json!({
                             "type": "control_request",
@@ -218,9 +190,9 @@ impl Claude {
                             continue;
                         }
                         eprintln!("lucyd: claude didn't take the control interrupt; using SIGINT");
-                        control_interrupt = false;
+                        control_interrupt_works = false;
                     }
-                    running.turns.locked().retired = true;
+                    running.turns.locked().sigint_sent = true;
                     if let Process::Running(child) = &*run.process.locked() {
                         // SAFETY: kill(2) on our own child's pid.
                         unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT) };
@@ -234,9 +206,6 @@ impl Claude {
         }
     }
 
-    /// Starts `claude -p` and a thread reading its replies into `events`.
-    /// None if it couldn't start, which `events` hears, or the Session has
-    /// ended.
     fn spawn(
         &self,
         provider: &Provider,
@@ -244,7 +213,7 @@ impl Claude {
         events: &mpsc::UnboundedSender<ThinkingEvent>,
         run: &Arc<Run>,
     ) -> Option<Running> {
-        let resume = run.sessions.locked().last().cloned();
+        let resume = run.conversations.locked().last().cloned();
         let resume = resume.as_deref();
         let Role {
             relay,
@@ -275,11 +244,10 @@ impl Claude {
                 let _ = child.wait();
                 return None;
             }
-            // One that was interrupted with SIGINT ends on its own.
-            if let Process::Running(mut old) =
+            if let Process::Running(mut interrupted) =
                 std::mem::replace(&mut *process, Process::Running(child))
             {
-                std::thread::spawn(move || old.wait());
+                std::thread::spawn(move || interrupted.wait());
             }
         }
         let turns = Arc::new(Mutex::new(Turns::default()));
@@ -298,17 +266,16 @@ impl Claude {
                     let _ = acks_tx.send(value["response"]["subtype"] == "success");
                     continue;
                 }
-                let discarding = {
+                let in_interrupted_turn = {
                     let mut turns = reader_turns.locked();
-                    let discarding = turns.ended < turns.discard_until;
+                    let in_interrupted_turn = turns.ended < turns.discard_until;
                     if value["type"] == "result" {
                         turns.ended += 1;
                     }
-                    discarding
+                    in_interrupted_turn
                 };
                 let line_events = stream.line(&line);
-                if discarding {
-                    // The rest of an interrupted Turn: nothing of it is said.
+                if in_interrupted_turn {
                     if value["type"] == "result" {
                         stream = Stream::default();
                     }
@@ -318,10 +285,9 @@ impl Claude {
                     let _ = reader_events.send(event);
                 }
             }
-            // claude stopped on its own, not because the Session ended or
-            // it was interrupted with SIGINT.
-            let ended = matches!(*reader_run.process.locked(), Process::Ended);
-            if !ended && !reader_turns.locked().retired {
+            let session_ended = matches!(*reader_run.process.locked(), Process::Ended);
+            let stopped_on_its_own = !session_ended && !reader_turns.locked().sigint_sent;
+            if stopped_on_its_own {
                 let _ = reader_events.send(ThinkingEvent::Died);
             }
         });
@@ -329,44 +295,34 @@ impl Claude {
     }
 }
 
-/// What the SessionModel hands its process.
 enum ToClaude {
     Turn(String),
     Interrupt,
 }
 
-/// One `claude -p` process of a Session.
 struct Running {
     stdin: ChildStdin,
     turns: Arc<Mutex<Turns>>,
-    /// Whether each control interrupt succeeded, as claude answers.
     acks: std_mpsc::Receiver<bool>,
 }
 
 impl Running {
     fn write(&mut self, message: &Value) {
         if let Err(e) = writeln!(self.stdin, "{message}").and_then(|()| self.stdin.flush()) {
-            // claude is gone; the reader reports it.
             eprintln!("lucyd: can't reach claude: {e}");
         }
     }
 }
 
-/// The Turns of one process, shared by its writer and reader.
 #[derive(Default)]
 struct Turns {
     sent: u64,
-    /// Turns whose `result` has been read.
     ended: u64,
-    /// Everything up to the end of this Turn was interrupted and is dropped.
     discard_until: u64,
-    /// It was interrupted with SIGINT, so it ending isn't a death.
-    retired: bool,
+    sigint_sent: bool,
 }
 
 impl Claude {
-    /// Returns at once. The guard's checks and the spawn happen on a thread
-    /// of their own; Turns sent meanwhile wait for the process.
     fn open_as(
         &self,
         provider: &Provider,
@@ -377,7 +333,7 @@ impl Claude {
         let cwd = role.workspace.as_ref().map_or(&self.work_dir, |w| &w.dir);
         let run = Arc::new(Run {
             process: Mutex::new(Process::Starting),
-            sessions: Mutex::default(),
+            conversations: Mutex::default(),
             config_dir: self.config_dir(),
             cwd: cwd.clone(),
         });
@@ -449,38 +405,27 @@ impl Thinking for Claude {
     }
 }
 
-/// Where a Session's `claude -p` is.
 enum Process {
-    /// The guard is still checking.
     Starting,
     Running(Child),
-    /// The Session is over; nothing may be spawned for it any more.
     Ended,
 }
 
-/// A Session's or Delegate's claude, and the conversations it keeps on
-/// disk so a new process can resume them. They go when it ends.
 struct Run {
     process: Mutex<Process>,
-    /// claude's ids for its conversations, from its stream; a new process
-    /// resumes the last.
-    sessions: Mutex<Vec<String>>,
+    conversations: Mutex<Vec<String>>,
     config_dir: PathBuf,
-    /// claude's working directory, which names the project dir it keeps
-    /// conversations in.
     cwd: PathBuf,
 }
 
 impl Run {
     fn kept(&self, id: &str) {
-        let mut sessions = self.sessions.locked();
-        if !sessions.iter().any(|kept| kept == id) {
-            sessions.push(id.to_owned());
+        let mut conversations = self.conversations.locked();
+        if !conversations.iter().any(|kept| kept == id) {
+            conversations.push(id.to_owned());
         }
     }
 
-    /// Stops claude for good, then deletes the conversations it kept:
-    /// `<id>.jsonl` and the `<id>` dir beside it. Nothing else of claude's.
     fn end(&self) {
         let process = std::mem::replace(&mut *self.process.locked(), Process::Ended);
         if let Process::Running(mut child) = process {
@@ -491,15 +436,13 @@ impl Run {
             .config_dir
             .join("projects")
             .join(project_dir(&self.cwd));
-        for id in std::mem::take(&mut *self.sessions.locked()) {
+        for id in std::mem::take(&mut *self.conversations.locked()) {
             let _ = std::fs::remove_file(project.join(format!("{id}.jsonl")));
             let _ = std::fs::remove_dir_all(project.join(&id));
         }
     }
 }
 
-/// The name claude gives the dir it keeps the conversations run in `cwd`
-/// in: its real path with every character but a letter or digit as `-`.
 fn project_dir(cwd: &Path) -> String {
     let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_owned());
     cwd.to_string_lossy()
@@ -516,8 +459,7 @@ struct ClaudeSessionModel {
 
 impl SessionModel for ClaudeSessionModel {
     fn send_turn(&mut self, text: String) {
-        // Only fails once the process is gone, which has ended the Turn.
-        let _ = self.inputs.send(ToClaude::Turn(text));
+        let _fails_once_the_turn_has_ended = self.inputs.send(ToClaude::Turn(text));
     }
 
     fn interrupt(&mut self) {
@@ -531,27 +473,28 @@ impl Drop for ClaudeSessionModel {
     }
 }
 
-/// Turns stream-json lines into ThinkingEvents.
 #[derive(Default)]
 struct Stream {
     sentences: Sentences,
 }
 
 impl Stream {
+    fn finish_block(&mut self) -> Vec<ThinkingEvent> {
+        self.sentences.finish().into_iter().collect()
+    }
+
     fn line(&mut self, line: &str) -> Vec<ThinkingEvent> {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return vec![];
         };
         match value["type"].as_str() {
-            // Subagent text isn't spoken.
-            Some("stream_event") if value["parent_tool_use_id"].is_null() => {
+            Some("stream_event") if !is_subagent(&value) => {
                 let event = &value["event"];
                 match event["type"].as_str() {
                     Some("content_block_delta") if event["delta"]["type"] == "text_delta" => self
                         .sentences
                         .push(event["delta"]["text"].as_str().unwrap_or_default()),
-                    // Speak a text block's last sentence before any tool call.
-                    Some("content_block_stop") => self.sentences.finish().into_iter().collect(),
+                    Some("content_block_stop") => self.finish_block(),
                     _ => vec![],
                 }
             }
@@ -569,6 +512,10 @@ impl Stream {
     }
 }
 
+fn is_subagent(value: &Value) -> bool {
+    !value["parent_tool_use_id"].is_null()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -579,7 +526,6 @@ mod tests {
         assert_eq!(stream.line(line), []);
     }
 
-    /// The env vars the child process has removed.
     fn removed_env(allow_api_key: bool) -> Vec<String> {
         let claude = Claude::new("claude".into(), "/work".into());
         let provider = Provider {

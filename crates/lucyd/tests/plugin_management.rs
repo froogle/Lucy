@@ -1,5 +1,6 @@
-//! Plugin management: enable, disable, rollback and remove by voice through
-//! `manage_plugin`, and over IPC through `plugins.*` and `approvals.*`.
+//! Plugin management: enable, disable, rollback and remove.
+//! By voice through `manage_plugin`, and over IPC through `plugins.*` and
+//! `approvals.*`.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
@@ -11,8 +12,6 @@ use lucy_ipc::{error_code, Client, Event, PluginAuthor, PluginInfo, PluginStatus
 use rmcp::model::CallToolResult;
 use serde_json::json;
 
-/// The fixture Plugin `notes` by `author`, offering `echo` and, if `writes`,
-/// `write_file`.
 fn manifest(author: &str, writes: bool) -> String {
     let mut manifest = format!(
         "name = \"notes\"\n\
@@ -44,7 +43,6 @@ fn text(result: &CallToolResult) -> String {
         .collect()
 }
 
-/// lucyd with an open Session that has reached Listening.
 fn in_a_session(lucyd: &Harness) -> Client {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
@@ -52,7 +50,6 @@ fn in_a_session(lucyd: &Harness) -> Client {
     events
 }
 
-/// The model calls `manage_plugin`, and Lucy does it without asking.
 fn manage(lucyd: &Harness, plugin: &str, action: &str) -> CallToolResult {
     lucyd
         .thinking
@@ -60,8 +57,6 @@ fn manage(lucyd: &Harness, plugin: &str, action: &str) -> CallToolResult {
         .unwrap()
 }
 
-/// The model calls `manage_plugin` in a Turn, in the background, for an
-/// action Lucy asks about first.
 fn manage_in_a_turn(
     lucyd: &Harness,
     events: &mut Client,
@@ -91,8 +86,6 @@ fn approved_hash(lucyd: &Harness, name: &str) -> Option<String> {
     Some(approval.hash)
 }
 
-/// Approves the Plugin `name` as it is now by the user's spoken yes, in the
-/// open Session.
 fn approve_by_voice(lucyd: &Harness, name: &str) {
     let approval = lucyd.request_approval(name);
     lucyd.tts.next_sentence();
@@ -135,10 +128,12 @@ fn disable_keeps_files_and_approval_and_enable_restores_straight_away() {
     let listed = plugin(&lucyd, "notes").unwrap();
     assert!(!listed.enabled);
     assert_eq!(listed.status, PluginStatus::Approved);
-    // Still left out in the next Session.
     events.end_session().unwrap();
     events.start_session().unwrap();
-    assert!(!offers(&lucyd, "notes__echo"));
+    assert!(
+        !offers(&lucyd, "notes__echo"),
+        "still left out in the next Session"
+    );
     let watch = lucyd.thinking.watch_tools();
 
     let result = manage(&lucyd, "notes", "enable");
@@ -264,8 +259,7 @@ fn rollback_restores_the_previous_approved_version_with_no_prompt() {
         first
     );
     assert_eq!(approved_hash(&lucyd, "notes"), Some(first_hash));
-    // Nothing was asked.
-    assert_eq!(lucyd.tts.sentences().len(), spoken);
+    assert_eq!(lucyd.tts.sentences().len(), spoken, "nothing was asked");
     let echoed = lucyd
         .thinking
         .call_tool_with("notes__echo", json!({"text": "still here"}))

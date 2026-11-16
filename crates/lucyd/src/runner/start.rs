@@ -1,7 +1,3 @@
-//! A Session's start: the Persona and `config.toml` are read afresh, so
-//! edits, `[piper] voice` among them, apply at the next Session, and the
-//! model is opened with them.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -20,25 +16,18 @@ use crate::plugins::SessionTools;
 /// The user's files read at each Session start.
 pub struct SessionFiles {
     pub persona: Persona,
-    /// `config.toml`. It need not exist.
     pub config_path: PathBuf,
 }
 
-/// A Session's model and settings, ready to run.
 pub struct Started {
     pub model: Box<dyn SessionModel>,
-    /// Keeps the model's relay working until the Session ends.
     pub token: Token,
-    /// The config, or the defaults if it is invalid.
     pub settings: Config,
-    /// The user hasn't been introduced to Lucy yet.
     pub first_run: bool,
-    /// What the model was opened with, if it could be.
     pub opened: Option<Opened>,
     pub devices: Devices,
 }
 
-/// What a Session's model was opened with, to open it again if it dies.
 pub struct Opened {
     pub provider: Provider,
     pub relay: Relay,
@@ -46,9 +35,6 @@ pub struct Opened {
 }
 
 impl Runner {
-    /// Reads the Persona and config, applies the settings read at each
-    /// Session start, and opens the model with the fast tier's Provider. If
-    /// there is no usable Provider, the model says why on `events`.
     pub(super) fn start(
         &mut self,
         plugin_tools: Arc<SessionTools>,
@@ -116,7 +102,6 @@ impl Runner {
         }
     }
 
-    /// Opens the model as `opened` says, streaming into `events`.
     pub(super) fn open_model(
         &self,
         opened: &Opened,

@@ -1,6 +1,3 @@
-//! The notification fallback: whenever no client holds the `indicator` role,
-//! lucyd shows Session start, Confirming and end as desktop notifications.
-
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
@@ -13,14 +10,11 @@ use crate::runner::Command;
 use crate::status::StatusBus;
 use crate::sync::Locked;
 
-/// A status change or a change in how many clients hold the role, queued in
-/// the order they happened.
 enum Change {
     Status(Status),
     Indicators(usize),
 }
 
-/// Counts the connected clients that hold the `indicator` role.
 #[derive(Clone)]
 pub struct Indicators {
     count: Arc<Mutex<usize>>,
@@ -28,7 +22,6 @@ pub struct Indicators {
 }
 
 impl Indicators {
-    /// Counts a client as holding the role until the claim is dropped.
     pub fn claim(&self) -> IndicatorClaim {
         self.add(1);
         IndicatorClaim(self.clone())
@@ -49,8 +42,6 @@ impl Drop for IndicatorClaim {
     }
 }
 
-/// The role count, and the task that notifies while no Indicator is there.
-/// It sees every change made after this returns.
 pub fn fallback(
     status: &StatusBus,
     notifier: Arc<dyn Notifier>,
@@ -104,7 +95,6 @@ async fn notify(
     }
 }
 
-/// What to show for a state change, with no Indicator.
 fn on_change(previous: State, next: State) -> Option<Notification> {
     match (previous, next) {
         (State::Idle, State::Idle) => None,
@@ -118,8 +108,6 @@ fn on_change(previous: State, next: State) -> Option<Notification> {
     }
 }
 
-/// What to show when the last Indicator goes away, so an open Session still
-/// has a way to end it.
 fn on_indicator_lost(state: State) -> Option<Notification> {
     match state {
         State::Idle => None,
@@ -165,7 +153,6 @@ pub fn ended() -> Notification {
     }
 }
 
-/// A reply Lucy couldn't speak, shown instead: the sentences of one Turn.
 pub fn unspoken(sentences: &[String]) -> Notification {
     Notification {
         summary: "Lucy".into(),
@@ -175,7 +162,6 @@ pub fn unspoken(sentences: &[String]) -> Notification {
     }
 }
 
-/// A question Lucy couldn't ask, with no Session open to ask it in.
 pub fn unasked(question: &str) -> Notification {
     Notification {
         summary: "Lucy couldn't ask you".into(),
@@ -185,8 +171,6 @@ pub fn unasked(question: &str) -> Notification {
     }
 }
 
-/// Pinned devices that weren't there at Session start, so the defaults
-/// stand in. The pins stay.
 pub fn devices_missing(missing: &[(Direction, String)]) -> Notification {
     let names: Vec<String> = missing
         .iter()
@@ -203,7 +187,6 @@ pub fn devices_missing(missing: &[(Direction, String)]) -> Notification {
     }
 }
 
-/// A device went away mid-Session, so the Session ended.
 pub fn device_lost(direction: Direction) -> Notification {
     Notification {
         summary: format!("Lucy lost the {}", device(direction)),
@@ -220,7 +203,6 @@ fn device(direction: Direction) -> &'static str {
     }
 }
 
-/// The model process died twice running, so the Session ended.
 pub fn thinking_lost(provider: &str) -> Notification {
     Notification {
         summary: format!("Lucy lost her connection to {provider}"),

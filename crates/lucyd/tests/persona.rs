@@ -4,7 +4,6 @@ mod harness;
 use harness::{next_state, Harness};
 use lucy_ipc::State;
 
-/// Opens the first Session and lets Lucy finish introducing herself.
 fn introduce(lucyd: &Harness) {
     let mut events = lucyd.state_client();
     lucyd.client().start_session().unwrap();
@@ -23,7 +22,6 @@ fn a_missing_persona_is_created_with_the_default_and_given_to_the_model() {
     let persona = std::fs::read_to_string(lucyd.persona_path()).expect("persona.md created");
     let instructions = lucyd.thinking.instructions();
     assert!(instructions.contains(persona.trim()), "{instructions}");
-    // The spoken-style rules.
     assert!(persona.contains("one to three short"), "{persona}");
     assert!(persona.contains("markdown"), "{persona}");
     assert!(persona.contains("Let me check"), "{persona}");
@@ -102,8 +100,11 @@ fn the_first_session_opens_with_an_introduction_and_only_the_first() {
 
     client.start_session().unwrap();
     lucyd.say("What's the time?");
-    // An opening Turn would have been sent before anything the user said.
-    assert_eq!(lucyd.thinking.next_turn(), "What's the time?");
+    assert_eq!(
+        lucyd.thinking.next_turn(),
+        "What's the time?",
+        "an opening Turn would have been sent before anything the user said"
+    );
 }
 
 #[test]
@@ -156,14 +157,16 @@ fn a_persona_change_by_voice_is_saved_and_read_back_without_approval() {
         .call_tool_with("update_persona", serde_json::json!({"persona": persona}))
         .unwrap();
 
-    // Saved at once: no Approval, so no Confirming.
-    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "saved at once: no Approval, so no Confirming: {result:?}"
+    );
     assert_eq!(
         std::fs::read_to_string(lucyd.persona_path()).unwrap(),
         persona
     );
     assert_eq!(lucyd.client().status().unwrap().state, State::Thinking);
-    // The model is handed the new text and told to read the change back.
     let text = format!("{:?}", result.content);
     assert!(text.contains(persona), "{text}");
     assert!(text.contains("Tell the user what changed"), "{text}");

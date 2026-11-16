@@ -1,5 +1,5 @@
-//! Approval: Lucy asks the user's spoken yes to a new or changed Plugin, and
-//! hears it herself. Nothing else can grant one.
+//! Approval: Lucy asks the user's spoken yes to a new or changed Plugin.
+//! She hears it herself. Nothing else can grant one.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
@@ -8,8 +8,6 @@ use harness::{next_state, Harness};
 use lucy_ipc::State;
 use lucyd::adapters::NotificationKind;
 
-/// The fixture Plugin offering `echo`, plus `write_file` (which needs
-/// Confirmation) if `writes`, with `access` as its `[access]` body.
 fn manifest(writes: bool, access: &str) -> String {
     let mut manifest = format!(
         "name = \"notes\"\n\
@@ -35,7 +33,6 @@ fn manifest(writes: bool, access: &str) -> String {
     manifest
 }
 
-/// lucyd with an open Session that has reached Listening.
 fn in_a_session(lucyd: &Harness) -> lucy_ipc::Client {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
@@ -75,8 +72,10 @@ fn a_new_plugin_gets_the_full_summary_and_a_yes_offers_its_tools_straight_away()
     assert!(tools.contains(&"notes__echo".into()), "{tools:?}");
     assert!(tools.contains(&"notes__write_file".into()), "{tools:?}");
     assert_eq!(next_state(&mut events).state, State::Listening);
-    // Recorded in Lucy's own state, never in the Plugin's folder.
-    assert!(lucyd.state_dir().join("approvals.toml").exists());
+    assert!(
+        lucyd.state_dir().join("approvals.toml").exists(),
+        "recorded in Lucy's own state, never in the Plugin's folder"
+    );
     assert!(!folder.join("approvals.toml").exists());
     events.end_session().unwrap();
     events.start_session().unwrap();
@@ -119,9 +118,11 @@ fn an_update_gets_a_changes_only_summary_with_the_full_diff_on_screen() {
         manifest(true, "read = [\"~/Documents\"]"),
     )
     .unwrap();
-    // The changed Plugin isn't offered until it is approved again.
     events.start_session().unwrap();
-    assert!(!lucyd.thinking.tool_names().contains(&"notes__echo".into()));
+    assert!(
+        !lucyd.thinking.tool_names().contains(&"notes__echo".into()),
+        "the changed Plugin isn't offered until it is approved again"
+    );
 
     let update = lucyd.request_approval("notes");
 
@@ -178,8 +179,10 @@ fn an_approval_needs_an_open_session_to_ask_in() {
 
     assert!(outcome.is_err(), "{outcome:?}");
     assert!(!lucyd.state_dir().join("approvals.toml").exists());
-    // The Plugin wasn't started: starting it makes its state dir.
-    assert!(!lucyd.state_dir().join("plugins").join("notes").exists());
+    assert!(
+        !lucyd.state_dir().join("plugins").join("notes").exists(),
+        "the Plugin wasn't started: starting it makes its state dir"
+    );
 }
 
 #[test]
@@ -187,7 +190,6 @@ fn an_update_to_a_plugin_approved_without_its_manifest_kept_gets_the_full_summar
     let lucyd = Harness::start();
     let _indicator = lucyd.indicator("lucy-indicator");
     let folder = lucyd.install_plugin("notes", &manifest(false, ""));
-    // Approved before Approvals kept the Manifest.
     lucyd.approve("notes");
     std::fs::write(folder.join("manifest.toml"), manifest(true, "")).unwrap();
     let _events = in_a_session(&lucyd);
@@ -198,7 +200,6 @@ fn an_update_to_a_plugin_approved_without_its_manifest_kept_gets_the_full_summar
         .tts
         .next_sentence()
         .starts_with("The notes Plugin needs your Approval. It handles repeat a note and save"));
-    // No diff against nothing on screen.
     lucyd.notifier.assert_no_notification();
 }
 

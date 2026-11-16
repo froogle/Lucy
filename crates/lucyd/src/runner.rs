@@ -1,6 +1,3 @@
-//! Runs Sessions: owns the published status and does the I/O that the
-//! `session` state machine asks for.
-
 mod preview;
 mod setup;
 mod start;
@@ -34,62 +31,36 @@ pub use preview::{PreviewError, VoicePreview};
 pub use setup::{SetupTest, SetupTestError, WakeWordHeard};
 pub use start::SessionFiles;
 
-/// A request from the public socket or the MCP server.
 pub enum Command {
     Start(oneshot::Sender<Result<SessionId, StartError>>),
-    /// End now, from any state.
     End(oneshot::Sender<Result<(), EndError>>),
-    /// `end_session`: end once the reply has been spoken.
     EndAfterSpeech(oneshot::Sender<Result<(), EndError>>),
-    /// Ask the user something and hear their answer (Confirming). Questions
-    /// are asked one at a time, in order. With no open Session, or if the
-    /// Session ends or the model process dies first, `reply` is dropped
-    /// unanswered; with no open Session, the question is shown instead.
     Ask(Ask),
-    /// Lucy says this herself, in the open Session, straight away.
     Say(String),
-    /// Starts a Turn with these instructions in the open Session, once
-    /// neither Lucy nor the user is speaking. With no Session open, or if
-    /// it ends first, the Turn waits for the next Session and this is shown
-    /// meanwhile: the instructions are for the model, never shown.
     TurnOrNextSession(String, Notification),
-    /// `test.voice_preview`: say a sentence outside any Session.
     VoicePreview(VoicePreview),
-    /// `test.mic_level` or `test.wake_word`, outside any Session.
     SetupTest(SetupTest),
 }
 
 pub struct Ask {
     pub question: Question,
-    /// Shown when the question is asked: details too long to say.
     pub shown: Option<Notification>,
     pub reply: oneshot::Sender<Answer>,
     pub when: When,
 }
 
-/// When Lucy asks a question, or starts a Turn of her own.
 pub enum When {
-    /// As part of the Turn in progress.
     Now,
-    /// Once neither Lucy nor the user is speaking; but with no Session
-    /// open, or if the Session ends first, at the next Session, and this is
-    /// shown meanwhile, rather than it going unsaid.
     QuietOrNextSession(Notification),
-    /// As `QuietOrNextSession` once its notification has been shown, or
-    /// when something said before it has shown that it waits.
     Kept,
 }
 
 impl When {
-    /// Whether it waits for the next Session rather than going unsaid.
     pub fn keeps(&self) -> bool {
         matches!(self, When::QuietOrNextSession(_) | When::Kept)
     }
 }
 
-/// Asks the user `question` in the open Session, showing `shown` as it is
-/// asked. `None` if it went unanswered because no Session was open or it
-/// ended first.
 pub async fn ask(
     commands: &mpsc::UnboundedSender<Command>,
     question: Question,
@@ -98,10 +69,6 @@ pub async fn ask(
     ask_at(commands, question, shown, When::Now).await
 }
 
-/// Asks the user `question`, as `ask` does, but only once neither Lucy nor
-/// the user is speaking; with no Session open it waits for the next one,
-/// showing `kept` meanwhile. It goes unasked if the answer is no longer
-/// awaited by then.
 pub fn ask_when_quiet_or_next_session(
     commands: &mpsc::UnboundedSender<Command>,
     question: Question,
@@ -111,8 +78,6 @@ pub fn ask_when_quiet_or_next_session(
     ask_at(commands, question, shown, When::QuietOrNextSession(kept))
 }
 
-/// Asks the user `question` `when` says. The question is queued by the
-/// time this returns.
 pub fn ask_at(
     commands: &mpsc::UnboundedSender<Command>,
     question: Question,
@@ -129,7 +94,6 @@ pub fn ask_at(
     async move { answer.await.ok() }
 }
 
-/// Names one Session to clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionId(u64);
 
@@ -139,11 +103,8 @@ impl fmt::Display for SessionId {
     }
 }
 
-/// How long a Session opened by the Wake word waits for the first Turn.
-const WAKE_TIMEOUT: Duration = Duration::from_secs(8);
+const FALSE_WAKE_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// How often lucyd tries to open the microphone again while it is lost
-/// outside a Session.
 const REOPEN_MIC_EVERY: Duration = Duration::from_secs(1);
 
 pub struct StartError;
@@ -156,25 +117,17 @@ pub struct Runner {
     relays: Relays,
     plugin_host: Arc<plugins::Host>,
     files: SessionFiles,
-    /// False once the speech source has gone away.
     speech_open: bool,
-    /// False once the wake-word source has gone away.
     wake_open: bool,
-    /// False once the source of whether the user is speaking has gone away.
     speaking_open: bool,
     sessions_started: u64,
-    /// What Authoring is doing.
     building: watch::Receiver<Building>,
     authoring: Arc<Authoring>,
-    /// What waits to be said until neither Lucy nor the user is speaking,
-    /// in order. Between Sessions, only what is kept for the next.
     parked: VecDeque<Parked>,
 }
 
-/// What waits to be said until neither Lucy nor the user is speaking.
 enum Parked {
     Ask(Ask),
-    /// Instructions for a Turn of Lucy's own, never `When::Now`.
     Turn(String, When),
 }
 
@@ -217,8 +170,6 @@ impl Runner {
     pub async fn run(mut self) {
         loop {
             tokio::select! {
-                // The Wake word before speech: the utterance it starts
-                // belongs to the Session it opens.
                 biased;
                 command = self.commands.recv() => match command.map(|c| self.outside_session(c)) {
                     Some(Some(Command::Start(reply))) => self.run_session(Some(reply)).await,
@@ -231,46 +182,33 @@ impl Runner {
                     Some(()) => self.run_session(None).await,
                     None => self.wake_open = false,
                 },
-                // Speech outside a Session is ignored.
-                speech = self.adapters.speech.recv(), if self.speech_open => {
-                    self.speech_open = speech.is_some();
+                ignored_speech = self.adapters.speech.recv(), if self.speech_open => {
+                    self.speech_open = ignored_speech.is_some();
                 }
-                // The Indicator's building mark.
-                Ok(()) = self.building.changed() => self.publish(State::Idle, None),
-                // So the Wake word is heard again once a microphone is back.
-                () = mic_lost_for(&mut self.adapters.hearing, REOPEN_MIC_EVERY) => {
-                    if let Some(hearing) = &mut self.adapters.hearing {
-                        hearing.reopen();
-                    }
-                }
+                Ok(()) = self.building.changed() => self.show_building_mark(),
+                () = mic_lost_for(&mut self.adapters.hearing, REOPEN_MIC_EVERY) => self.reopen_mic(),
             }
         }
     }
 
-    /// Handles `command` outside a Session: an end is refused, a question
-    /// or Turn kept for the next Session is kept, and any other question is
-    /// shown instead. Returns any other command.
     fn outside_session(&mut self, command: Command) -> Option<Command> {
         match command {
             Command::End(reply) | Command::EndAfterSpeech(reply) => {
                 let _ = reply.send(Err(EndError));
             }
             Command::Ask(ask) if ask.when.keeps() => self.keep(Parked::Ask(ask)),
-            // `reply` is dropped unanswered: no one can answer.
-            Command::Ask(ask) => self.notify(notifications::unasked(&ask.question.prompt)),
+            Command::Ask(unanswerable) => {
+                self.notify(notifications::unasked(&unanswerable.question.prompt));
+            }
             Command::TurnOrNextSession(text, kept) => {
                 self.keep(Parked::Turn(text, When::QuietOrNextSession(kept)));
             }
-            // Lucy's aside on a Turn of her own, which there isn't.
-            Command::Say(_) => {}
+            Command::Say(_aside_without_a_turn) => {}
             command => return Some(command),
         }
         None
     }
 
-    /// Handles `command` while a Voice preview or setup test runs outside a
-    /// Session: as `outside_session`, and another preview or test is
-    /// refused as busy. Returns a Session start.
     fn while_busy(
         &mut self,
         command: Command,
@@ -286,9 +224,6 @@ impl Runner {
         None
     }
 
-    /// Runs one Session until it ends, then stops the Plugins it started.
-    /// `started` hears that it opened; it is None when the Wake word opened
-    /// it.
     async fn run_session(
         &mut self,
         started: Option<oneshot::Sender<Result<SessionId, StartError>>>,
@@ -297,21 +232,31 @@ impl Runner {
         let id = SessionId(self.sessions_started);
         let plugin_tools = self.plugin_host.open_session().await;
         self.session_loop(id, started, plugin_tools.clone()).await;
-        // What wasn't said: what is kept for the next Session waits for
-        // it, and questions go unasked.
-        for mut parked in std::mem::take(&mut self.parked) {
-            if parked.when().keeps() {
-                self.keep(parked);
-            }
-        }
+        self.keep_unsaid_for_next_session();
         if let Some(hearing) = &mut self.adapters.hearing {
             hearing.lucy_speaking(false);
         }
         plugin_tools.stop().await;
     }
 
-    /// Status changes are published before replying, so a client sees them
-    /// as soon as its request returns.
+    fn keep_unsaid_for_next_session(&mut self) {
+        for mut parked in std::mem::take(&mut self.parked) {
+            if parked.when().keeps() {
+                self.keep(parked);
+            }
+        }
+    }
+
+    fn show_building_mark(&self) {
+        self.publish(State::Idle, None);
+    }
+
+    fn reopen_mic(&mut self) {
+        if let Some(hearing) = &mut self.adapters.hearing {
+            hearing.reopen();
+        }
+    }
+
     async fn session_loop(
         &mut self,
         id: SessionId,
@@ -320,10 +265,9 @@ impl Runner {
     ) {
         let woken = started.is_none();
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        // The token is revoked when the Session ends.
         let start::Started {
             mut model,
-            token: _token,
+            token: _revoked_when_the_session_ends,
             settings,
             first_run,
             opened,
@@ -332,8 +276,7 @@ impl Runner {
         let provider_name = opened.as_ref().map_or("the Thinking Provider", |opened| {
             opened.provider.kind.name()
         });
-        // The model has died and been opened again since the last Turn ended.
-        let mut respawned = false;
+        let mut respawned_since_turn_end = false;
         let stt = match settings.stt.kind {
             SttKind::Whisper => self.adapters.stt.clone(),
             SttKind::Superwhisper => self.adapters.superwhisper.clone(),
@@ -353,9 +296,8 @@ impl Runner {
         let mut session = Session::new(confirmation.yes_phrases);
         session.hear_cancel_phrases(settings.input.cancel_phrases);
         session.barge_in_by_speech(devices.speech_barge_in);
-        // An utterance may have started before the Session opened, as one
-        // with the Wake word in it does.
-        if *self.adapters.speaking.borrow_and_update() {
+        let speaking_before_open = *self.adapters.speaking.borrow_and_update();
+        if speaking_before_open {
             session.handle(Input::Speaking(true));
         }
         session.handle(Input::Building(*self.building.borrow_and_update()));
@@ -363,24 +305,16 @@ impl Runner {
         let clock = &self.adapters.clock;
         let mut silence = SilenceTimer::new(silence_timeout, clock.clone());
         if woken {
-            // A false wake clears quickly.
-            silence.first_timeout(WAKE_TIMEOUT.min(silence_timeout));
+            silence.first_timeout(FALSE_WAKE_TIMEOUT.min(silence_timeout));
         }
         silence.set_running(session.silence_timer_runs());
-        // Questions waiting to be asked, and where the answer to the one
-        // being asked goes.
         let mut questions: VecDeque<Ask> = VecDeque::new();
         let mut answer_to = None;
         let answer_timeout = Duration::from_secs_f64(confirmation.timeout_secs);
         let mut answer_timer = SilenceTimer::new(answer_timeout, clock.clone());
-        // The Input dialog, while Typing.
         let mut dialog: Option<OpenDialog> = None;
 
-        // Sent before anything the user says. The first run lasts until the
-        // introduction's Turn has ended, so a Provider that can't be used
-        // doesn't use it up.
         let mut introducing = first_run;
-        // Sentences of the current reply that TTS couldn't say.
         let mut unspoken = Vec::new();
         let mut opening = introducing.then(|| Input::Opening(persona::INTRODUCTION.to_owned()));
 
@@ -402,8 +336,7 @@ impl Runner {
                 .flatten()
             {
                 match next {
-                    // No one waits for the answer any more.
-                    Parked::Ask(ask) if ask.reply.is_closed() => continue,
+                    Parked::Ask(abandoned) if abandoned.reply.is_closed() => continue,
                     Parked::Ask(ask) => {
                         if let Some(shown) = ask.shown {
                             self.notify(shown);
@@ -433,14 +366,10 @@ impl Runner {
                 }
             } else {
                 tokio::select! {
-                // What the model and the speaker report first: a Turn that
-                // ended, or a sentence that finished playing, before a
-                // request or a reply came in is seen to have ended first.
                 biased;
                 Some(event) = events.recv() => Input::Thinking(event),
                 Some(event) = speaker_events.recv() => match event {
                     SpeakerEvent::Played => Input::Played,
-                    // Lucy can't say it, so she shows it.
                     SpeakerEvent::Failed { sentence, .. } => {
                         unspoken.push(sentence);
                         Input::Played
@@ -460,7 +389,6 @@ impl Runner {
                         continue;
                     }
                     Some(Command::End(reply)) => {
-                        // Lucy can't say she'll keep working on a build.
                         self.authoring.show_still_building();
                         self.publish(State::Idle, None);
                         let _ = reply.send(Ok(()));
@@ -504,8 +432,6 @@ impl Runner {
                         continue;
                     }
                 },
-                // After `speech`: an utterance is cut before the user stops
-                // speaking.
                 changed = self.adapters.speaking.changed(), if self.speaking_open => match changed {
                     Ok(()) => Input::Speaking(*self.adapters.speaking.borrow_and_update()),
                     Err(_) => {
@@ -566,15 +492,13 @@ impl Runner {
             };
             let input = match input {
                 Input::Thinking(ThinkingEvent::Died) => match opened.as_ref() {
-                    Some(opened) if !respawned => {
+                    Some(opened) if !respawned_since_turn_end => {
                         eprintln!("lucyd: the model process died; opening it again");
-                        respawned = true;
+                        respawned_since_turn_end = true;
                         model = self.open_model(opened, events_tx.clone());
                         if let Some(turn) = session.pending_turn() {
                             model.send_turn(turn.to_owned());
                         }
-                        // Questions go unanswered rather than linger: the
-                        // resent Turn asks again if it needs to.
                         questions.clear();
                         if answer_to.take().is_none() {
                             continue;
@@ -597,7 +521,7 @@ impl Runner {
                 input => input,
             };
             if matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
-                respawned = false;
+                respawned_since_turn_end = false;
             }
             if introducing && matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
                 introducing = false;
@@ -607,9 +531,8 @@ impl Runner {
                 }
             }
             let outputs = session.handle(input);
-            // Once the reply is over, one notification shows what of it
-            // couldn't be said.
-            if !unspoken.is_empty() && session.state() == State::Listening {
+            let reply_over = session.state() == State::Listening;
+            if reply_over && !unspoken.is_empty() {
                 self.notify(notifications::unspoken(&std::mem::take(&mut unspoken)));
             }
             for output in outputs {
@@ -623,11 +546,9 @@ impl Runner {
                         });
                     }
                     Output::SendTurn(text) => {
-                        // Confirmed calls that finished after a Barge-in
-                        // cut the model off.
-                        let mut finished = plugin_tools.take_finished();
-                        finished.push(text);
-                        model.send_turn(finished.join("\n"));
+                        let mut finished_after_barge_in = plugin_tools.take_finished();
+                        finished_after_barge_in.push(text);
+                        model.send_turn(finished_after_barge_in.join("\n"));
                     }
                     Output::Speak(sentence) => speaker.speak(sentence),
                     Output::ResetSilenceTimer => silence.reset(),
@@ -657,8 +578,6 @@ impl Runner {
             }
             silence.set_running(session.silence_timer_runs());
             answer_timer.set_running(session.answer_timer_runs());
-            // Before it is published, so the gate is open by the time anyone
-            // sees Lucy speaking.
             if let Some(hearing) = &mut self.adapters.hearing {
                 hearing.lucy_speaking(session.state() == State::Speaking);
             }
@@ -666,8 +585,6 @@ impl Runner {
         }
     }
 
-    /// Opens the Input dialog: on the `input` holder, or else as `lucy
-    /// input` in a terminal. If no terminal opens, what Lucy says instead.
     fn open_dialog(&self, typed: Dialog) -> Result<OpenDialog, String> {
         let (opened, held) = self.buses.dialogs.open(typed);
         if held {
@@ -686,14 +603,12 @@ impl Runner {
         }
     }
 
-    /// Ends the Session because a device went away.
     fn end_on_lost_device(&self, direction: Direction, id: SessionId) {
         self.notify(notifications::device_lost(direction));
         self.publish(State::Error, Some(id));
         self.publish(State::Idle, None);
     }
 
-    /// Keeps `parked` for the next Session, showing once that it waits.
     fn keep(&mut self, mut parked: Parked) {
         if matches!(&parked, Parked::Ask(ask) if ask.reply.is_closed()) {
             return;
@@ -704,7 +619,6 @@ impl Runner {
         self.parked.push_back(parked);
     }
 
-    /// Shows a notification that offers no action.
     fn notify(&self, notification: Notification) {
         let (actions, _) = mpsc::unbounded_channel();
         self.adapters.notifier.notify(notification, actions);
@@ -719,11 +633,9 @@ impl Runner {
     }
 }
 
-/// Said when the Input dialog can't be shown.
 const NO_TERMINAL: &str =
     "I couldn't put a box on screen: no terminal opened, and nothing else can show one.";
 
-/// What the Input dialog's holder sends back, while it is open.
 async fn typed(dialog: &mut Option<OpenDialog>) -> Typed {
     match dialog {
         Some(dialog) => dialog.typed().await,
@@ -731,7 +643,6 @@ async fn typed(dialog: &mut Option<OpenDialog>) -> Typed {
     }
 }
 
-/// What the microphone reports next, if Lucy hears through one.
 async fn heard(hearing: &mut Option<Hearing>) -> Heard {
     match hearing {
         Some(hearing) => hearing.next().await,
@@ -739,7 +650,6 @@ async fn heard(hearing: &mut Option<Hearing>) -> Heard {
     }
 }
 
-/// Resolves once the microphone has gone away, if Lucy hears through one.
 async fn mic_lost(hearing: &mut Option<Hearing>) {
     match hearing {
         Some(hearing) => hearing.lost().await,
@@ -747,20 +657,16 @@ async fn mic_lost(hearing: &mut Option<Hearing>) {
     }
 }
 
-/// Resolves once the microphone has been gone for `wait`.
 async fn mic_lost_for(hearing: &mut Option<Hearing>, wait: Duration) {
     mic_lost(hearing).await;
     tokio::time::sleep(wait).await;
 }
 
-/// A countdown that can be paused and resumed.
 struct SilenceTimer {
     timeout: Duration,
     remaining: Duration,
-    /// When it last resumed, while running.
     resumed: Option<Instant>,
     clock: Arc<dyn Clock>,
-    /// Set to when it runs out, while running.
     timer: Box<dyn Timer>,
 }
 
@@ -793,14 +699,11 @@ impl SilenceTimer {
         self.timer.set(self.deadline());
     }
 
-    /// Counts down from `timeout` until the next reset, instead of the
-    /// usual timeout.
     fn first_timeout(&mut self, timeout: Duration) {
         self.remaining = timeout;
         self.timer.set(self.deadline());
     }
 
-    /// Starts over, counting down from `timeout` from now on.
     fn reset_to(&mut self, timeout: Duration) {
         self.timeout = timeout;
         self.reset();
@@ -814,12 +717,10 @@ impl SilenceTimer {
         self.timer.set(self.deadline());
     }
 
-    /// When it runs out, while running.
     fn deadline(&self) -> Option<Instant> {
         self.resumed.map(|resumed| resumed + self.remaining)
     }
 
-    /// Resolves once it runs out, while running.
     fn fired(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         self.timer.fired()
     }

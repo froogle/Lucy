@@ -1,10 +1,3 @@
-//! Landlock confinement for a Plugin: it may read and run the system, read
-//! its own folder and its declared `read` paths, and write only its declared
-//! `write` paths and its private state dir.
-//!
-//! An Authoring Delegate, and the build and tests it submits, are confined
-//! the same way to their workspace: no user data.
-
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -18,14 +11,10 @@ use crate::adapters::Workspace;
 
 const ABI_VERSION: ABI = ABI::V5;
 
-/// Read-only system paths every Plugin needs to run at all.
 const SYSTEM: &[&str] = &["/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"];
 
-/// What a Delegate's CLI and toolchain read besides the system: process
-/// info. `/dev/null` and `/dev/urandom` are always allowed.
 const DELEGATE_SYSTEM: &[&str] = &["/proc"];
 
-/// Makes `command` apply the Plugin's Landlock rules just before it execs.
 pub fn confine(
     command: &mut tokio::process::Command,
     folder: &Path,
@@ -43,9 +32,6 @@ pub fn confine(
     restrict(command.as_std_mut(), readable, writable)
 }
 
-/// Makes `command` apply a Delegate's Landlock rules just before it execs:
-/// the system and `readable` read-only, `writable` read-write, and nothing
-/// else. The network stays open.
 pub fn confine_delegate(
     command: &mut std::process::Command,
     readable: &[PathBuf],
@@ -58,10 +44,6 @@ pub fn confine_delegate(
     restrict(command, readable, writable.iter().cloned())
 }
 
-/// Makes `command`, a Delegate's CLI `program`, work in `workspace` and
-/// apply a Delegate's Landlock rules: it may write the workspace and
-/// `cli_home`, where the CLI keeps its login and settings, and read and run
-/// `program`.
 pub fn confine_cli(
     command: &mut std::process::Command,
     workspace: &Workspace,
@@ -81,13 +63,10 @@ pub fn confine_cli(
     confine_delegate(command, &readable, &writable)
 }
 
-/// The user's home directory.
 pub fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// Makes `command` apply Landlock rules allowing the system and `readable`
-/// read-only and `writable` read-write, just before it execs.
 fn restrict(
     command: &mut std::process::Command,
     readable: impl IntoIterator<Item = PathBuf>,
@@ -135,7 +114,6 @@ fn ruleset(
     )
 }
 
-/// Allows `access` beneath each path that exists.
 fn add(
     mut ruleset: RulesetCreated,
     paths: impl IntoIterator<Item = PathBuf>,
@@ -155,7 +133,6 @@ fn add(
     Ok(ruleset)
 }
 
-/// Expands a leading `~/` to the home directory.
 fn expand(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
         Some(rest) => home().join(rest),
@@ -163,9 +140,6 @@ fn expand(path: &str) -> PathBuf {
     }
 }
 
-/// The directory holding the executable `program` (searched for on `PATH`
-/// if it is a bare name), with symlinks resolved, so a sandbox can let it
-/// run.
 pub fn program_dir(program: &Path) -> Option<PathBuf> {
     let found = if program.components().count() > 1 {
         Some(program.to_owned())

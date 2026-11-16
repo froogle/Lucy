@@ -1,8 +1,3 @@
-//! The Input dialog: the box Lucy puts on screen for the user to type in.
-//! The client holding the `input` role draws it; with none, lucyd opens
-//! `lucy input` in a terminal. The question goes to the holder, and the
-//! answer comes back only from it, never out on the socket.
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -16,14 +11,12 @@ use crate::runner::{self, Command};
 use crate::session::{Answer, Expects, Question};
 use crate::sync::Locked;
 
-/// What the Input dialog asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dialog {
     pub message: String,
     pub fields: Vec<Field>,
 }
 
-/// What the holder sent back.
 #[derive(Debug)]
 pub enum Typed {
     Values(BTreeMap<String, String>),
@@ -39,27 +32,20 @@ pub enum TypedAnswer {
     TimedOut,
 }
 
-/// Why an answer from the holder was refused.
 #[derive(Debug)]
 pub enum Refusal {
-    /// No dialog with that id is open.
     NoDialog,
-    /// The values don't name exactly the dialog's fields.
     Fields,
 }
 
-/// The `input` role and the one Input dialog open at a time.
 #[derive(Clone)]
 pub struct Dialogs {
     inner: Arc<Mutex<Inner>>,
-    /// The `lucy input` command, run in a terminal while no client holds
-    /// the role.
     page: Vec<String>,
 }
 
 #[derive(Default)]
 struct Inner {
-    /// The holder's queue of events, while one holds the role.
     holder: Option<mpsc::UnboundedSender<Event>>,
     open: Option<Open>,
     opened: u64,
@@ -77,7 +63,6 @@ impl Inner {
         }
     }
 
-    /// Takes the open dialog `id` away, if it is still open.
     fn take(&mut self, id: &str) -> Option<Open> {
         match &self.open {
             Some(open) if open.request.id == id => self.open.take(),
@@ -94,13 +79,10 @@ impl Dialogs {
         }
     }
 
-    /// The `lucy input` command.
     pub fn page(&self) -> &[String] {
         &self.page
     }
 
-    /// Claims the `input` role, or `None` if another client holds it. The
-    /// claim is sent the open dialog, if there is one.
     pub fn claim(&self) -> Option<InputClaim> {
         let mut inner = self.inner.locked();
         if inner.holder.is_some() {
@@ -117,8 +99,6 @@ impl Dialogs {
         })
     }
 
-    /// Opens `dialog`, and whether a client holds the role to draw it. It
-    /// stays open until answered or the returned `OpenDialog` is dropped.
     pub fn open(&self, dialog: Dialog) -> (OpenDialog, bool) {
         let mut inner = self.inner.locked();
         inner.opened += 1;
@@ -143,22 +123,19 @@ impl Dialogs {
     fn release(&self) {
         let mut inner = self.inner.locked();
         inner.holder = None;
-        // The user closed the box the holder drew.
-        if let Some(open) = inner.open.take() {
+        let closed_by_user = inner.open.take();
+        if let Some(open) = closed_by_user {
             let _ = open.reply.send(Typed::Cancelled);
         }
     }
 }
 
-/// Holds the `input` role until dropped.
 pub struct InputClaim {
     dialogs: Dialogs,
-    /// `input.open` and `input.close`, for the holder.
     pub events: mpsc::UnboundedReceiver<Event>,
 }
 
 impl InputClaim {
-    /// The user typed `values` into the dialog `id`.
     pub fn answer(&self, id: &str, values: BTreeMap<String, String>) -> Result<(), Refusal> {
         let mut inner = self.dialogs.inner.locked();
         let open = inner.open.as_ref().filter(|open| open.request.id == id);
@@ -174,7 +151,6 @@ impl InputClaim {
         Ok(())
     }
 
-    /// The user closed the dialog `id` unanswered.
     pub fn cancel(&self, id: &str) -> Result<(), Refusal> {
         let mut inner = self.dialogs.inner.locked();
         let open = inner.take(id).ok_or(Refusal::NoDialog)?;
@@ -189,7 +165,6 @@ impl Drop for InputClaim {
     }
 }
 
-/// An open Input dialog. Dropping it closes it, if it is still open.
 pub struct OpenDialog {
     id: String,
     dialogs: Dialogs,
@@ -197,7 +172,6 @@ pub struct OpenDialog {
 }
 
 impl OpenDialog {
-    /// What the holder sent back.
     pub async fn typed(&mut self) -> Typed {
         (&mut self.typed).await.unwrap_or(Typed::Cancelled)
     }
@@ -236,7 +210,6 @@ pub fn ask_typed_tool() -> Tool {
     )
 }
 
-/// Runs `ask_typed`: the model's own question, in the Input dialog.
 pub async fn ask_typed(
     commands: &mpsc::UnboundedSender<Command>,
     arguments: &JsonObject,
@@ -278,8 +251,6 @@ pub async fn ask_typed(
     }
 }
 
-/// Asks `question` in the Input dialog, in the open Session, with one field
-/// of `kind`.
 pub async fn ask(
     commands: &mpsc::UnboundedSender<Command>,
     question: &str,
@@ -308,7 +279,6 @@ pub async fn ask(
     }
 }
 
-/// The one field's name in `ask_typed`'s dialog.
 const ANSWER: &str = "answer";
 
 fn what(kind: FieldKind) -> &'static str {

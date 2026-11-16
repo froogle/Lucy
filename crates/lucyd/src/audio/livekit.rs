@@ -1,10 +1,3 @@
-//! The wake-word engine: LiveKit WakeWord v2 through `livekit-wakeword`, on
-//! the same tract runtime as the VAD. One fixed engine with a swappable
-//! model file; it is not a Provider.
-//!
-//! The bundled model is `hey_lucy.onnx`, trained with LiveKit's recipe; its
-//! README in `models/wake/` says how to reproduce it.
-
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -15,9 +8,14 @@ use super::{Error, WakeWord, SAMPLE_RATE};
 use lucy_config::BUNDLED_WAKE_MODEL as BUNDLED_NAME;
 const BUNDLED: &[u8] = include_bytes!("../../models/wake/hey_lucy.onnx");
 
-/// Writes the bundled model into `dir`, unless it is already there as it
-/// is, and returns its path: the engine loads models from files only. It is
-/// written whole or not at all.
+/// Writes the bundled model into `dir`, unless it is already there, and returns its path.
+///
+/// The engine loads models from files only. The model is written whole or
+/// not at all.
+///
+/// # Errors
+///
+/// When the model can't be written.
 pub fn install_bundled_wake_model(dir: &Path) -> io::Result<PathBuf> {
     let path = dir.join(BUNDLED_NAME);
     let installed = std::fs::read(&path).is_ok_and(|model| model == BUNDLED);
@@ -33,15 +31,17 @@ pub fn install_bundled_wake_model(dir: &Path) -> io::Result<PathBuf> {
 pub struct LiveKit {
     model: WakeWordModel,
     threshold: f32,
-    /// The best score the last frame got.
     score: f32,
-    /// The frame as the engine takes it.
     pcm: Vec<i16>,
 }
 
 impl LiveKit {
     /// Loads the model at `path`, which hears its phrase once it scores at
     /// least `threshold`.
+    ///
+    /// # Errors
+    ///
+    /// When the model can't be loaded.
     pub fn load(path: &Path, threshold: f32) -> Result<LiveKit, Error> {
         let model = WakeWordModel::new(&[path], SAMPLE_RATE)
             .map_err(|e| Error(format!("can't load the wake word {}: {e}", path.display())))?;
@@ -51,6 +51,14 @@ impl LiveKit {
             score: 0.0,
             pcm: Vec::new(),
         })
+    }
+}
+
+impl LiveKit {
+    fn forget_this_utterance(&mut self) {
+        if let Err(e) = self.model.reset() {
+            eprintln!("lucyd: can't reset the wake word: {e}");
+        }
     }
 }
 
@@ -67,11 +75,8 @@ impl WakeWord for LiveKit {
             }
         };
         let heard = self.score >= self.threshold;
-        // Start fresh, so one utterance of the phrase is heard once.
         if heard {
-            if let Err(e) = self.model.reset() {
-                eprintln!("lucyd: can't reset the wake word: {e}");
-            }
+            self.forget_this_utterance();
         }
         heard
     }

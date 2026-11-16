@@ -1,5 +1,5 @@
-//! Lucy hears the user: microphone samples go through the DSP thread and the
-//! VAD's endpointing, and each utterance reaches STT and then Thinking.
+//! Lucy hears the user: each utterance reaches STT and then Thinking.
+//! Microphone samples go through the DSP thread and the VAD's endpointing.
 //!
 //! The fake microphone feeds samples whose value the fake VAD reads as the
 //! speech probability, so a test scripts speech and silence as levels.
@@ -11,10 +11,8 @@ use std::time::Duration;
 
 use harness::{Harness, SILENCE, SPEECH};
 
-/// Between the default end and start thresholds.
 const WAVERING: f32 = 0.4;
 
-/// Endpointing that cuts shorter utterances than the defaults.
 const SHORT_ENDPOINTING: &str = "
 [endpointing]
 start_threshold = 0.8
@@ -68,9 +66,8 @@ fn a_sound_shorter_than_100_ms_is_not_an_utterance() {
     lucyd.mic.feed(SILENCE, ms(1024));
     lucyd.thinking.next_turn();
 
-    // Only the second sound, with the first inside its pre-roll's reach
-    // but not its own utterance.
-    assert_segments(&lucyd, &[ms(500 + 512 + 700)]);
+    let only_the_second_sound = [ms(500 + 512 + 700)];
+    assert_segments(&lucyd, &only_the_second_sound);
 }
 
 #[test]
@@ -132,8 +129,8 @@ fn endpointing_comes_from_config() {
 
     lucyd.mic.feed(SILENCE, ms(1024));
     lucyd.mic.feed(SPEECH, ms(512));
-    // Below the configured end threshold, so silence.
-    lucyd.mic.feed(WAVERING, ms(1024));
+    let below_the_configured_end = WAVERING;
+    lucyd.mic.feed(below_the_configured_end, ms(1024));
     lucyd.thinking.next_turn();
 
     assert_segments(&lucyd, &[ms(200 + 512 + 300)]);
@@ -175,8 +172,6 @@ fn the_microphone_and_endpointing_are_reread_at_each_session_start() {
     assert_segments(&lucyd, &[ms(200 + 512 + 300)]);
 }
 
-/// Each utterance STT was given lasted as long as `expected`, give or take
-/// one 32 ms VAD chunk.
 fn assert_segments(lucyd: &Harness, expected: &[Duration]) {
     let segments = lucyd.stt.segments();
     assert_eq!(segments.len(), expected.len(), "{segments:?}");

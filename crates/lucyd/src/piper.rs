@@ -21,21 +21,16 @@ use crate::adapters::{Speaker, SpeakerEvent, Tts};
 use crate::playback::{self, Pcm, Reference};
 use crate::sync::{Locked, POISONED};
 
-/// The default voice: its whole training chain is CC BY 4.0.
 pub const DEFAULT_VOICE: &str = "en_GB-cori-medium";
 
-/// How long a sentence waits for the server to come up before it fails.
 const START_WAIT: Duration = Duration::from_secs(30);
-/// How long the server gets to load the voice and start listening.
 const READY_WAIT: Duration = Duration::from_secs(60);
-/// The pause before restarting a server that exited.
 const RESTART_DELAY: Duration = Duration::from_secs(1);
-/// Seconds of 16 kHz reference audio kept for the echo canceller.
 const REFERENCE_SECS: usize = 2;
+const LOOPBACK_ONLY: &str = "127.0.0.1";
 
 pub struct Piper {
     shared: Arc<Shared>,
-    /// The voice the server preloads.
     voice: String,
     reference: Reference,
     reference_out: Mutex<Option<rtrb::Consumer<f32>>>,
@@ -45,20 +40,14 @@ struct Shared {
     server: Mutex<Server>,
     changed: Condvar,
     stopping: AtomicBool,
-    /// Where voices are kept; the server finds other voices here.
     voices_dir: PathBuf,
-    /// The interpreter that runs Piper, once found.
     python: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Clone)]
 enum Server {
     Starting,
-    Ready {
-        port: u16,
-        sample_rate: u32,
-    },
-    /// Piper can't run at all, for this reason.
+    Ready { port: u16, sample_rate: u32 },
     Unavailable(String),
 }
 
@@ -87,7 +76,6 @@ impl Piper {
         }
     }
 
-    /// The voice's native sample rate, once the voice is ready.
     pub fn sample_rate(&self) -> Option<u32> {
         match *self.shared.server.locked() {
             Server::Ready { sample_rate, .. } => Some(sample_rate),
@@ -101,7 +89,6 @@ impl Piper {
         self.reference_out.locked().take()
     }
 
-    /// Synthesises one sentence.
     pub fn synthesise(&self, text: &str) -> Result<Pcm, String> {
         self.shared.synthesise(text, None)
     }
@@ -121,10 +108,9 @@ impl Tts for Piper {
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker> {
         let shared = self.shared.clone();
-        // The preloaded voice needs no fetching or switching.
-        let voice = (voice != self.voice).then(|| voice.to_owned());
+        let switch_to = (voice != self.voice).then(|| voice.to_owned());
         playback::speaker(
-            Box::new(move |text| shared.synthesise(text, voice.as_deref())),
+            Box::new(move |text| shared.synthesise(text, switch_to.as_deref())),
             speaker,
             events,
             self.reference.clone(),
@@ -138,8 +124,6 @@ impl Shared {
         self.changed.notify_all();
     }
 
-    /// Synthesises `text` in `voice`, fetched first if need be, or in the
-    /// running voice.
     fn synthesise(&self, text: &str, voice: Option<&str>) -> Result<Pcm, String> {
         let server = self.server.locked();
         let (server, _) = self
@@ -170,7 +154,6 @@ impl Shared {
     }
 }
 
-/// Runs until lucyd stops: prepares Piper, then keeps its server running.
 fn supervise(shared: &Shared, python: Option<PathBuf>, voice: &str) {
     let voices_dir = &shared.voices_dir;
     let prepared = python
@@ -202,8 +185,6 @@ fn supervise(shared: &Shared, python: Option<PathBuf>, voice: &str) {
     }
 }
 
-/// Starts one server and watches it. Ok once lucyd is stopping; Err when the
-/// server failed or exited.
 fn run_server(
     shared: &Shared,
     python: &Path,
@@ -256,13 +237,10 @@ fn watch(shared: &Shared, child: &mut Child, port: u16, sample_rate: u32) -> Res
     }
 }
 
-/// `python -m piper.http_server` on `port`. Piper defaults to 0.0.0.0, so the
-/// host is always given. A `PYTHONPATH` meant for another Python can break
-/// Piper's imports, so it is cleared.
 fn server_command(python: &Path, model: &Path, port: u16) -> Command {
     let mut command = Command::new(python);
     command
-        .args(["-m", "piper.http_server", "--host", "127.0.0.1", "--port"])
+        .args(["-m", "piper.http_server", "--host", LOOPBACK_ONLY, "--port"])
         .arg(port.to_string())
         .arg("-m")
         .arg(model)
@@ -279,9 +257,6 @@ fn free_port() -> std::io::Result<u16> {
         .port())
 }
 
-/// Interpreters that might have Piper: the one behind a `piper` script on
-/// `PATH` (as `uv tool` and `pipx` install it), then `python3`. A `piper`
-/// binary alone proves nothing: on Arch, `extra/piper` is a mouse tool.
 fn python_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -295,7 +270,6 @@ fn python_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// The interpreter named on a script's `#!` line.
 fn shebang(script: &Path) -> Option<PathBuf> {
     let mut head = [0; 256];
     let n = std::fs::File::open(script).ok()?.read(&mut head).ok()?;
@@ -304,7 +278,6 @@ fn shebang(script: &Path) -> Option<PathBuf> {
     Some(interpreter.into())
 }
 
-/// The first interpreter that can import the `piper` module.
 fn find_python(candidates: &[PathBuf]) -> Option<PathBuf> {
     candidates
         .iter()
@@ -323,9 +296,6 @@ fn imports_piper(python: &Path) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// Downloads `voice` and its model card into `dir` unless they are already
-/// there, and returns the model's path. Piper's own downloader fetches the
-/// model; the model card, which its licence asks to be kept, comes separately.
 fn ensure_voice(python: &Path, dir: &Path, voice: &str) -> Result<PathBuf, String> {
     let plain = voice
         .chars()
@@ -377,8 +347,6 @@ fn run_python(python: &Path, args: &[&str], more: &[&std::ffi::OsStr]) -> Result
     Err(format!("downloading the voice failed: {last}"))
 }
 
-/// Where `piper-voices` keeps a voice's model card, from a name like
-/// `en_GB-cori-medium`.
 fn model_card_url(voice: &str) -> Option<String> {
     let mut parts = voice.splitn(3, '-');
     let (lang, name, quality) = (parts.next()?, parts.next()?, parts.next()?);
@@ -389,7 +357,6 @@ fn model_card_url(voice: &str) -> Option<String> {
     ))
 }
 
-/// The voice's native rate, from the config beside the model.
 fn voice_sample_rate(model: &Path) -> Result<u32, String> {
     let config = model.with_extension("onnx.json");
     let text = std::fs::read_to_string(&config)
@@ -402,7 +369,6 @@ fn sample_rate_of(config: &str) -> Option<u32> {
     config["audio"]["sample_rate"].as_u64()?.try_into().ok()
 }
 
-/// Piper's reply: a 16-bit mono WAV.
 fn decode_wav(wav: &[u8]) -> Result<Pcm, String> {
     let reader = hound::WavReader::new(wav).map_err(|e| format!("Piper sent a bad WAV: {e}"))?;
     let sample_rate = reader.spec().sample_rate;
@@ -447,9 +413,6 @@ mod tests {
         assert_eq!(pythonpath, Some(("PYTHONPATH".as_ref(), None)));
     }
 
-    /// A shell script running `body`, written by a child process so that
-    /// no write fd here can leak into a child another test forks and make
-    /// running it fail with "Text file busy".
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         let written = Command::new("/bin/sh")
@@ -519,7 +482,6 @@ mod tests {
         assert_eq!(sample_rate_of("{}"), None);
     }
 
-    /// The prototype's Piper venv, for the live check.
     fn live_python() -> PathBuf {
         std::env::var_os("LUCY_PIPER_PYTHON")
             .map(PathBuf::from)
@@ -535,8 +497,6 @@ mod tests {
         }
     }
 
-    /// Downloads the default voice, so it needs the network and Piper:
-    /// `LUCY_PIPER_PYTHON=… cargo test -p lucyd --lib piper -- --ignored`.
     #[test]
     #[ignore = "needs piper-tts and the network"]
     fn live_piper_downloads_the_voice_speaks_and_survives_a_crash() {
@@ -555,7 +515,6 @@ mod tests {
             assert!(voices.path().join(file).is_file(), "{file} missing");
         }
 
-        // Only reachable on loopback.
         let Server::Ready { port, .. } = piper.shared.server.locked().clone() else {
             panic!("not ready");
         };
@@ -567,18 +526,20 @@ mod tests {
             .ok()
             .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
         {
-            assert!(TcpStream::connect((ip, port)).is_err(), "reachable on {ip}");
+            assert!(
+                TcpStream::connect((ip, port)).is_err(),
+                "only loopback should reach it, but {ip} does"
+            );
         }
 
-        // Kill the server: the supervisor starts another one.
-        let killed = Command::new("pkill")
+        let server_killed = Command::new("pkill")
             .args([
                 "-f",
                 &format!("piper.http_server --host 127.0.0.1 --port {port}"),
             ])
             .status()
             .unwrap();
-        assert!(killed.success());
+        assert!(server_killed.success());
         wait_for("a new server", || {
             matches!(*piper.shared.server.locked(),
                 Server::Ready { port: new, .. } if new != port)
@@ -586,7 +547,6 @@ mod tests {
         assert!(piper.synthesise("Still here.").is_ok());
     }
 
-    /// Plays two sentences on the default output device; listen for them.
     #[test]
     #[ignore = "needs piper-tts, the network and speakers"]
     fn live_piper_speaks_through_the_speakers_with_levels() {
@@ -613,8 +573,10 @@ mod tests {
                 SpeakerEvent::DeviceLost => panic!("the speaker went away"),
             }
         }
-        // Roughly 30 levels a second over a couple of seconds of speech.
-        assert!(levels > 30, "{levels} levels");
+        assert!(
+            levels > 30,
+            "{levels} levels, not roughly 30 a second over a couple of seconds of speech"
+        );
         assert!(
             reference.slots() > 16_000,
             "{} reference samples",

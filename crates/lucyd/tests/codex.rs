@@ -1,5 +1,5 @@
-//! The `codex` Thinking Provider, driven through the `Thinking` seam against
-//! a fake `codex app-server` that streams turns shaped like the app-server
+//! The `codex` Thinking Provider, driven through the `Thinking` seam.
+//! A fake `codex app-server` streams turns shaped like the app-server
 //! protocol (`fixtures/codex/`).
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
@@ -37,7 +37,6 @@ fn relay() -> Relay {
     }
 }
 
-/// Each line Lucy sent the fake, across all its processes.
 fn sent(work: &Path) -> Vec<Value> {
     std::fs::read_to_string(work.join("stdin"))
         .unwrap_or_default()
@@ -46,7 +45,6 @@ fn sent(work: &Path) -> Vec<Value> {
         .collect()
 }
 
-/// The params of each request Lucy sent with `method`.
 fn requests(work: &Path, method: &str) -> Vec<Value> {
     sent(work)
         .into_iter()
@@ -55,7 +53,6 @@ fn requests(work: &Path, method: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Waits until Lucy has sent `count` requests with `method`.
 fn wait_for_requests(work: &Path, method: &str, count: usize) -> Vec<Value> {
     wait_until(&format!("{count} {method} never sent"), || {
         let found = requests(work, method);
@@ -63,7 +60,6 @@ fn wait_for_requests(work: &Path, method: &str, count: usize) -> Vec<Value> {
     })
 }
 
-/// One Turn's events up to `TurnEnd`: text with `|` at each `SentenceEnd`.
 fn read_turn(events: &mut mpsc::UnboundedReceiver<ThinkingEvent>, wait: Duration) -> String {
     let mut text = String::new();
     let deadline = Instant::now() + wait;
@@ -91,7 +87,6 @@ fn args(work: &Path) -> Vec<String> {
     argv.split_terminator('\0').map(str::to_owned).collect()
 }
 
-/// The `-c` settings codex was started with.
 fn settings(work: &Path) -> Vec<String> {
     let args = args(work);
     args.windows(2)
@@ -133,7 +128,6 @@ fn one_app_server_serves_every_turn_of_a_session() {
     let pids = std::fs::read_to_string(work.path().join("pids")).unwrap();
     assert_eq!(pids.lines().count(), 1, "one process for the Session");
 
-    // Ending the Session ends the process, and isn't a death.
     let pid = pids.trim().to_owned();
     drop(model);
     wait_until("codex outlived its Session", || {
@@ -222,8 +216,6 @@ fn approvals_are_declined_in_process() {
     );
 }
 
-/// Writes turn 1 into `work` as a reply still being generated: it stops
-/// after "kiwi." and never completes by itself.
 fn generating(work: &Path) {
     let recorded = std::fs::read_to_string(fake_codex().with_file_name("turn1.jsonl")).unwrap();
     let partial: String = recorded
@@ -254,8 +246,6 @@ fn interrupting_stops_the_turn_and_silences_it() {
         interrupts,
         [json!({"threadId": "thread-1", "turnId": "turn-1"})]
     );
-    // The next Turn starts once the interrupted one has completed. Nothing
-    // ends a sentence or the Turn for the interrupted one.
     model.send_turn("What word?".into());
     let heard = first + &read_turn(&mut events, WAIT);
     let interrupted = heard
@@ -291,10 +281,8 @@ fn codex_dying_mid_turn_reports_that_it_died() {
     assert_eq!(text, "Got it, I'll remember the word kiwi.");
 }
 
-/// Opt-in: `cargo test -p lucyd --test codex -- --ignored`. Uses the real
-/// `codex` on PATH and the user's ChatGPT subscription.
 #[test]
-#[ignore]
+#[ignore = "uses the real codex on PATH and spends the user's ChatGPT subscription"]
 fn live_codex_keeps_context_across_turns() {
     let work = tempfile::tempdir().unwrap();
     let codex = Codex::new(PathBuf::from("codex"), work.path().to_owned());
@@ -304,7 +292,6 @@ fn live_codex_keeps_context_across_turns() {
     )));
     codex.check(&provider).unwrap();
     let (tx, mut events) = mpsc::unbounded_channel();
-    // A relay that exits at once: no tools, which this test doesn't need.
     let relay = Relay {
         program: PathBuf::from("true"),
         args: vec![],

@@ -1,7 +1,3 @@
-//! The Barge-in gate: whether the user, not Lucy's echo, is talking over
-//! her. It judges each VAD chunk while she speaks and for a short tail
-//! after, with a stricter bar while the echo canceller hasn't converged.
-
 use lucy_config::BargeIn;
 
 use super::SAMPLE_RATE;
@@ -20,28 +16,20 @@ pub enum BargeInEvent {
 #[derive(Default)]
 pub(super) struct Gate {
     config: BargeIn,
-    /// Speech may barge in this Session.
     on: bool,
     lucy_speaking: bool,
-    /// Samples since Lucy stopped speaking, until the tail is over.
     since_stopped: Option<usize>,
-    /// Samples heard while Lucy spoke this Session.
     warmed: usize,
-    /// Samples of the current run of speech above the threshold.
-    run: usize,
+    speech_run: usize,
     ducked: bool,
-    /// The user has cut in since Lucy last started speaking.
     cut: bool,
 }
 
-/// `ms` as 16 kHz samples.
-fn samples(ms: u64) -> usize {
+fn ms_to_samples(ms: u64) -> usize {
     (ms * u64::from(SAMPLE_RATE) / 1000) as usize
 }
 
 impl Gate {
-    /// Starts a Session's gate with `config`, letting speech barge in if
-    /// `on`.
     pub fn configure(&mut self, config: &BargeIn, on: bool) {
         *self = Gate {
             config: config.clone(),
@@ -61,32 +49,23 @@ impl Gate {
         self.lucy_speaking = speaking;
     }
 
-    /// Lucy is speaking, or stopped too recently for her echo to have died
-    /// away.
     pub fn window_open(&self) -> bool {
         self.lucy_speaking
             || self
                 .since_stopped
-                .is_some_and(|since| since < samples(self.config.tail_ms))
+                .is_some_and(|since| since < ms_to_samples(self.config.tail_ms))
     }
 
-    /// The user has cut in, by speech or the Wake word, since Lucy last
-    /// started speaking.
     pub fn is_cut(&self) -> bool {
         self.cut
     }
 
-    /// The Wake word cut Lucy off.
-    pub fn wake_word(&mut self) {
+    pub fn cut_by_wake_word(&mut self) {
         self.cut = true;
         self.ducked = false;
-        self.run = 0;
+        self.speech_run = 0;
     }
 
-    /// Judges the next VAD chunk of `len` samples, `probability` speech.
-    /// `erle_db` is how much echo the echo canceller removes, and
-    /// `echo_heard` whether Lucy's voice reaches the microphone at all, if it
-    /// is Lucy's own and can tell.
     pub fn judge(
         &mut self,
         probability: f32,
@@ -114,37 +93,35 @@ impl Gate {
         if probability < threshold {
             return self.unduck();
         }
-        self.run += len;
-        if self.run >= samples(sustain) {
+        self.speech_run += len;
+        if self.speech_run >= ms_to_samples(sustain) {
             self.cut = true;
             self.ducked = false;
-            self.run = 0;
+            self.speech_run = 0;
             return Some(BargeInEvent::BargeIn);
         }
         (!std::mem::replace(&mut self.ducked, true)).then_some(BargeInEvent::Duck)
     }
 
-    /// Whether the echo canceller has settled, so the normal bar applies.
     pub fn converged(
         &self,
         erle_db: Option<f32>,
         echo_heard: Option<bool>,
         own_canceller: bool,
     ) -> bool {
-        // With no echo to remove, the ERLE never gets anywhere.
-        self.warmed >= samples(self.config.warm_up_ms)
+        let nothing_to_cancel = echo_heard == Some(false);
+        self.warmed >= ms_to_samples(self.config.warm_up_ms)
             && (!own_canceller
                 || erle_db.is_some_and(|erle| erle >= self.config.converged_erle_db)
-                || echo_heard == Some(false))
+                || nothing_to_cancel)
     }
 
-    /// Speech may barge in this Session.
     pub fn on(&self) -> bool {
         self.on
     }
 
     fn unduck(&mut self) -> Option<BargeInEvent> {
-        self.run = 0;
+        self.speech_run = 0;
         std::mem::replace(&mut self.ducked, false).then_some(BargeInEvent::Unduck)
     }
 }

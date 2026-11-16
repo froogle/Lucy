@@ -1,5 +1,3 @@
-//! The public socket: newline-delimited JSON-RPC 2.0 (ADR 0006).
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,11 +22,9 @@ use crate::plugins::{self, Host};
 use crate::runner::{self, Command, PreviewError, SetupTest, SetupTestError, WakeWordHeard};
 use crate::status::Buses;
 
-/// What `providers.status` and `provider.check` need.
 #[derive(Clone)]
 pub struct Providers {
     pub thinking: Arc<dyn Thinking>,
-    /// `config.toml`, read afresh for each request.
     pub config_path: PathBuf,
 }
 
@@ -65,16 +61,11 @@ struct Connection {
     providers: Providers,
     plugins: Arc<Host>,
     greeted: bool,
-    /// Held while this client holds the `indicator` role.
     indicator: Option<IndicatorClaim>,
-    /// Held while this client holds the `input` role.
     input: Option<InputClaim>,
     state_subscribed: bool,
-    /// Every state change since subscribing, once subscribed.
     state_events: Option<mpsc::UnboundedReceiver<Status>>,
-    /// Playback levels, once subscribed.
     level_events: Option<broadcast::Receiver<f32>>,
-    /// A queue of `plugins.changed`, once subscribed.
     plugin_events: Option<mpsc::UnboundedReceiver<()>>,
 }
 
@@ -124,7 +115,6 @@ async fn connection(
     }
 }
 
-/// The next state change, or never if not subscribed.
 async fn next_state(state_events: &mut Option<mpsc::UnboundedReceiver<Status>>) -> Option<Status> {
     match state_events {
         Some(state_events) => state_events.recv().await,
@@ -132,8 +122,6 @@ async fn next_state(state_events: &mut Option<mpsc::UnboundedReceiver<Status>>) 
     }
 }
 
-/// The next playback level, or never if not subscribed. Levels a slow
-/// subscriber missed are skipped.
 async fn next_level(level_events: &mut Option<broadcast::Receiver<f32>>) -> Option<f32> {
     let Some(level_events) = level_events else {
         return std::future::pending().await;
@@ -147,7 +135,6 @@ async fn next_level(level_events: &mut Option<broadcast::Receiver<f32>>) -> Opti
     }
 }
 
-/// The next change, or never if not subscribed.
 async fn next_change(changes: &mut Option<mpsc::UnboundedReceiver<()>>) -> Option<()> {
     match changes {
         Some(changes) => changes.recv().await,
@@ -155,7 +142,6 @@ async fn next_change(changes: &mut Option<mpsc::UnboundedReceiver<()>>) -> Optio
     }
 }
 
-/// The next `input.open` or `input.close`, or never without the role.
 async fn next_dialog(input: &mut Option<InputClaim>) -> Option<Event> {
     match input {
         Some(input) => input.events.recv().await,
@@ -163,7 +149,6 @@ async fn next_dialog(input: &mut Option<InputClaim>) -> Option<Event> {
     }
 }
 
-/// A JSON-RPC error to send back.
 struct RpcError {
     code: i64,
     message: String,
@@ -308,7 +293,6 @@ impl Connection {
         }
     }
 
-    /// This client's claim on the `input` role, or why it may not answer.
     fn input_holder(&self) -> Result<&InputClaim, RpcError> {
         self.input.as_ref().ok_or_else(|| {
             RpcError::new(
@@ -318,7 +302,6 @@ impl Connection {
         })
     }
 
-    /// Sends a command to the Session runner and waits for its reply.
     async fn ask<T>(
         &self,
         command: impl FnOnce(oneshot::Sender<T>) -> Command,
@@ -329,7 +312,6 @@ impl Connection {
         answer.await.map_err(|_| gone())
     }
 
-    /// Says `text` outside any Session, once it has been played.
     async fn voice_preview(&self, text: String, voice: Option<String>) -> Result<(), RpcError> {
         if text.trim().is_empty() {
             return Err(RpcError::new(
@@ -359,7 +341,6 @@ impl Connection {
         })
     }
 
-    /// Runs a setup test in the Session runner.
     async fn setup_test<T>(
         &self,
         test: impl FnOnce(oneshot::Sender<Result<T, SetupTestError>>) -> SetupTest,
@@ -389,7 +370,6 @@ impl Connection {
         })
     }
 
-    /// Health checks for every Provider in config, with no model call.
     async fn providers_status(&self) -> Result<ProvidersStatus, RpcError> {
         let config = self.config()?;
         let thinking = self.providers.thinking.clone();
@@ -417,7 +397,6 @@ impl Connection {
         Ok(ProvidersStatus { providers })
     }
 
-    /// A real "Reply OK" round trip through one Provider.
     async fn check_provider(&self, check: ProviderCheck) -> Result<ProviderCheckResult, RpcError> {
         let config = self.config()?;
         let Some(provider) = config.providers.get(&check.name).cloned() else {
@@ -491,7 +470,6 @@ impl Connection {
     }
 }
 
-/// Runs a blocking Provider call off the async runtime.
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, RpcError> {

@@ -1,5 +1,5 @@
-//! The `claude` Thinking Provider, driven through the `Thinking` seam against
-//! a fake `claude` that replays a recorded real stream-json transcript
+//! The `claude` Thinking Provider, driven through the `Thinking` seam.
+//! A fake `claude` replays a recorded real stream-json transcript
 //! (`fixtures/claude/`).
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
@@ -21,14 +21,10 @@ fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude")
 }
 
-/// The default fast-tier Provider.
 fn fast() -> Provider {
     Config::default().provider(Tier::Fast).unwrap().clone()
 }
 
-/// The fixture `program` in `work`, with the fake CLI's version already
-/// through the subscription guard (`tests/subscription_guard.rs`) and its
-/// records of that cleared, so a Session spawns just its own process.
 fn verified(work: &Path, program: &str) -> Claude {
     Claude::new(fixtures().join("fake-claude"), work.to_owned())
         .check(&fast())
@@ -46,15 +42,12 @@ fn relay() -> Relay {
     }
 }
 
-/// Waits until `path` exists and returns its contents.
 fn wait_for_file(path: &Path) -> String {
     wait_until(&format!("{} never appeared", path.display()), || {
         std::fs::read_to_string(path).ok()
     })
 }
 
-/// One Turn's events up to `TurnEnd`: text with `|` at each `SentenceEnd`,
-/// and the rate-limit events.
 fn read_turn(
     events: &mut mpsc::UnboundedReceiver<ThinkingEvent>,
     wait: Duration,
@@ -99,7 +92,6 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     let (tx, mut events) = mpsc::unbounded_channel();
 
     let mut model = claude.open(&fast(), tx, relay(), String::new());
-    // Spawned before any Turn is sent.
     wait_for_file(&work.path().join("argv"));
 
     model.send_turn("Remember the word kiwi.".into());
@@ -130,7 +122,6 @@ fn one_process_is_prespawned_and_serves_every_turn() {
     let pids = std::fs::read_to_string(work.path().join("pids")).unwrap();
     assert_eq!(pids.lines().count(), 1, "one process for the Session");
 
-    // Ending the Session ends the process.
     let pid = pids.trim().to_owned();
     drop(model);
     wait_until("claude outlived its Session", || {
@@ -171,7 +162,6 @@ fn ending_the_session_is_not_a_death() {
 
     drop(model);
 
-    // Every sender goes once claude has been stopped.
     let rest = std::thread::spawn(move || {
         std::iter::from_fn(|| events.blocking_recv()).collect::<Vec<_>>()
     });
@@ -182,11 +172,8 @@ fn ending_the_session_is_not_a_death() {
     assert!(!rest.contains(&ThinkingEvent::Died), "{rest:?}");
 }
 
-/// The id claude gives the recorded conversation.
 const SESSION_ID: &str = "09dd6ca6-f8e2-473e-812c-ab5acf9cdfd5";
 
-/// The files and dirs under `config`'s projects named for `id`, whichever
-/// project dir claude keeps them in.
 fn kept(config: &Path, id: &str) -> Vec<PathBuf> {
     let mut kept = vec![];
     for project in std::fs::read_dir(config.join("projects"))
@@ -203,8 +190,6 @@ fn kept(config: &Path, id: &str) -> Vec<PathBuf> {
     kept
 }
 
-/// A conversation of the user's own in the same project dir as `id`'s,
-/// which Lucy must leave alone.
 fn the_users_own(config: &Path, id: &str) -> PathBuf {
     let theirs = kept(config, id)[0].with_file_name("their-own.jsonl");
     std::fs::write(&theirs, "{}\n").unwrap();
@@ -311,8 +296,6 @@ fn any_model_the_cli_accepts_is_passed_through() {
     );
 }
 
-/// The fixture's first recorded Turn, cut off before its `result`: what a
-/// Turn still going looks like.
 fn unfinished_turn() -> String {
     let turn = std::fs::read_to_string(fixtures().join("turn1.jsonl")).unwrap();
     turn.lines()
@@ -321,7 +304,6 @@ fn unfinished_turn() -> String {
         .collect()
 }
 
-/// Sends a Turn that is still going, and waits for all of it that was said.
 fn start_unfinished_turn(
     model: &mut Box<dyn lucyd::adapters::SessionModel>,
     events: &mut mpsc::UnboundedReceiver<ThinkingEvent>,
@@ -345,7 +327,6 @@ fn an_interrupt_stops_the_turn_with_the_control_request_and_keeps_the_process() 
     let work = tempfile::tempdir().unwrap();
     let claude = verified(work.path(), "fake-claude");
     std::fs::write(work.path().join("turn1.jsonl"), unfinished_turn()).unwrap();
-    // How claude answers the interrupt: it acknowledges, then ends the Turn.
     std::fs::write(
         work.path().join("turn2.jsonl"),
         "{\"type\":\"control_response\",\"response\":{\"subtype\":\"success\",\"request_id\":\"interrupt-1\"}}\n\
@@ -364,9 +345,11 @@ fn an_interrupt_stops_the_turn_with_the_control_request_and_keeps_the_process() 
     model.interrupt();
     model.send_turn("What word?".into());
 
-    // Nothing more of the interrupted Turn, not even its end.
     let (text, _) = read_turn(&mut events, WAIT);
-    assert_eq!(text, "Kiwi.| You asked me to remember that word.|");
+    assert_eq!(
+        text, "Kiwi.| You asked me to remember that word.|",
+        "nothing more of the interrupted Turn, not even its end"
+    );
     let stdin = std::fs::read_to_string(work.path().join("stdin")).unwrap();
     let interrupt: serde_json::Value = serde_json::from_str(stdin.lines().nth(1).unwrap()).unwrap();
     assert_eq!(
@@ -404,8 +387,6 @@ fn without_the_control_interrupt_claude_gets_sigint_and_a_new_process() {
         (!Path::new("/proc").join(first.trim()).exists()).then_some(())
     });
     assert_ne!(pids.lines().nth(1), Some(first.trim()));
-    // It carries on the same conversation. (The fake writes its pid before
-    // its argv.)
     let resumed = wait_until("the new process didn't resume the conversation", || {
         let args = args(work.path());
         args.iter()
@@ -413,7 +394,6 @@ fn without_the_control_interrupt_claude_gets_sigint_and_a_new_process() {
             .then(|| value_of(&args, "--resume").to_owned())
     });
     assert_eq!(resumed, "09dd6ca6-f8e2-473e-812c-ab5acf9cdfd5");
-    // The new process answers the next Turn as its first.
     std::fs::copy(
         fixtures().join("turn2.jsonl"),
         work.path().join("turn1.jsonl"),
@@ -423,20 +403,20 @@ fn without_the_control_interrupt_claude_gets_sigint_and_a_new_process() {
     let (text, _) = read_turn(&mut events, WAIT);
     assert_eq!(text, "Kiwi.| You asked me to remember that word.|");
 
-    // Both processes' conversation goes with the Session.
     drop(model);
-    assert_eq!(kept(config.path(), SESSION_ID), Vec::<PathBuf>::new());
+    assert_eq!(
+        kept(config.path(), SESSION_ID),
+        Vec::<PathBuf>::new(),
+        "both processes' conversation goes with the Session"
+    );
 }
 
-/// Opt-in: `cargo test -p lucyd --test claude -- --ignored`. Uses the real
-/// `claude` on PATH and the user's subscription.
 #[test]
-#[ignore]
+#[ignore = "uses the real claude on PATH and spends the user's subscription"]
 fn live_claude_keeps_context_across_turns() {
     let work = tempfile::tempdir().unwrap();
     let claude = Claude::new(PathBuf::from("claude"), work.path().to_owned());
     let (tx, mut events) = mpsc::unbounded_channel();
-    // A relay that exits at once: no tools, which this test doesn't need.
     let relay = Relay {
         program: PathBuf::from("true"),
         args: vec![],

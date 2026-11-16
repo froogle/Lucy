@@ -1,11 +1,5 @@
-//! The shipped Plugin template a Delegate starts from: a minimal `rmcp`
-//! stdio server, a Manifest skeleton and the fixtures test harness, with
-//! `build.sh` and `test.sh`. It is built into lucyd.
-
 use std::path::Path;
 
-/// Each file's path in a new Plugin's folder, and its text, in which
-/// `{{name}}` stands for the Plugin's name.
 const FILES: &[(&str, &str)] = &[
     (
         "manifest.toml",
@@ -39,7 +33,6 @@ const FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Writes the template into `dir` for the Plugin `name`.
 pub fn write(dir: &Path, name: &str) -> std::io::Result<()> {
     for (path, text) in FILES {
         let path = dir.join(path);

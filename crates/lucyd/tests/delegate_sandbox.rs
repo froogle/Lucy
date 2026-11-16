@@ -1,5 +1,5 @@
-//! An Authoring Delegate runs under Landlock: it can work in its staging
-//! dir, but can't read or write the user's files. Driven through the real
+//! An Authoring Delegate runs under Landlock, confined to its staging dir.
+//! It can't read or write the user's files. Driven through the real
 //! `claude` adapter's Delegate spawn against a fake `claude` that tries.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
@@ -14,8 +14,6 @@ use lucyd::adapters::{Relay, Thinking, Workspace};
 use lucyd::claude::Claude;
 use tokio::sync::mpsc;
 
-/// Writes an executable script from a child process, so no write fd of
-/// this one leaks into a child another test forks ("Text file busy").
 fn write_script(path: &Path, script: &str) {
     let written = Command::new("/bin/sh")
         .args([

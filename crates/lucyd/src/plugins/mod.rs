@@ -1,6 +1,6 @@
-//! The Plugin host (ADRs 0002, 0004, 0005): finds Plugins, keeps only the
-//! approved, working ones, and runs each in its sandbox on first use in a
-//! Session, forwarding the model's calls to it over MCP stdio.
+//! The Plugin host (ADRs 0002, 0004, 0005): finds and runs approved Plugins.
+//! It keeps only the approved, working ones, and runs each in its sandbox on
+//! first use in a Session, forwarding the model's calls to it over MCP stdio.
 
 mod approval;
 mod authored;
@@ -39,17 +39,13 @@ pub use environment::Environment;
 pub use manage::{manage_plugin_tool, Refusal};
 use manifest::{Manifest, ToolEntry};
 
-/// How many mid-call questions one call may ask before it counts as broken.
 const MAX_QUESTIONS: usize = 10;
 
-/// What the model hears when the user didn't confirm a call.
 const DECLINED: &str = "declined: the user didn't say yes, so nothing was done, and you've \
                         already told them so.";
 
-/// What the model hears of a call a Barge-in cancelled.
 const CANCELLED: &str = "cancelled: the user cut in, so the call was stopped.";
 
-/// How long a Plugin gets to start and answer `tools/list`.
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where Plugins and Lucy's state live.
@@ -80,13 +76,10 @@ impl Paths {
         self.state.join("approvals.toml")
     }
 
-    /// The user's Plugin preferences.
     fn prefs(&self) -> PathBuf {
         self.state.join("plugins.toml")
     }
 
-    /// Where the approved versions of the Plugin `plugin` are kept, one
-    /// folder per hash, for rolling back to.
     fn versions(&self, plugin: &str) -> PathBuf {
         self.state.join("versions").join(plugin)
     }
@@ -96,66 +89,43 @@ impl Paths {
     }
 }
 
-/// `approvals.toml`.
 #[derive(Default, Deserialize, Serialize)]
 struct Approvals {
     #[serde(default)]
     plugins: BTreeMap<String, Approval>,
-    /// By Plugin whose Approval was revoked: the previous version it had,
-    /// kept to roll back to once the Plugin is approved again.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     revoked: BTreeMap<String, Approval>,
 }
 
 #[derive(Deserialize, Serialize)]
 struct Approval {
-    /// The `content_hash` that was approved.
     hash: String,
-    /// Each tool's input schema as approved, as JSON.
     schemas: BTreeMap<String, String>,
-    /// The Manifest as approved, so an update can be told apart from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     manifest: Option<String>,
-    /// The Approval this one replaced, which the Plugin can be rolled back
-    /// to with no new Approval. It has no `previous` of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     previous: Option<Box<Approval>>,
 }
 
-/// `plugins.toml`: the user's Plugin preferences besides their Approvals,
-/// and which Plugins they've been told await Approval.
 #[derive(Default, Deserialize, Serialize)]
 struct PluginPrefs {
-    /// Plugins left out of selection, keeping their files and Approval.
     #[serde(default)]
     disabled: BTreeSet<String>,
-    /// By Plugin: the hash it had when Lucy last told the user it was
-    /// awaiting Approval.
     #[serde(default)]
     mentioned: BTreeMap<String, String>,
 }
 
-/// Lives as long as lucyd. Remembers which approved Plugin contents work.
 pub struct Host {
     paths: Paths,
-    /// Where to ask the user for a Confirmation.
     commands: mpsc::UnboundedSender<Command>,
-    /// By content hash: whether that content matched its Manifest and has
-    /// not failed a call, or why not.
     verdicts: Mutex<HashMap<String, Result<(), String>>>,
-    /// The open Session's tools, which an Approval adds to.
     session: Mutex<Weak<SessionTools>>,
-    /// Told whenever a Plugin or Approval changes.
     changes: ChangeBus,
-    /// Held while changing `approvals.toml`, `plugins.toml` or a Plugin's
-    /// files, so one change never undoes another.
     editing: Mutex<()>,
-    /// Where the credentials Plugins declare are kept.
     credentials: Arc<dyn CredentialStore>,
     environment: Environment,
 }
 
-/// A Plugin's Manifest and executable as they are now.
 struct Contents {
     text: String,
     manifest: Manifest,
@@ -180,16 +150,12 @@ impl Contents {
     }
 }
 
-/// What a scan found of one Plugin.
 enum Scanned {
     Approved(Usable),
-    /// New or changed since its last Approval.
     Awaiting(Contents),
-    /// Its `requires` isn't met here.
     NotForThisDesktop(Manifest),
 }
 
-/// An approved Plugin, ready to start.
 struct Usable {
     name: String,
     folder: PathBuf,
@@ -218,7 +184,6 @@ impl Host {
         })
     }
 
-    /// Scans the Plugin folders and returns the tools for a new Session.
     pub async fn open_session(self: &Arc<Self>) -> Arc<SessionTools> {
         let mut usable = Vec::new();
         let mut broken = Vec::new();
@@ -230,7 +195,6 @@ impl Host {
             }
             match self.scan(&name, &folder) {
                 Ok(Scanned::Approved(plugin)) => usable.push(plugin),
-                // Lucy ships it, so she approves it herself.
                 Ok(Scanned::Awaiting(_)) if self.is_shipped(&folder) => {
                     match self.approve_shipped(&name).await {
                         Ok(plugin) => usable.push(plugin),
@@ -267,19 +231,10 @@ impl Host {
         tools
     }
 
-    /// Asks the user's spoken Approval of the Plugin `name` as it is now,
-    /// in the open Session: the full summary for a new Plugin, or only what
-    /// changed for an update, with the diff on screen. On a yes it is
-    /// recorded and the open Session's model is offered its tools. `Ok`
-    /// says whether the user approved; `Err` says why they couldn't be
-    /// asked.
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
         self.ask_approval(name, When::Now).await
     }
 
-    /// Asks the user's Approval as `request_approval` does, once neither
-    /// Lucy nor the user is speaking. With no Session open, it waits for
-    /// the next one, showing `kept` meanwhile.
     pub async fn request_approval_when_quiet(
         &self,
         name: &str,
@@ -289,7 +244,6 @@ impl Host {
             .await
     }
 
-    /// Asks at the time `when` says.
     async fn ask_approval(&self, name: &str, when: When) -> Result<bool, String> {
         const NO_SESSION: &str = "no Session is open to ask in";
         if !when.keeps() && self.session.locked().upgrade().is_none() {
@@ -328,8 +282,6 @@ impl Host {
         Ok(true)
     }
 
-    /// Approves the shipped Plugin `name` as it is now without asking: it
-    /// came with Lucy.
     async fn approve_shipped(&self, name: &str) -> Result<Usable, String> {
         let candidate = self.candidate(name).await?;
         self.record(&candidate)?;
@@ -339,8 +291,6 @@ impl Host {
         Ok(candidate.plugin)
     }
 
-    /// The Plugin `name` as it is now, checked against its live tools and
-    /// ready to approve.
     async fn candidate(&self, name: &str) -> Result<Candidate, String> {
         let folder = self
             .folders()
@@ -383,9 +333,6 @@ impl Host {
         })
     }
 
-    /// Writes the Approval of `candidate` to `approvals.toml`, keeping the
-    /// one it replaces as the version to roll back to, and keeps a copy of
-    /// what was approved.
     fn record(&self, candidate: &Candidate) -> Result<(), String> {
         let plugin = &candidate.plugin;
         let _editing = self.editing.locked();
@@ -442,7 +389,6 @@ impl Host {
         save_state(&self.paths.state, &self.paths.approvals(), &text).map_err(|e| e.to_string())
     }
 
-    /// `plugins.toml`, or no preferences if it can't be read.
     fn prefs(&self) -> PluginPrefs {
         std::fs::read_to_string(self.paths.prefs())
             .ok()
@@ -456,9 +402,6 @@ impl Host {
             .map_err(|e| format!("plugins.toml couldn't be saved: {e}"))
     }
 
-    /// For the model's instructions: a line for each Plugin in `awaiting`
-    /// that the user hasn't been told about as it is now, remembering that
-    /// they now have.
     fn mention_once(&self, awaiting: Vec<(String, Contents)>) -> Vec<String> {
         let _editing = self.editing.locked();
         let mut prefs = self.prefs();
@@ -482,7 +425,6 @@ impl Host {
         lines
     }
 
-    /// Offers the newly approved `plugin` in the open Session, if any.
     async fn offer(&self, plugin: Usable) {
         let session = self.session.locked().upgrade();
         self.verdicts.locked().insert(plugin.hash.clone(), Ok(()));
@@ -498,7 +440,6 @@ impl Host {
         }
     }
 
-    /// Every Plugin folder by name, a user one overriding a shipped one.
     fn folders(&self) -> BTreeMap<String, PathBuf> {
         let mut folders = BTreeMap::new();
         for root in [&self.paths.shipped, &self.paths.user] {
@@ -507,8 +448,8 @@ impl Host {
             };
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                // `.build` holds Authoring staging.
-                if !name.starts_with('.') && entry.path().is_dir() {
+                let staging_or_hidden = name.starts_with('.');
+                if !staging_or_hidden && entry.path().is_dir() {
                     folders.insert(name, entry.path());
                 }
             }
@@ -520,7 +461,6 @@ impl Host {
         folder.starts_with(&self.paths.shipped)
     }
 
-    /// The Plugin as it is now: usable if its exact content is approved.
     fn scan(&self, name: &str, folder: &Path) -> Result<Scanned, String> {
         let contents = Contents::read(name, folder)?;
         if !self.environment.meets(&contents.manifest.requires) {
@@ -553,7 +493,6 @@ impl Host {
         }))
     }
 
-    /// Checks the Manifest against the live `tools/list`, once per content.
     async fn check(&self, plugin: &Usable) -> Result<(), String> {
         if let Some(verdict) = self.verdict(&plugin.hash) {
             return verdict;
@@ -569,8 +508,6 @@ impl Host {
         verdict
     }
 
-    /// Starts the Plugin just to ask for its `tools/list`, with no
-    /// credentials: it may not be approved yet.
     async fn live_tools(&self, plugin: &Usable) -> Result<Vec<Tool>, String> {
         let client = self.start(plugin, &[]).await?;
         let listed = tokio::time::timeout(START_TIMEOUT, client.list_all_tools())
@@ -589,8 +526,6 @@ impl Host {
         self.verdicts.locked().insert(hash.to_owned(), Err(reason));
     }
 
-    /// The approved `plugin`'s declared credentials, as env vars, or what
-    /// to tell the model when they can't all be had.
     async fn credentials(&self, plugin: &Usable) -> Result<Vec<(String, String)>, String> {
         let store = self.credentials.clone();
         let name = plugin.name.clone();
@@ -630,8 +565,6 @@ impl Host {
             .collect())
     }
 
-    /// Starts the Plugin in its sandbox with `env` added to its
-    /// environment, and connects to it.
     async fn start(
         &self,
         plugin: &Usable,
@@ -667,10 +600,9 @@ impl Host {
         .map_err(|e| format!("its sandbox can't be set up: {e}"))?;
         let transport =
             TokioChildProcess::new(command).map_err(|e| format!("it doesn't start: {e}"))?;
-        // Mid-call questions (`input_required`) need the 2026-07-28 protocol,
-        // which has no `initialize`; older Plugins get the handshake.
+        let input_required_protocol = ProtocolVersion::V_2026_07_28;
         let lifecycle = ClientLifecycleMode::Auto {
-            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+            preferred_versions: vec![input_required_protocol],
             legacy_version: None,
         };
         tokio::time::timeout(
@@ -683,19 +615,13 @@ impl Host {
     }
 }
 
-/// A Plugin as it is now, ready to approve.
 struct Candidate {
-    /// With the input schemas it lists live.
     plugin: Usable,
-    /// Its Manifest.
     text: String,
     executable: Vec<u8>,
-    /// The Manifest it had when last approved, if it was and that was
-    /// kept.
     previous: Option<String>,
 }
 
-/// Whether the Plugin offers exactly the tools its Manifest lists.
 fn matches_manifest(manifest: &Manifest, listed: &[Tool]) -> Result<(), String> {
     let live: HashSet<&str> = listed.iter().map(|tool| &*tool.name).collect();
     let declared: HashSet<&str> = manifest.tools.iter().map(|t| &*t.name).collect();
@@ -709,7 +635,6 @@ fn matches_manifest(manifest: &Manifest, listed: &[Tool]) -> Result<(), String> 
     Ok(())
 }
 
-/// Writes `text` to `path` in Lucy's state dir `state`, all at once.
 fn save_state(state: &Path, path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -720,7 +645,6 @@ fn save_state(state: &Path, path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::rename(&temp, path)
 }
 
-/// What Lucy is told about a broken Plugin, ready to pass on to the user.
 fn broken_message(plugin: &str, reason: &str) -> String {
     format!("The {plugin} Plugin is broken: {reason}. It's left out until it's fixed.")
 }
@@ -735,8 +659,6 @@ fn names(names: &HashSet<&str>) -> String {
     }
 }
 
-/// What an Approval pins: SHA-256 over the Manifest's length (u64, little
-/// endian), the Manifest, then the executable, as lowercase hex.
 fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update((manifest.len() as u64).to_le_bytes());
@@ -749,40 +671,26 @@ fn content_hash(manifest: &[u8], executable: &[u8]) -> String {
         .collect()
 }
 
-/// The Plugin tools of one Session, and the Plugins it has started.
 pub struct SessionTools {
     host: Arc<Host>,
     plugins: RwLock<Vec<Arc<Usable>>>,
-    /// Why each Plugin the scan left out was left out.
     broken: Vec<String>,
-    /// A line for each Plugin awaiting Approval that the user hasn't been
-    /// told about yet.
     awaiting: Vec<String>,
     running: tokio::sync::Mutex<HashMap<String, RunningService<RoleClient, ()>>>,
-    /// The model's connections, told when the tools change.
     watchers: Mutex<Vec<Peer<RoleServer>>>,
-    /// Counts Barge-ins, so calls in flight hear of each.
     barge_ins: tokio::sync::watch::Sender<u64>,
-    /// What confirmed calls returned after a Barge-in cut the model off,
-    /// for the next Turn.
     finished: Mutex<Vec<String>>,
 }
 
 impl SessionTools {
-    /// The user cut in: calls in flight that they didn't confirm are
-    /// cancelled, and confirmed ones run on.
     pub fn barge_in(&self) {
         self.barge_ins.send_modify(|count| *count += 1);
     }
 
-    /// What confirmed calls returned since the model was cut off, one line
-    /// each, for the next Turn.
     pub fn take_finished(&self) -> Vec<String> {
         std::mem::take(&mut *self.finished.locked())
     }
 
-    /// For the model's instructions: which Plugins the scan left out and
-    /// why, and which new ones await Approval, if any.
     pub fn scan_report(&self) -> Option<String> {
         let mut sections = Vec::new();
         if !self.broken.is_empty() {
@@ -805,13 +713,10 @@ impl SessionTools {
         })
     }
 
-    /// Tells `peer` with `tools/list_changed` whenever the tools change.
     pub fn watch(&self, peer: Peer<RoleServer>) {
         self.watchers.locked().push(peer);
     }
 
-    /// Offers `plugin` in place of any Plugin of the same name, stopping
-    /// that one, and tells the watchers.
     async fn replace(&self, plugin: Usable) {
         let name = plugin.name.clone();
         {
@@ -825,7 +730,6 @@ impl SessionTools {
         self.tools_changed().await;
     }
 
-    /// Tells the watchers with `tools/list_changed`.
     async fn tools_changed(&self) {
         let watchers: Vec<_> = {
             let mut watchers = self.watchers.locked();
@@ -837,8 +741,6 @@ impl SessionTools {
         }
     }
 
-    /// Stops offering the Plugin `name`, stopping it, and tells the
-    /// watchers.
     async fn remove(&self, name: &str) {
         self.plugins
             .write()
@@ -850,7 +752,6 @@ impl SessionTools {
         self.tools_changed().await;
     }
 
-    /// Every tool of every working Plugin, as `<plugin>__<tool>`.
     pub fn list(&self) -> Vec<Tool> {
         let mut tools = Vec::new();
         for plugin in self.working() {
@@ -871,17 +772,14 @@ impl SessionTools {
         tools
     }
 
-    /// Forwards a call to `<plugin>__<tool>`, starting the Plugin on first
-    /// use. `None` if no working Plugin offers that tool.
     pub async fn call(&self, name: &str, arguments: Option<JsonObject>) -> Option<CallToolResult> {
         let (plugin_name, tool) = name.split_once("__")?;
         let plugin = self.working().into_iter().find(|p| p.name == plugin_name)?;
         let entry = plugin.manifest.tools.iter().find(|t| t.name == tool)?;
-        // Read before the Confirmation, which a call missing them can't use.
-        let mut credentials = None;
+        let mut read_before_confirming = None;
         if !self.running.lock().await.contains_key(plugin_name) {
             match self.host.credentials(&plugin).await {
-                Ok(read) => credentials = Some(read),
+                Ok(read) => read_before_confirming = Some(read),
                 Err(missing) => return Some(mcp::error(missing)),
             }
         }
@@ -893,8 +791,7 @@ impl SessionTools {
             let peer = {
                 let mut running = self.running.lock().await;
                 if !running.contains_key(plugin_name) {
-                    // It may have stopped since: it always starts with them.
-                    let credentials = match credentials.take() {
+                    let credentials = match read_before_confirming.take() {
                         Some(read) => read,
                         None => match self.host.credentials(&plugin).await {
                             Ok(read) => read,
@@ -910,7 +807,6 @@ impl SessionTools {
             if let Some(arguments) = arguments {
                 request = request.with_arguments(arguments);
             }
-            // Each `input_required` answer asks the user, then calls again.
             for _ in 0..MAX_QUESTIONS {
                 match peer.call_tool_once(request.clone()).await {
                     Ok(CallToolResponse::Complete(result)) => return Ok(result),
@@ -920,9 +816,8 @@ impl SessionTools {
                         request.request_state = asked.request_state;
                     }
                     Ok(_) => return Err("it answered with a task, which Lucy can't follow".into()),
-                    // The Plugin answered, refusing the call: it still works.
-                    Err(rmcp::ServiceError::McpError(e)) => {
-                        return Ok(mcp::error(e.message.into_owned()))
+                    Err(rmcp::ServiceError::McpError(refusal)) => {
+                        return Ok(mcp::error(refusal.message.into_owned()))
                     }
                     Err(e) => return Err(format!("its call failed: {e}")),
                 }
@@ -943,7 +838,6 @@ impl SessionTools {
             }
             outcome
         } else {
-            // Dropping the call sends the Plugin an MCP cancellation.
             tokio::select! {
                 outcome = outcome => outcome,
                 _ = barge_ins.changed() => return Some(mcp::error(CANCELLED)),
@@ -961,9 +855,6 @@ impl SessionTools {
         })
     }
 
-    /// Asks the user each of a Plugin's mid-call questions out loud. A
-    /// question is answered when it wants one field and the user says
-    /// something; anything else is declined.
     async fn answers(&self, requests: InputRequests) -> InputResponses {
         let mut answers = InputResponses::new();
         for (key, request) in requests {
@@ -998,8 +889,6 @@ impl SessionTools {
         answers
     }
 
-    /// Asks the user's spoken yes to a call of `tool`, showing its full
-    /// arguments.
     async fn confirmed(
         &self,
         plugin: &str,
@@ -1029,7 +918,6 @@ impl SessionTools {
         runner::ask(&self.host.commands, question, Some(shown)).await == Some(Answer::Yes)
     }
 
-    /// Stops every Plugin started in this Session.
     pub async fn stop(&self) {
         let running: Vec<_> = self.running.lock().await.drain().collect();
         for (_, client) in running {
@@ -1048,8 +936,6 @@ impl SessionTools {
     }
 }
 
-/// `template` with each `{name}` of an argument replaced by its value, in one
-/// pass, so a value is never filled in itself.
 fn fill(template: &str, arguments: &JsonObject) -> String {
     let mut filled = String::new();
     let mut rest = template;
@@ -1074,7 +960,6 @@ fn fill(template: &str, arguments: &JsonObject) -> String {
     filled
 }
 
-/// An argument as Lucy says it: a string as it is, anything else as JSON.
 fn spoken(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),

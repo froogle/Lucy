@@ -1,17 +1,8 @@
-//! Sentence boundaries in a Thinking adapter's streamed text. Each adapter
-//! finds them itself and emits `SentenceEnd`, so the Session can send each
-//! sentence to TTS as soon as it is complete.
-
 use crate::adapters::ThinkingEvent;
 
-/// Splits streamed text at sentence ends: a newline, or a `.`, `!` or `?`
-/// followed by whitespace. Each sentence is closed as soon as the text that
-/// proves it complete arrives.
 #[derive(Default)]
 pub struct Sentences {
-    /// Non-blank text has been passed on since the last `SentenceEnd`.
     open: bool,
-    /// The last character passed on ends a sentence if whitespace follows.
     after_terminator: bool,
 }
 
@@ -38,7 +29,6 @@ impl Sentences {
         events
     }
 
-    /// Ends the sentence in progress, if any.
     pub fn finish(&mut self) -> Option<ThinkingEvent> {
         self.after_terminator = false;
         std::mem::take(&mut self.open).then_some(ThinkingEvent::SentenceEnd)
@@ -86,9 +76,16 @@ mod tests {
             s.push("Hi\nThere"),
             [delta("Hi"), SentenceEnd, delta("\nThere")]
         );
-        // Across deltas too, and a blank line doesn't end an empty sentence.
-        assert_eq!(s.push("\n"), [SentenceEnd, delta("\n")]);
-        assert_eq!(s.push("\nOK"), [delta("\nOK")]);
+        assert_eq!(
+            s.push("\n"),
+            [SentenceEnd, delta("\n")],
+            "across deltas too"
+        );
+        assert_eq!(
+            s.push("\nOK"),
+            [delta("\nOK")],
+            "a blank line doesn't end an empty sentence"
+        );
     }
 
     #[test]
@@ -106,7 +103,10 @@ mod tests {
         s.push("Let me check.");
         assert_eq!(s.finish(), Some(SentenceEnd));
         assert_eq!(s.finish(), None);
-        // The next block's first space doesn't end an empty sentence.
-        assert_eq!(s.push(" Done"), [delta(" Done")]);
+        assert_eq!(
+            s.push(" Done"),
+            [delta(" Done")],
+            "the next block's first space doesn't end an empty sentence"
+        );
     }
 }

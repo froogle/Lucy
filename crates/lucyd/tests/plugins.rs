@@ -4,8 +4,6 @@ mod harness;
 use harness::Harness;
 use serde_json::json;
 
-/// A Manifest for the fixture Plugin offering `tools`, with `access` as the
-/// body of its `[access]` table.
 fn manifest(name: &str, tools: &[&str], access: &str) -> String {
     let mut manifest = format!(
         "name = \"{name}\"\n\
@@ -75,7 +73,6 @@ fn a_call_to_a_plugin_tool_is_forwarded_to_the_plugin() {
     assert_eq!(text(&result), "hello there");
 }
 
-/// Whether the model of a fresh Session is offered `tool`.
 fn offered(lucyd: &Harness, tool: &str) -> bool {
     let mut client = lucyd.client();
     client.start_session().unwrap();
@@ -144,8 +141,10 @@ fn a_user_plugin_overrides_a_shipped_one_of_the_same_name() {
     assert!(offered(&lucyd, "fixture__echo"));
 
     lucyd.install_plugin("fixture", &manifest("fixture", &["pid"], ""));
-    // The user copy needs its own Approval; the shipped one no longer counts.
-    assert!(!offered(&lucyd, "fixture__echo"));
+    assert!(
+        !offered(&lucyd, "fixture__echo"),
+        "the user copy needs its own Approval; the shipped one no longer counts"
+    );
     lucyd.approve("fixture");
 
     assert!(offered(&lucyd, "fixture__pid"));
@@ -364,10 +363,8 @@ fn plugins_are_stopped_when_the_session_ends() {
     }
 }
 
-/// Whether process `pid` exists and isn't a zombie.
 fn running(pid: &str) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        // The state follows the parenthesised command name.
         Ok(stat) => !stat
             .rsplit(')')
             .next()

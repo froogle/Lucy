@@ -1,5 +1,5 @@
-//! The subscription guard, through the harness with the real `claude`
-//! adapter driving a fake `claude` CLI (`fixtures/claude/fake-claude`).
+//! The subscription guard, through the harness and the real `claude` adapter.
+//! The adapter drives a fake `claude` CLI (`fixtures/claude/fake-claude`).
 //! When the CLI's version changes, Lucy re-verifies before the Session goes
 //! on: the login must be claude.ai, and one turn must show
 //! `apiKeySource: "none"` and a `rate_limit_event`.
@@ -20,7 +20,6 @@ fn fake_claude() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/fake-claude")
 }
 
-/// lucyd running the real adapter against the fake CLI in `work`.
 fn lucyd(work: &Path, config: Option<&str>) -> Harness {
     Harness::with_thinking(
         config,
@@ -28,7 +27,6 @@ fn lucyd(work: &Path, config: Option<&str>) -> Harness {
     )
 }
 
-/// Each line the fake CLI was sent on stdin, across all its processes.
 fn sent(work: &Path) -> Vec<String> {
     std::fs::read_to_string(work.join("stdin"))
         .unwrap_or_default()
@@ -52,8 +50,6 @@ fn calls(work: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Opens a Session, says something, hears the whole two-sentence reply
-/// (`turn1.jsonl`) and ends the Session. Returns the first sentence.
 fn talk(lucyd: &Harness) -> String {
     let mut client = lucyd.client();
     client.start_session().unwrap();
@@ -67,7 +63,6 @@ fn talk(lucyd: &Harness) -> String {
     heard
 }
 
-/// Opens a Session and returns what Lucy says before ending it by herself.
 fn refused(lucyd: &Harness) -> String {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
@@ -80,7 +75,6 @@ fn refused(lucyd: &Harness) -> String {
     said
 }
 
-/// The recorded turn, as a `claude` that bills an API key would send it.
 fn api_key_turn() -> String {
     let recorded = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/turn1.jsonl"),
@@ -129,9 +123,12 @@ fn a_version_that_bills_an_api_key_is_refused_with_the_reason() {
     assert!(said.contains("allow_api_key"), "{said}");
     assert_eq!(sent(work.path()).len(), 1, "only the check reached claude");
 
-    // Still unverified, so the next Session checks and refuses again.
     refused(&lucyd);
-    assert_eq!(verifications(work.path()), 2);
+    assert_eq!(
+        verifications(work.path()),
+        2,
+        "still unverified, so the next Session checks and refuses again"
+    );
 }
 
 #[test]
@@ -245,8 +242,7 @@ fn stopping_lucyd_mid_session_deletes_the_conversation_claude_kept() {
     lucyd.client().start_session().unwrap();
     lucyd.say("Remember the word kiwi.");
     lucyd.tts.next_sentence();
-    // Each conversation's .jsonl and dir, in every project dir.
-    let kept = || {
+    let conversations_kept = || {
         let projects = std::fs::read_dir(config.path().join("projects"));
         projects
             .into_iter()
@@ -254,9 +250,9 @@ fn stopping_lucyd_mid_session_deletes_the_conversation_claude_kept() {
             .flat_map(|project| std::fs::read_dir(project.unwrap().path()).unwrap())
             .count()
     };
-    assert_ne!(kept(), 0, "claude kept no conversation");
+    assert_ne!(conversations_kept(), 0, "claude kept no conversation");
 
     drop(lucyd);
 
-    assert_eq!(kept(), 0);
+    assert_eq!(conversations_kept(), 0);
 }

@@ -1,5 +1,5 @@
-//! Confirmation: a Plugin tool with `confirm = true` waits in Confirming
-//! while Lucy asks, and only a yes she hears herself lets it run.
+//! Confirmation: a Plugin tool with `confirm = true` waits while Lucy asks.
+//! It waits in Confirming, and only a yes she hears herself lets it run.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
@@ -12,8 +12,6 @@ use lucy_ipc::{Client, State};
 use lucyd::adapters::NotificationKind;
 use serde_json::json;
 
-/// The fixture Plugin offering `write_file`, which needs Confirmation, with
-/// `prompt` as its `confirm_prompt` if given.
 fn manifest(prompt: Option<&str>) -> String {
     let prompt = prompt
         .map(|prompt| format!("confirm_prompt = {prompt:?}\n"))
@@ -37,8 +35,6 @@ fn manifest(prompt: Option<&str>) -> String {
     )
 }
 
-/// lucyd with the `files` Plugin approved, its Confirmation prompt
-/// "Write {text} to {path}?", and `config` as its config.
 fn with_files_plugin(config: &str) -> Harness {
     let lucyd = Harness::with_config(config);
     lucyd.install_plugin("files", &manifest(Some("Write {text} to {path}?")));
@@ -46,8 +42,6 @@ fn with_files_plugin(config: &str) -> Harness {
     lucyd
 }
 
-/// The model, in a Turn, calls `files__write_file` to write "hello" to a new
-/// file in the scratch dir. Returns the file and the waiting call.
 fn model_writes(
     lucyd: &Harness,
     events: &mut Client,
@@ -133,8 +127,8 @@ fn a_yes_said_during_the_prompt_counts() {
     assert_eq!(next_state(&mut events).state, State::Confirming);
     lucyd.tts.next_sentence();
 
-    // The prompt is still playing.
-    lucyd.say("go ahead");
+    let while_the_prompt_plays = "go ahead";
+    lucyd.say(while_the_prompt_plays);
 
     let result = call.join().unwrap().unwrap();
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
@@ -150,7 +144,6 @@ fn silence_after_the_prompt_declines() {
     let (file, call) = model_writes(&lucyd, &mut events);
     assert_eq!(next_state(&mut events).state, State::Confirming);
     lucyd.tts.next_sentence();
-    // The wait starts only once the prompt has been said.
     lucyd.clock.advance(ms(16_000));
     assert!(!declined(&lucyd), "declined while the prompt played");
     lucyd.tts.finish_playing();
@@ -166,7 +159,6 @@ fn silence_after_the_prompt_declines() {
     assert_eq!(lucyd.tts.next_sentence(), "Okay, I won't.");
 }
 
-/// Lucy has said she won't.
 fn declined(lucyd: &Harness) -> bool {
     lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned())
 }
@@ -221,12 +213,11 @@ fn an_indicator_click_while_confirming_declines_and_ends_the_session() {
     let (file, call) = model_writes(&lucyd, &mut events);
     assert_eq!(next_state(&mut events).state, State::Confirming);
 
-    // The Indicator's click is `session.end`.
     lucyd.client().end_session().unwrap();
 
     assert_eq!(next_state(&mut events).state, State::Idle);
-    // The relay may be cut off with the Session; either way nothing ran.
-    if let Ok(result) = call.join().unwrap() {
+    let unless_the_relay_was_cut_off = call.join().unwrap();
+    if let Ok(result) = unless_the_relay_was_cut_off {
         assert!(text(&result).starts_with("declined"), "{}", text(&result));
     }
     assert!(!file.exists());
@@ -272,14 +263,16 @@ fn without_an_indicator_confirming_is_notified_and_its_end_action_declines() {
     let (file, call) = model_writes(&lucyd, &mut events);
     assert_eq!(next_state(&mut events).state, State::Confirming);
 
-    // The details and the Confirming notification come from different
-    // tasks, in either order.
-    let mut shown = [
+    let mut shown_in_either_order = [
         lucyd.notifier.next_notification(),
         lucyd.notifier.next_notification(),
     ];
-    shown.sort_by_key(|notification| notification.kind == NotificationKind::Details);
-    assert_eq!(shown[0].summary, "Lucy is waiting for your yes");
+    shown_in_either_order
+        .sort_by_key(|notification| notification.kind == NotificationKind::Details);
+    assert_eq!(
+        shown_in_either_order[0].summary,
+        "Lucy is waiting for your yes"
+    );
     lucyd.notifier.pick_action();
 
     assert_eq!(next_state(&mut events).state, State::Idle);
@@ -289,8 +282,6 @@ fn without_an_indicator_confirming_is_notified_and_its_end_action_declines() {
     assert!(!file.exists());
 }
 
-/// lucyd with the `asker` Plugin, whose `ask` tool asks the user a question
-/// mid-call, approved and a Session open in Thinking.
 fn with_asker(config: &str) -> (Harness, Client) {
     let lucyd = Harness::with_config(config);
     lucyd.install_plugin(
@@ -346,8 +337,10 @@ fn a_mid_call_question_met_with_silence_goes_unanswered() {
     let result = call.join().unwrap().unwrap();
 
     assert_eq!(text(&result), "no answer");
-    // Only a declined Confirmation is answered "Okay, I won't".
-    assert!(!lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned()));
+    assert!(
+        !lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned()),
+        "only a declined Confirmation is answered \"Okay, I won't\""
+    );
 }
 
 #[test]
@@ -369,7 +362,6 @@ fn in_a_session_opened_by_the_wake_word_a_yes_after_the_wake_word_counts() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
 }
 
-// Tickets 11 and 14 together: an STT failure while Confirming.
 #[test]
 fn a_reply_stt_fails_on_declines_with_an_error_flash() {
     let lucyd = with_files_plugin("");
@@ -410,7 +402,6 @@ fn an_argument_that_looks_like_a_placeholder_is_said_as_it_is() {
     );
 }
 
-// Tickets 11 and 14 together: the Thinking process dies while Confirming.
 #[test]
 fn a_question_pending_when_the_thinking_process_dies_is_withdrawn() {
     let lucyd = with_files_plugin("");
@@ -422,7 +413,6 @@ fn a_question_pending_when_the_thinking_process_dies_is_withdrawn() {
     assert_eq!(next_state(&mut events).state, State::Confirming);
     lucyd.tts.next_sentence();
 
-    // While the prompt is still playing.
     lucyd.thinking.dies();
 
     assert_eq!(lucyd.thinking.next_turn(), "save hello for me");
@@ -432,6 +422,8 @@ fn a_question_pending_when_the_thinking_process_dies_is_withdrawn() {
     let result = call.join().unwrap().unwrap();
     assert!(text(&result).starts_with("declined"), "{}", text(&result));
     assert!(!file.exists());
-    // Withdrawn, not declined out loud.
-    assert!(!lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned()));
+    assert!(
+        !lucyd.tts.sentences().contains(&"Okay, I won't.".to_owned()),
+        "withdrawn, not declined out loud"
+    );
 }

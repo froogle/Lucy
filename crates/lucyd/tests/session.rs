@@ -105,9 +105,11 @@ fn silence_timer_pauses_while_thinking_and_speaking() {
     lucyd.clock.advance(ms(60_000));
     lucyd.tts.finish_playing();
 
-    // Still open after four timeouts' worth outside Listening. Back in
-    // Listening the timer starts over, rather than using the 10 s left.
-    assert_eq!(next_state(&mut events).state, State::Listening);
+    assert_eq!(
+        next_state(&mut events).state,
+        State::Listening,
+        "still open after four timeouts' worth outside Listening"
+    );
     lucyd.clock.advance(ms(29_900));
     assert_eq!(events.status().unwrap().state, State::Listening);
     lucyd.clock.advance(ms(100));
@@ -124,9 +126,12 @@ fn no_speech_recognised_keeps_listening_without_resetting_the_timer() {
     lucyd.clock.advance(ms(20_000));
     lucyd.mumble_handled();
 
-    // Straight from Listening to Idle, at the original deadline.
     lucyd.clock.advance_once_set(ms(10_000));
-    assert_eq!(next_state(&mut events).state, State::Idle);
+    assert_eq!(
+        next_state(&mut events).state,
+        State::Idle,
+        "straight from Listening to Idle, at the original deadline"
+    );
     lucyd.thinking.assert_no_turn();
 }
 
@@ -143,9 +148,12 @@ fn silence_timer_keeps_running_while_an_utterance_is_transcribed() {
         (!lucyd.stt.segments().is_empty()).then_some(())
     });
 
-    // Transcribing is still Listening, so the timer fires mid-transcription.
     lucyd.clock.advance(ms(30_000));
-    assert_eq!(next_state(&mut events).state, State::Idle);
+    assert_eq!(
+        next_state(&mut events).state,
+        State::Idle,
+        "transcribing is still Listening, so the timer fires mid-transcription"
+    );
 }
 
 #[test]
@@ -197,7 +205,6 @@ fn every_state_change_reaches_subscribers_even_in_a_quick_burst() {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();
 
-    // Drive a whole Turn without reading any state event in between.
     lucyd.say("hi");
     lucyd.thinking.next_turn();
     lucyd.thinking.delta("Hello.");
@@ -232,9 +239,12 @@ fn one_turn_alternates_between_thinking_and_speaking() {
     lucyd.tts.next_sentence();
     assert_eq!(next_state(&mut events).state, State::Speaking);
 
-    // The audio finishes while the model is still working (say, a tool call).
     lucyd.tts.finish_playing();
-    assert_eq!(next_state(&mut events).state, State::Thinking);
+    assert_eq!(
+        next_state(&mut events).state,
+        State::Thinking,
+        "the audio finishes while the model is still working"
+    );
 
     lucyd.thinking.delta("You have a dentist at three.");
     lucyd.thinking.turn_end();

@@ -1,5 +1,5 @@
-//! Sessions on a `codex` Provider, through the harness with the real `codex`
-//! adapter driving a fake `codex app-server` (`fixtures/codex/fake-codex`).
+//! Sessions on a `codex` Provider, through the harness and the real adapter.
+//! The adapter drives a fake `codex app-server` (`fixtures/codex/fake-codex`).
 //! Lucy uses Codex only on a ChatGPT login unless the Provider opts out.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
@@ -29,7 +29,6 @@ fn fake_codex() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex/fake-codex")
 }
 
-/// lucyd running the real adapter against the fake app-server in `work`.
 fn lucyd(work: &Path, config: &str) -> Harness {
     Harness::with_thinking(
         Some(config),
@@ -37,7 +36,6 @@ fn lucyd(work: &Path, config: &str) -> Harness {
     )
 }
 
-/// Each line Lucy sent the fake, across all its processes.
 fn sent(work: &Path) -> Vec<serde_json::Value> {
     std::fs::read_to_string(work.join("stdin"))
         .unwrap_or_default()
@@ -53,7 +51,6 @@ fn turns(work: &Path) -> usize {
         .count()
 }
 
-/// Opens a Session and returns what Lucy says before ending it by herself.
 fn refused(lucyd: &Harness) -> String {
     let mut events = lucyd.state_client();
     events.start_session().unwrap();

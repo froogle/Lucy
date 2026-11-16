@@ -1,6 +1,3 @@
-//! Facts about this machine for `system_status`, read from `/proc`, `/sys`
-//! and a few standard commands. Blocking.
-
 use std::path::Path;
 use std::process::Command;
 
@@ -14,8 +11,6 @@ pub const TOPICS: [&str; 7] = [
     "uptime",
 ];
 
-/// Facts about `topic`, or `None` if it isn't one of `TOPICS`. A fact that
-/// can't be read is reported as such rather than failing.
 pub fn facts(topic: &str) -> Option<String> {
     let facts = match topic {
         "battery" => battery(),
@@ -49,7 +44,6 @@ fn battery() -> Option<String> {
     Some(lines.join("\n"))
 }
 
-/// Free space on `/` and on the home directory's filesystem.
 fn disk() -> Option<String> {
     let home = std::env::var_os("HOME").unwrap_or_else(|| "/".into());
     let output = Command::new("df")
@@ -59,18 +53,17 @@ fn disk() -> Option<String> {
         .output()
         .ok()?;
     let text = String::from_utf8(output.stdout).ok()?;
-    // `/` and home are often the same filesystem.
-    let mut filesystems: Vec<&str> = Vec::new();
+    let mut seen_filesystems: Vec<&str> = Vec::new();
     let mut lines = Vec::new();
     for line in text.lines().skip(1) {
         let fields: Vec<&str> = line.split_whitespace().collect();
         let [filesystem, size, _used, available, used_percent, mount] = fields[..] else {
             continue;
         };
-        if filesystems.contains(&filesystem) {
+        if seen_filesystems.contains(&filesystem) {
             continue;
         }
-        filesystems.push(filesystem);
+        seen_filesystems.push(filesystem);
         let kib = |n: &str| n.parse::<u64>().ok();
         lines.push(format!(
             "{mount}: {} free of {} ({used_percent} used).",
@@ -106,7 +99,6 @@ fn memory_cpu() -> Option<String> {
     ))
 }
 
-/// The physical network interfaces that are up.
 fn network() -> Option<String> {
     let mut up = Vec::new();
     for interface in std::fs::read_dir("/sys/class/net").ok()?.flatten() {
@@ -129,13 +121,11 @@ fn network() -> Option<String> {
     Some(format!("Connected through {}.", up.join(", ")))
 }
 
-/// The default output's volume, through PipeWire.
 fn volume() -> Option<String> {
     let output = Command::new("wpctl")
         .args(["get-volume", "@DEFAULT_AUDIO_SINK@"])
         .output()
         .ok()?;
-    // "Volume: 0.40" or "Volume: 0.40 [MUTED]"
     let text = String::from_utf8(output.stdout).ok()?;
     let level: f64 = text
         .strip_prefix("Volume:")?

@@ -21,8 +21,11 @@ fn end_session_through_the_relay_ends_the_session_after_speech() {
     lucyd.thinking.call_tool("end_session").unwrap();
     lucyd.thinking.turn_end();
 
-    // Still speaking the goodbye: the Session waits for it.
-    assert_eq!(lucyd.client().status().unwrap().state, State::Speaking);
+    assert_eq!(
+        lucyd.client().status().unwrap().state,
+        State::Speaking,
+        "still speaking the goodbye: the Session waits for it"
+    );
     lucyd.tts.finish_playing();
     assert_eq!(next_state(&mut events).state, State::Idle);
     lucyd.assert_nothing_private_on_bus();

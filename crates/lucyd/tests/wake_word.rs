@@ -49,8 +49,6 @@ fn a_file_that_is_not_a_wake_word_model_is_refused_with_its_path() {
     assert!(err.to_string().contains("hey_lucy.onnx"), "{err}");
 }
 
-/// How many times `wake_word` heard its phrase in `audio`, fed in 10 ms
-/// frames as the DSP thread does, with a second of silence after.
 fn heard(wake_word: &mut LiveKit, audio: &[f32]) -> usize {
     let mut audio = audio.to_vec();
     audio.extend(vec![0.0; 16_000]);

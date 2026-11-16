@@ -1,6 +1,6 @@
-//! The shipped Omarchy Plugin, run by lucyd: approved when lucyd scans it on
-//! Omarchy, asking the user's yes before a force-quit, and left out quietly
-//! anywhere else. Hyprland is a fake socket served here, and Omarchy's
+//! The shipped Omarchy Plugin, run by lucyd.
+//! It is approved when lucyd scans it on Omarchy, asks the user's yes before
+//! a force-quit, and is left out quietly anywhere else. Hyprland is a fake socket served here, and Omarchy's
 //! commands are fakes on `PATH`; the Plugin's own tests cover its tools.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
@@ -15,7 +15,6 @@ use harness::{next_state, Harness};
 use lucy_ipc::{Client, PluginStatus, State};
 use serde_json::json;
 
-/// The `lucy-omarchy` binary cargo builds beside the test binary.
 fn omarchy_binary() -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let binary = exe
@@ -28,8 +27,6 @@ fn omarchy_binary() -> PathBuf {
     )
 }
 
-/// An Omarchy desktop: a fake Hyprland showing Slack on workspace 3, and
-/// Omarchy's layout commands, under a short runtime dir.
 struct Omarchy {
     dir: tempfile::TempDir,
     dispatched: Arc<Mutex<Vec<String>>>,
@@ -81,7 +78,6 @@ impl Omarchy {
         self.dir.path().join("bin").display().to_string()
     }
 
-    /// lucyd running where this desktop is.
     fn lucyd(&self) -> Harness {
         let runtime = self.dir.path().display().to_string();
         let bin = self.bin();
@@ -99,8 +95,6 @@ impl Omarchy {
     }
 }
 
-/// Writes an executable from a child process, so this one holds no write
-/// fd another test's child could inherit ("Text file busy").
 fn write_executable(path: &Path, script: &str) {
     let mut writer = std::process::Command::new("/bin/sh")
         .args(["-c", "cat > \"$1\" && chmod +x \"$1\"", "sh"])
@@ -117,8 +111,6 @@ fn write_executable(path: &Path, script: &str) {
     assert!(writer.wait().unwrap().success());
 }
 
-/// Installs the Omarchy Plugin as Lucy ships it: its Manifest and
-/// executable.
 fn install_omarchy(lucyd: &Harness) {
     let manifest = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../lucy-omarchy/manifest.toml"),
@@ -140,7 +132,6 @@ fn in_a_session(lucyd: &Harness) -> Client {
     events
 }
 
-/// The model, in a Turn, asks to force-quit Slack; Lucy asks first.
 fn force_quit_slack(
     lucyd: &Harness,
     events: &mut Client,

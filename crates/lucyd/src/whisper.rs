@@ -10,11 +10,8 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 use crate::adapters::{SpeechSegment, Stt, SttError};
 
-/// The shorter encoder context Whisper gets on the CPU, in 20 ms frames
-/// (7.68 s), which makes a short command much faster to transcribe.
-const CPU_AUDIO_CTX: usize = 384;
-/// Whisper's encoder frames per second of audio.
-const FRAMES_PER_SEC: usize = 50;
+const CPU_AUDIO_CTX_FRAMES: usize = 384;
+const ENCODER_FRAMES_PER_SEC: usize = 50;
 
 pub struct Whisper {
     state: Mutex<whisper_rs::WhisperState>,
@@ -34,6 +31,10 @@ impl std::error::Error for Error {}
 
 impl Whisper {
     /// Loads the configured model from `models_dir`.
+    ///
+    /// # Errors
+    ///
+    /// When the model can't be found or loaded.
     pub fn load(config: &lucy_config::Whisper, models_dir: &Path) -> Result<Whisper, Error> {
         let gpu = uses_gpu(config, vulkan_device_found);
         let path = model_path(config, gpu, models_dir);
@@ -68,7 +69,7 @@ impl Whisper {
         params.set_no_timestamps(true);
         params.set_suppress_nst(true);
         if !self.gpu && fits_cpu_audio_ctx(samples.len()) {
-            params.set_audio_ctx(CPU_AUDIO_CTX as i32);
+            params.set_audio_ctx(CPU_AUDIO_CTX_FRAMES as i32);
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.full(params, samples)?;
@@ -87,29 +88,22 @@ impl Stt for Whisper {
     }
 }
 
-/// Whether to run on the GPU: as configured, or else if `detect` finds a
-/// usable device.
 fn uses_gpu(config: &lucy_config::Whisper, detect: impl FnOnce() -> bool) -> bool {
     config.gpu.unwrap_or_else(detect)
 }
 
-/// Whether Vulkan offers a device for Whisper to run on.
 fn vulkan_device_found() -> bool {
     !whisper_rs::vulkan::list_devices().is_empty()
 }
 
-/// `ggml-<model>.bin`, defaulting to `small.en` on the GPU and `base.en` on
-/// the CPU.
 fn model_path(config: &lucy_config::Whisper, gpu: bool, models_dir: &Path) -> PathBuf {
     let default = if gpu { "small.en" } else { "base.en" };
     let model = config.model.as_deref().unwrap_or(default);
     models_dir.join(format!("ggml-{model}.bin"))
 }
 
-/// Whether `samples` fit the shorter CPU context. A longer utterance gets
-/// the full 30 s: a context cut to fit it makes Whisper repeat itself.
 fn fits_cpu_audio_ctx(samples: usize) -> bool {
-    samples * FRAMES_PER_SEC <= CPU_AUDIO_CTX * crate::audio::SAMPLE_RATE as usize
+    samples * ENCODER_FRAMES_PER_SEC <= CPU_AUDIO_CTX_FRAMES * crate::audio::SAMPLE_RATE as usize
 }
 
 #[cfg(test)]

@@ -1,11 +1,7 @@
-//! A recording of speech for the live tests, resampled to 16 kHz mono.
-
 #![allow(dead_code)]
 
 use std::path::PathBuf;
 
-/// The voice-loop prototype's recording, used unless `LUCY_SPEECH_WAV` names
-/// another. It says "Hello! I am Lucy! It is lovely to finally meet you..."
 const PROTOTYPE_WAV: &str = ".scratch/lucy-v0-1/prototypes/voice-loop/hello.wav";
 
 pub fn speech() -> Vec<f32> {
@@ -34,7 +30,6 @@ pub fn speech() -> Vec<f32> {
     resample(&mono, spec.sample_rate, 16_000)
 }
 
-/// Linear resampling, good enough for a test recording.
 fn resample(audio: &[f32], from: u32, to: u32) -> Vec<f32> {
     let len = audio.len() as u64 * u64::from(to) / u64::from(from);
     (0..len as usize)
