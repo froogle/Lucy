@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use lucy_ipc::{Choices, Event, Field, FieldKind, InputClose, InputOpen};
+use lucy_ipc::{Event, Field, FieldKind, InputClose, InputOpen};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -234,7 +234,7 @@ pub fn ask_typed_tool() -> Tool {
             "type": "object",
             "properties": {
                 "question": {"type": "string", "description": "What to type, shown in the box"},
-                "kind": {"type": "string", "enum": ["text", "url", "number", "choice"]},
+                "kind": {"type": "string", "enum": KINDS},
                 "choices": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -258,20 +258,18 @@ pub async fn ask_typed(
         return error("question must say what to type.");
     };
     let kind = match arguments.get("kind").and_then(|kind| kind.as_str()) {
-        Some("text") => FieldKind::Text,
-        Some("url") => FieldKind::Url,
-        Some("number") => FieldKind::Number,
-        Some("choice") => match Choices::try_from(choices(arguments)) {
-            Ok(choices) => FieldKind::Choice { choices },
-            Err(_) => return error("A choice needs its choices."),
-        },
+        Some(kind) if KINDS.contains(&kind) => kind,
         Some("secret") => {
             return error(
                 "ask_typed can't ask for a secret. Passwords and keys go into a Plugin's \
                  credentials, never to you.",
             )
         }
-        _ => return error("kind must be one of text, url, number or choice."),
+        _ => return error(format!("kind must be one of {}.", KINDS.join(", "))),
+    };
+    let field = json!({"kind": kind, "choices": choices(arguments)});
+    let Ok(kind) = serde_json::from_value::<FieldKind>(field) else {
+        return error("A choice needs its choices.");
     };
     match ask(commands, question, kind).await {
         TypedAnswer::Answer(answer) => CallToolResult::structured(json!({"answer": answer})),
@@ -308,6 +306,8 @@ pub async fn ask(
 }
 
 const ANSWER: &str = "answer";
+
+const KINDS: [&str; 4] = ["text", "url", "number", "choice"];
 
 fn choices(arguments: &JsonObject) -> Vec<String> {
     arguments

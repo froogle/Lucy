@@ -111,6 +111,22 @@ fn ask_typed_refuses_a_secret() {
 }
 
 #[test]
+fn ask_typed_refuses_a_choice_with_nothing_to_pick() {
+    let lucyd = Harness::start();
+    let _holder = lucyd.input("a widget");
+    let mut events = session(&lucyd);
+    let call = model_asks(
+        &lucyd,
+        &mut events,
+        json!({"question": "Which one?", "kind": "choice", "choices": []}),
+    );
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(lucyd.tts.sentences().is_empty());
+}
+
+#[test]
 fn ask_typed_offers_a_choice_and_returns_the_one_picked() {
     let lucyd = Harness::start();
     let mut holder = lucyd.input("a widget");

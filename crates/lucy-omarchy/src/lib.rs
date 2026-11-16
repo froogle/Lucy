@@ -71,16 +71,30 @@ enum Action {
 }
 
 impl Action {
+    const ALL: [Action; 6] = [
+        Action::Focus,
+        Action::Close,
+        Action::MoveToWorkspace,
+        Action::Fullscreen,
+        Action::Float,
+        Action::Pin,
+    ];
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Action::Focus => "focus",
+            Action::Close => "close",
+            Action::MoveToWorkspace => "move_to_workspace",
+            Action::Fullscreen => "fullscreen",
+            Action::Float => "float",
+            Action::Pin => "pin",
+        }
+    }
+
     fn parse(name: &str) -> Option<Action> {
-        Some(match name {
-            "focus" => Action::Focus,
-            "close" => Action::Close,
-            "move_to_workspace" => Action::MoveToWorkspace,
-            "fullscreen" => Action::Fullscreen,
-            "float" => Action::Float,
-            "pin" => Action::Pin,
-            _ => return None,
-        })
+        Action::ALL
+            .into_iter()
+            .find(|action| action.as_str() == name)
     }
 }
 
@@ -117,7 +131,7 @@ impl Omarchy {
     async fn window(&self, args: &JsonObject) -> Result<Value, String> {
         let action = string(args, "action")?
             .and_then(Action::parse)
-            .ok_or("action is focus, close, move_to_workspace, fullscreen, float or pin")?;
+            .ok_or_else(|| format!("action is {}", one_of(&Action::ALL.map(Action::as_str))))?;
         let window = self.target(args).await?;
         let at = lua_window(&window);
         let done = match action {
@@ -208,7 +222,12 @@ impl Omarchy {
     async fn layout(&self, args: &JsonObject) -> Result<Value, String> {
         let mode = string(args, "mode")?
             .and_then(layout::Mode::parse)
-            .ok_or("mode is tiling, scrolling or floating")?;
+            .ok_or_else(|| {
+                format!(
+                    "mode is {}",
+                    one_of(&layout::Mode::ALL.map(layout::Mode::as_str))
+                )
+            })?;
         let changed = layout::set(&self.path, mode).await?;
         Ok(json!({"done": if changed { "changed" } else { "already so" }}))
     }
@@ -277,6 +296,14 @@ fn lua_workspace(args: &JsonObject) -> Result<String, String> {
     Ok(lua_string(&workspace))
 }
 
+fn one_of(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
+    }
+}
+
 fn one_line(text: &str) -> Result<&str, String> {
     if text.is_empty() || text.chars().any(char::is_control) {
         return Err(format!("{text:?} must be one line of text"));
@@ -329,9 +356,7 @@ fn tools() -> Vec<Tool> {
              the app asks about unsaved work itself. fullscreen, float and pin toggle.",
             schema(
                 json!({
-                    "action": {"type": "string", "enum": [
-                        "focus", "close", "move_to_workspace", "fullscreen", "float", "pin",
-                    ]},
+                    "action": {"type": "string", "enum": Action::ALL.map(Action::as_str)},
                     "target": target,
                     "workspace": workspace,
                 }),
@@ -360,7 +385,7 @@ fn tools() -> Vec<Tool> {
             "layout",
             "Sets the focused workspace's layout: tiling, scrolling or floating.",
             schema(
-                json!({"mode": {"type": "string", "enum": ["tiling", "scrolling", "floating"]}}),
+                json!({"mode": {"type": "string", "enum": layout::Mode::ALL.map(layout::Mode::as_str)}}),
                 &["mode"],
             ),
         ),

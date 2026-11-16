@@ -13,13 +13,18 @@ pub enum Mode {
 }
 
 impl Mode {
+    pub const ALL: [Mode; 3] = [Mode::Tiling, Mode::Scrolling, Mode::Floating];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Tiling => "tiling",
+            Mode::Scrolling => "scrolling",
+            Mode::Floating => "floating",
+        }
+    }
+
     pub fn parse(name: &str) -> Option<Mode> {
-        Some(match name {
-            "tiling" => Mode::Tiling,
-            "scrolling" => Mode::Scrolling,
-            "floating" => Mode::Floating,
-            _ => return None,
-        })
+        Mode::ALL.into_iter().find(|mode| mode.as_str() == name)
     }
 
     fn from_omarchy(name: &str) -> Option<Mode> {
