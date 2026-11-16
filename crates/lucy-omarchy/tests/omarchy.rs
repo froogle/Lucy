@@ -79,9 +79,17 @@ fn the_manifest_declares_exactly_the_commands_its_tools_run() {
         omarchy.call(tool, arguments);
     }
 
+    let execs = omarchy.hyprland.dispatched();
+    let started = execs.iter().filter_map(|dispatch| {
+        dispatch
+            .strip_prefix("hl.dsp.exec_cmd(\"")?
+            .strip_suffix("\")")
+    });
     let mut ran: Vec<String> = omarchy
         .ran()
         .iter()
+        .map(String::as_str)
+        .chain(started)
         .map(|ran| ran.split(' ').next().unwrap().to_owned())
         .collect();
     ran.sort();
@@ -325,55 +333,57 @@ fn bar_shows_hides_or_toggles_it_through_omarchys_bar_toggle() {
 }
 
 #[test]
-fn night_light_turns_on_and_off_by_toggling_only_when_it_must() {
+fn night_light_checks_its_status_in_the_sandbox_and_starts_the_toggle_through_hyprland_only_when_it_must(
+) {
     let omarchy = desktop();
 
     let on = omarchy.call("night_light", json!({"action": "on"}));
+    omarchy.set_night_light(true);
     let again = omarchy.call("night_light", json!({"action": "on"}));
-    assert!(omarchy.night_light());
     let off = omarchy.call("night_light", json!({"action": "off"}));
 
-    assert_eq!(on["done"], "now on");
+    assert!(on["done"].as_str().unwrap().contains("on"), "{on}");
     assert_eq!(again["done"], "already so");
-    assert_eq!(off["done"], "now off");
-    assert!(!omarchy.night_light());
-    let toggles: Vec<String> = omarchy
-        .ran()
-        .into_iter()
-        .filter(|ran| ran != "omarchy-toggle-nightlight --status")
-        .collect();
+    assert!(off["done"].as_str().unwrap().contains("off"), "{off}");
+    assert_eq!(omarchy.ran(), ["omarchy-toggle-nightlight --status"; 3]);
     assert_eq!(
-        toggles,
-        ["omarchy-toggle-nightlight ", "omarchy-toggle-nightlight "]
+        omarchy.hyprland.dispatched(),
+        ["hl.dsp.exec_cmd(\"omarchy-toggle-nightlight\")"; 2]
     );
 }
 
 #[test]
-fn night_light_toggle_says_which_way_it_went() {
+fn night_light_toggle_says_which_way_it_is_turning() {
     let omarchy = desktop();
 
     let first = omarchy.call("night_light", json!({"action": "toggle"}));
+    omarchy.set_night_light(true);
     let second = omarchy.call("night_light", json!({"action": "toggle"}));
 
-    assert_eq!(first["done"], "now on");
-    assert_eq!(second["done"], "now off");
+    assert_eq!(first["done"], "turning on");
+    assert_eq!(second["done"], "turning off");
 }
 
 #[test]
-fn screenshot_saves_the_screen_a_region_or_a_window_through_omarchys_capture() {
+fn screenshot_starts_omarchys_capture_through_hyprland_for_the_screen_a_region_or_a_window() {
     let omarchy = desktop();
 
-    omarchy.call("screenshot", json!({"action": "screen"}));
+    let started = omarchy.call("screenshot", json!({"action": "screen"}));
     omarchy.call("screenshot", json!({"action": "region"}));
     omarchy.call("screenshot", json!({"action": "window"}));
 
     assert_eq!(
-        omarchy.ran(),
+        omarchy.hyprland.dispatched(),
         [
-            "omarchy-capture-screenshot fullscreen save",
-            "omarchy-capture-screenshot region save",
-            "omarchy-capture-screenshot windows save",
+            "hl.dsp.exec_cmd(\"omarchy-capture-screenshot fullscreen save\")",
+            "hl.dsp.exec_cmd(\"omarchy-capture-screenshot region save\")",
+            "hl.dsp.exec_cmd(\"omarchy-capture-screenshot windows save\")",
         ]
+    );
+    assert_eq!(omarchy.ran(), Vec::<String>::new());
+    assert!(
+        started["done"].as_str().unwrap().starts_with("started"),
+        "{started}"
     );
 }
 

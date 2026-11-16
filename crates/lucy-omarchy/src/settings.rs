@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::command::run;
+use crate::hyprland::Hyprland;
 
 const LIST_THEMES: &str = "omarchy-theme-list";
 const CURRENT_THEME: &str = "omarchy-theme-current";
@@ -155,9 +156,14 @@ impl Screenshot {
     }
 }
 
-pub(crate) async fn screenshot(path: &OsStr, action: Screenshot) -> Result<&'static str, String> {
-    run(path, CAPTURE_SCREENSHOT, &[action.mode(), "save"]).await?;
-    Ok("saved; Omarchy shows a notification to open or edit it")
+pub(crate) async fn screenshot(
+    hyprland: &Hyprland,
+    action: Screenshot,
+) -> Result<&'static str, String> {
+    hyprland
+        .exec(&format!("{CAPTURE_SCREENSHOT} {} save", action.mode()))
+        .await?;
+    Ok("started; once it's taken, Omarchy saves it and shows a notification to open or edit it")
 }
 
 #[derive(Clone, Copy)]
@@ -201,7 +207,11 @@ struct NightLightStatus {
     enabled: bool,
 }
 
-pub(crate) async fn night_light(path: &OsStr, action: NightLight) -> Result<&'static str, String> {
+pub(crate) async fn night_light(
+    path: &OsStr,
+    hyprland: &Hyprland,
+    action: NightLight,
+) -> Result<&'static str, String> {
     let status = run(path, TOGGLE_NIGHT_LIGHT, &["--status"]).await?;
     let status: NightLightStatus = serde_json::from_str(&status)
         .map_err(|e| format!("{TOGGLE_NIGHT_LIGHT} --status said {status:?}: {e}"))?;
@@ -213,6 +223,6 @@ pub(crate) async fn night_light(path: &OsStr, action: NightLight) -> Result<&'st
     if wanted == status.enabled {
         return Ok("already so");
     }
-    run(path, TOGGLE_NIGHT_LIGHT, &[]).await?;
-    Ok(if wanted { "now on" } else { "now off" })
+    hyprland.exec(TOGGLE_NIGHT_LIGHT).await?;
+    Ok(if wanted { "turning on" } else { "turning off" })
 }

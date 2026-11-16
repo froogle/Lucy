@@ -4,8 +4,8 @@ author = "human"
 summary = "Manages windows, workspaces, layouts and Omarchy's own settings on the Omarchy desktop"
 command = ["./lucy-omarchy"]
 # Only on Omarchy: Hyprland running, with Omarchy's layout commands. Omarchy's
-# commands find its themes and shell through OMARCHY_PATH, and the screenshot
-# tool reaches the display through WAYLAND_DISPLAY.
+# commands find its themes and shell through OMARCHY_PATH, and its shell (which
+# the bar, lock and theme commands reach) through WAYLAND_DISPLAY.
 requires = { env = [
     "HYPRLAND_INSTANCE_SIGNATURE",
     "XDG_RUNTIME_DIR",
@@ -74,18 +74,19 @@ examples = ["lock the screen", "keep the computer awake"]
 # rest of $XDG_RUNTIME_DIR, Hyprland's and the Omarchy shell's sockets
 # included, stays out: Landlock in v0.1 doesn't confine connecting to a socket.
 # Omarchy's commands keep their state (layouts, themes, toggles) under
-# ~/.local/state/omarchy and caches under ~/.cache/omarchy, read their themes
-# and language from ~/.config/omarchy, and save screenshots in ~/Pictures. The
-# night light checks whether hyprsunset is running through /proc.
+# ~/.local/state/omarchy and caches under ~/.cache/omarchy, and read their
+# themes and language from ~/.config/omarchy. The lock looks for running apps
+# through /proc. The screenshot and the night light's toggle start through
+# Hyprland's exec, outside this sandbox (ADR 0012), so they're listed in
+# commands but need no access here.
 write = [
     "$XDG_RUNTIME_DIR/omarchy-theme-set.lock",
     "$XDG_RUNTIME_DIR/omarchy-theme-set-retint.lock",
     "$XDG_RUNTIME_DIR/omarchy-theme-set-herdr-machines.lock",
     "~/.local/state/omarchy",
     "~/.cache/omarchy",
-    "~/Pictures",
 ]
-read = ["~/.config/omarchy", "~/.config/user-dirs.dirs", "/proc"]
+read = ["~/.config/omarchy", "/proc"]
 commands = [
     "omarchy-capture-screenshot",
     "omarchy-hyprland-workspace-layout-current",

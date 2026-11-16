@@ -69,6 +69,11 @@ impl Hyprland {
         }
     }
 
+    pub async fn exec(&self, command: &str) -> Result<(), String> {
+        self.dispatch(&format!("hl.dsp.exec_cmd({})", lua_string(command)))
+            .await
+    }
+
     async fn query<T: for<'de> Deserialize<'de>>(&self, what: &str) -> Result<T, String> {
         let answer = self.request(&format!("j/{what}")).await?;
         serde_json::from_str(&answer)
@@ -91,4 +96,8 @@ impl Hyprland {
             .map_err(unreachable)?;
         Ok(answer)
     }
+}
+
+pub(crate) fn lua_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }

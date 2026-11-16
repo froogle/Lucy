@@ -174,17 +174,12 @@ impl Plugin {
         fake("omarchy-theme-set", "echo \"$1\" > theme\n");
         std::fs::write(dir.path().join("theme"), "Catppuccin\n").unwrap();
         fake("omarchy-toggle-bar", "");
-        fake("omarchy-capture-screenshot", "");
         fake("omarchy-system-lock", "");
         fake("omarchy-toggle-idle", "");
         fake(
             "omarchy-toggle-nightlight",
             "read on < nightlight\n\
-             if [ \"$1\" = --status ]; then\n\
-             echo \"{\\\"enabled\\\":$on,\\\"temperature\\\":4000}\"\n\
-             elif [ \"$on\" = true ]; then echo false > nightlight\n\
-             else echo true > nightlight\n\
-             fi\n",
+             echo \"{\\\"enabled\\\":$on,\\\"temperature\\\":4000}\"\n",
         );
         std::fs::write(dir.path().join("nightlight"), "false\n").unwrap();
         std::fs::write(dir.path().join("layout"), "dwindle\n").unwrap();
@@ -247,8 +242,8 @@ impl Plugin {
             .to_owned()
     }
 
-    pub fn night_light(&self) -> bool {
-        std::fs::read_to_string(self.dir.path().join("nightlight")).unwrap() == "true\n"
+    pub fn set_night_light(&self, on: bool) {
+        std::fs::write(self.dir.path().join("nightlight"), format!("{on}\n")).unwrap();
     }
 
     pub fn layout(&self) -> String {

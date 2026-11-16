@@ -26,7 +26,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{json, Value};
 
-use hyprland::{Address, Hyprland, Window};
+use hyprland::{lua_string, Address, Hyprland, Window};
 use settings::Named;
 
 /// Where the Plugin reaches the desktop.
@@ -359,10 +359,6 @@ fn lua_window(window: &Window) -> String {
     lua_string(&format!("address:{}", window.address))
 }
 
-fn lua_string(text: &str) -> String {
-    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
 fn string<'a>(args: &'a JsonObject, name: &str) -> Result<Option<&'a str>, String> {
     match args.get(name) {
         None | Some(Value::Null) => Ok(None),
@@ -521,9 +517,14 @@ impl ServerHandler for Omarchy {
             "theme" => self.theme(&args).await,
             "bar" => setting(&args, |action| settings::bar(&self.path, action)).await,
             "night_light" => {
-                setting(&args, |action| settings::night_light(&self.path, action)).await
+                setting(&args, |action| {
+                    settings::night_light(&self.path, &self.hyprland, action)
+                })
+                .await
             }
-            "screenshot" => setting(&args, |action| settings::screenshot(&self.path, action)).await,
+            "screenshot" => {
+                setting(&args, |action| settings::screenshot(&self.hyprland, action)).await
+            }
             "idle_lock" => setting(&args, |action| settings::idle_lock(&self.path, action)).await,
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };
