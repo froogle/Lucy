@@ -86,6 +86,7 @@ impl Action {
 }
 
 impl Omarchy {
+    /// The server, reaching Hyprland and the `omarchy-*` commands where `desktop` says.
     pub fn new(desktop: Desktop) -> Omarchy {
         Omarchy {
             hyprland: Hyprland::new(desktop.socket),
