@@ -1,4 +1,7 @@
 use std::collections::BTreeMap;
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
+use std::time::Duration;
 
 use lucy_ipc::{error_code, Client, Event, Field, FieldKind, InputOpen, Role};
 use ratatui::backend::Backend;
@@ -20,8 +23,14 @@ pub(crate) fn page<B: Backend>(ui: &mut Ui<B>, env: &Env) -> Result<(), Stop> {
         Err(e) => return ui.say(format!("Lucy didn't ask anything: {e}")),
     };
     ui.say(open.message.clone())?;
-    let values = match fields(ui, &open.fields) {
+    let (closes, closed) = mpsc::channel();
+    let watch = Watch::start(client, open.id.clone(), closes);
+    ui.close_on(closed);
+    let typed = fields(ui, &open.fields);
+    let mut client = watch.stop();
+    let values = match typed {
         Ok(values) => values,
+        Err(Stop::Closed) => return ui.say("Lucy closed the box."),
         Err(stop) => {
             let _ = client.cancel_input(&open.id);
             return Err(stop);
@@ -32,6 +41,39 @@ pub(crate) fn page<B: Backend>(ui: &mut Ui<B>, env: &Env) -> Result<(), Stop> {
         Err(e) => ui.say(format!("Lucy didn't take the answer: {e}")),
     }
 }
+
+struct Watch {
+    stop: mpsc::Sender<()>,
+    thread: thread::JoinHandle<Client>,
+}
+
+impl Watch {
+    fn start(mut client: Client, id: String, closes: mpsc::Sender<()>) -> Watch {
+        let (stop, stopped) = mpsc::channel::<()>();
+        let thread = thread::spawn(move || {
+            while let Err(TryRecvError::Empty) = stopped.try_recv() {
+                let closed = match client.next_event_within(WATCH_EVERY) {
+                    Ok(Some(Event::InputClose(close))) => close.id == id,
+                    Ok(_) => false,
+                    Err(_) => true,
+                };
+                if closed {
+                    let _ = closes.send(());
+                    break;
+                }
+            }
+            client
+        });
+        Watch { stop, thread }
+    }
+
+    fn stop(self) -> Client {
+        drop(self.stop);
+        self.thread.join().expect("the watch doesn't panic")
+    }
+}
+
+const WATCH_EVERY: Duration = Duration::from_millis(50);
 
 fn next_open(client: &mut Client) -> Result<InputOpen, lucy_ipc::Error> {
     loop {

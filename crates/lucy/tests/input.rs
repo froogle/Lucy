@@ -43,6 +43,20 @@ fn esc_closes_the_box_unanswered() {
 }
 
 #[test]
+fn the_page_goes_when_lucy_closes_the_box() {
+    let home = Home::with_lucyd();
+    let asked = home.ask_typed("Which page shall I open?", FieldKind::Url, vec![]);
+    let env = home.env();
+    let click_the_indicator = move || env.connect().unwrap().end_session().unwrap();
+
+    let tui = home.tui(Open::Input, Script::new().then(click_the_indicator).idle());
+
+    assert_eq!(tui.result, Ok(()));
+    assert!(tui.shown.contains("Lucy closed the box"), "{}", tui.shown);
+    assert_eq!(asked.recv().unwrap(), TypedAnswer::Cancelled);
+}
+
+#[test]
 fn a_choice_is_picked_from_its_options() {
     let home = Home::with_lucyd();
     let choices = vec!["red".to_owned(), "blue".to_owned()];

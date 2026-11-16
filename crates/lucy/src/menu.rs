@@ -41,7 +41,7 @@ pub fn run<B: Backend>(
         open => show(ui, &context, open),
     };
     match shown {
-        Ok(()) | Err(Stop::Quit | Stop::Back) => Ok(()),
+        Ok(()) | Err(Stop::Quit | Stop::Back | Stop::Closed) => Ok(()),
         Err(Stop::Io(e)) => Err(e.to_string()),
     }
 }

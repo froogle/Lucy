@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use ratatui::backend::Backend;
@@ -17,6 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 
+const WATCH_EVERY: Duration = Duration::from_millis(50);
+
 /// Why a question went unanswered.
 #[derive(Debug)]
 pub enum Stop {
@@ -24,6 +27,8 @@ pub enum Stop {
     Quit,
     /// The user pressed Esc.
     Back,
+    /// What [`Ui::close_on`] watches took the question away.
+    Closed,
     Io(io::Error),
 }
 
@@ -32,6 +37,7 @@ impl std::fmt::Display for Stop {
         match self {
             Stop::Quit => write!(f, "cancelled"),
             Stop::Back => write!(f, "went back"),
+            Stop::Closed => write!(f, "closed"),
             Stop::Io(e) => write!(f, "{e}"),
         }
     }
@@ -59,6 +65,14 @@ pub trait Keys {
     ///
     /// When the terminal can't be read.
     fn next(&mut self) -> io::Result<Option<KeyEvent>>;
+
+    /// The next key press if one comes within `wait`.
+    /// `None` when none did, or the screen needs drawing again.
+    ///
+    /// # Errors
+    ///
+    /// When the terminal can't be read.
+    fn within(&mut self, wait: Duration) -> io::Result<Option<KeyEvent>>;
 
     /// Whether Ctrl-C was pressed, without waiting. Other keys pressed
     /// meanwhile are dropped.
@@ -99,6 +113,16 @@ impl Keys for Console {
         }
     }
 
+    fn within(&mut self, wait: Duration) -> io::Result<Option<KeyEvent>> {
+        if !event::poll(wait)? {
+            return Ok(None);
+        }
+        match event::read()? {
+            Event::Key(key) if key.kind != KeyEventKind::Release => Ok(Some(key)),
+            _ => Ok(None),
+        }
+    }
+
     fn interrupted(&mut self) -> io::Result<bool> {
         while event::poll(Duration::ZERO)? {
             if let Event::Key(key) = event::read()? {
@@ -124,7 +148,13 @@ impl Keys for Console {
 /// Key presses written down in advance, for tests. Running out while a
 /// question waits is an error, so a test can't hang.
 #[derive(Default)]
-pub struct Script(VecDeque<KeyEvent>);
+pub struct Script(VecDeque<Step>);
+
+enum Step {
+    Key(KeyEvent),
+    Run(Box<dyn FnOnce()>),
+    Idle,
+}
 
 impl Script {
     pub fn new() -> Script {
@@ -132,7 +162,8 @@ impl Script {
     }
 
     pub fn press(mut self, code: KeyCode) -> Script {
-        self.0.push_back(KeyEvent::new(code, KeyModifiers::NONE));
+        self.0
+            .push_back(Step::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         self
     }
 
@@ -162,26 +193,69 @@ impl Script {
     }
 
     pub fn ctrl_c(mut self) -> Script {
-        self.0
-            .push_back(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        self.0.push_back(Step::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        self
+    }
+
+    /// Runs `run` while a question waits for the next key, as something
+    /// outside the terminal would.
+    pub fn then(mut self, run: impl FnOnce() + 'static) -> Script {
+        self.0.push_back(Step::Run(Box::new(run)));
+        self
+    }
+
+    /// Presses nothing more: a question that [`Ui::close_on`] watches waits
+    /// until it is closed.
+    pub fn idle(mut self) -> Script {
+        self.0.push_back(Step::Idle);
         self
     }
 
     /// Whether every key has been pressed.
     pub fn is_done(&self) -> bool {
-        self.0.is_empty()
+        self.0.iter().all(|step| matches!(step, Step::Idle))
     }
-}
 
-impl Keys for Script {
-    fn next(&mut self) -> io::Result<Option<KeyEvent>> {
+    fn step(
+        &mut self,
+        idle: impl FnOnce() -> io::Result<Option<KeyEvent>>,
+    ) -> io::Result<Option<KeyEvent>> {
         match self.0.pop_front() {
-            Some(key) => Ok(Some(key)),
+            Some(Step::Key(key)) => Ok(Some(key)),
+            Some(Step::Run(run)) => {
+                run();
+                Ok(None)
+            }
+            Some(Step::Idle) => {
+                self.0.push_front(Step::Idle);
+                idle()
+            }
             None => Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "the script ran out of key presses",
             )),
         }
+    }
+}
+
+impl Keys for Script {
+    fn next(&mut self) -> io::Result<Option<KeyEvent>> {
+        self.step(|| {
+            Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the script is idle, and nothing watches for the question to close",
+            ))
+        })
+    }
+
+    fn within(&mut self, wait: Duration) -> io::Result<Option<KeyEvent>> {
+        self.step(|| {
+            std::thread::sleep(wait);
+            Ok(None)
+        })
     }
 
     fn interrupted(&mut self) -> io::Result<bool> {
@@ -614,6 +688,7 @@ fn draw_prompt(frame: &mut Frame, prompt: &Prompt, area: Rect) -> String {
 pub struct Ui<'k, B: Backend> {
     terminal: Terminal<B>,
     keys: &'k mut dyn Keys,
+    closes: Option<mpsc::Receiver<()>>,
     pub screen: Screen,
 }
 
@@ -622,12 +697,28 @@ impl<'k, B: Backend> Ui<'k, B> {
         Ui {
             terminal,
             keys,
+            closes: None,
             screen: Screen::new(title),
         }
     }
 
     pub fn terminal(&self) -> &Terminal<B> {
         &self.terminal
+    }
+
+    /// From now on, a question stops with [`Stop::Closed`] once `closes` receives.
+    pub fn close_on(&mut self, closes: mpsc::Receiver<()>) {
+        self.closes = Some(closes);
+    }
+
+    fn next_key(&mut self) -> Result<Option<KeyEvent>, Stop> {
+        let Some(closes) = &self.closes else {
+            return Ok(self.keys.next()?);
+        };
+        if closes.try_recv().is_ok() {
+            return Err(Stop::Closed);
+        }
+        Ok(self.keys.within(WATCH_EVERY)?)
     }
 
     fn draw(&mut self) -> Result<(), Stop> {
@@ -647,7 +738,7 @@ impl<'k, B: Backend> Ui<'k, B> {
         self.screen.ask(prompt);
         loop {
             self.draw()?;
-            let Some(key) = self.keys.next()? else {
+            let Some(key) = self.next_key()? else {
                 continue;
             };
             let typed = self.screen.prompt.as_ref().is_some_and(Prompt::is_typed);

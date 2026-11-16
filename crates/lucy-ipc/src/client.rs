@@ -236,6 +236,34 @@ impl Client {
         serde_json::from_str(&line).map_err(|e| Error::Protocol(format!("bad event: {e}")))
     }
 
+    /// The next event if one arrives within `wait`, else `None`.
+    /// It leaves the connection with no read timeout.
+    ///
+    /// # Errors
+    ///
+    /// When the connection fails or lucyd sends something this client can't read.
+    pub fn next_event_within(&mut self, wait: Duration) -> Result<Option<Event>, Error> {
+        if self.early_notifications.is_empty() && self.reader.buffer().is_empty() {
+            self.set_read_timeout(Some(wait))?;
+            let arrived = self.reader.fill_buf().map(|line| !line.is_empty());
+            self.set_read_timeout(None)?;
+            match arrived {
+                Ok(true) => {}
+                Ok(false) => return Err(Error::Closed),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return Ok(None)
+                }
+                Err(e) => return Err(Error::Io(e)),
+            }
+        }
+        self.next_event().map(Some)
+    }
+
     fn call<T: DeserializeOwned>(&mut self, method: &str, params: Value) -> Result<T, Error> {
         let id = self.next_id;
         self.next_id += 1;
