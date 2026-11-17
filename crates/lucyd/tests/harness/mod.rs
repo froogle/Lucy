@@ -15,8 +15,8 @@ use lucy_config::credentials::CredentialStore;
 use lucy_config::{Config, Provider};
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Clock, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay,
-    SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
+    Adapters, Clock, HandOff, Launcher, Notification, NotificationAction, Notifier, RateLimit,
+    Relay, SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
     ThinkingEvent, Timer, Tts, Workspace,
 };
 use lucyd::plugins::Environment;
@@ -56,28 +56,46 @@ const PERSONA: &str = "You are Lucy.";
 
 impl Harness {
     pub fn start() -> Harness {
-        Harness::launch(None, Some(PERSONA), None, None, None)
+        Harness::launch(None, Some(PERSONA), Real::None, None, None)
     }
 
     pub fn with_env(vars: &[(&str, &str)]) -> Harness {
         let env = Environment::new(vars.iter().copied());
-        Harness::launch_in(env, None, Some(PERSONA), None, None, None)
+        Harness::launch_in(env, None, Some(PERSONA), Real::None, None, None)
     }
 
     pub fn with_config(config: &str) -> Harness {
-        Harness::launch(Some(config), Some(PERSONA), None, None, None)
+        Harness::launch(Some(config), Some(PERSONA), Real::None, None, None)
     }
 
     pub fn first_run() -> Harness {
-        Harness::launch(None, None, None, None, None)
+        Harness::launch(None, None, Real::None, None, None)
     }
 
     pub fn with_thinking(config: Option<&str>, thinking: Arc<dyn Thinking>) -> Harness {
-        Harness::launch(config, Some(PERSONA), Some(thinking), None, None)
+        Harness::launch(config, Some(PERSONA), Real::Thinking(thinking), None, None)
+    }
+
+    pub fn with_hand_off(env: &[(&str, &str)], hand_off: Arc<dyn Thinking>) -> Harness {
+        let env = Environment::new(env.iter().copied());
+        Harness::launch_in(
+            env,
+            None,
+            Some(PERSONA),
+            Real::HandOff(hand_off),
+            None,
+            None,
+        )
     }
 
     pub fn with_superwhisper(config: &str, superwhisper: Arc<dyn Stt>) -> Harness {
-        Harness::launch(Some(config), Some(PERSONA), None, None, Some(superwhisper))
+        Harness::launch(
+            Some(config),
+            Some(PERSONA),
+            Real::None,
+            None,
+            Some(superwhisper),
+        )
     }
 
     pub fn with_superwhisper_and_thinking(
@@ -88,7 +106,7 @@ impl Harness {
         Harness::launch(
             Some(config),
             Some(PERSONA),
-            Some(thinking),
+            Real::Thinking(thinking),
             None,
             Some(superwhisper),
         )
@@ -108,25 +126,25 @@ impl Harness {
         )
         .expect("the fake microphone opens");
         let ears = Some((ears, mic, echo));
-        Harness::launch(Some(config), Some(PERSONA), None, ears, None)
+        Harness::launch(Some(config), Some(PERSONA), Real::None, ears, None)
     }
 
     fn launch(
         config: Option<&str>,
         persona: Option<&str>,
-        real_thinking: Option<Arc<dyn Thinking>>,
+        real: Real,
         ears: Option<(lucyd::audio::Ears, FakeMic, FakeEchoCanceller)>,
         superwhisper: Option<Arc<dyn Stt>>,
     ) -> Harness {
         let env = Environment::from_process();
-        Harness::launch_in(env, config, persona, real_thinking, ears, superwhisper)
+        Harness::launch_in(env, config, persona, real, ears, superwhisper)
     }
 
     fn launch_in(
         env: Environment,
         config: Option<&str>,
         persona: Option<&str>,
-        real_thinking: Option<Arc<dyn Thinking>>,
+        real: Real,
         ears: Option<(lucyd::audio::Ears, FakeMic, FakeEchoCanceller)>,
         superwhisper: Option<Arc<dyn Stt>>,
     ) -> Harness {
@@ -203,7 +221,7 @@ impl Harness {
                 hearing,
                 stt: Arc::new(stt.clone()),
                 superwhisper: superwhisper.unwrap_or_else(|| Arc::new(FakeStt::default())),
-                thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
+                thinking: real.thinking(&thinking),
                 tts: Box::new(tts.clone()),
                 notifier: Arc::new(notifier.clone()),
                 launcher: Arc::new(launcher.clone()),
@@ -514,6 +532,15 @@ impl Harness {
         }
     }
 
+    pub fn assert_not_on_bus(&self, texts: &[&str]) {
+        let lines = self.bus.lock().unwrap().clone();
+        for line in &lines {
+            for text in texts {
+                assert!(!line.contains(text), "{text:?} appeared on the bus: {line}");
+            }
+        }
+    }
+
     pub fn assert_no_level_on_bus(&self) {
         let bus = self.bus.lock().unwrap();
         let level = bus.iter().find(|line| line.contains(r#""method":"level""#));
@@ -524,6 +551,66 @@ impl Harness {
         let bus = self.bus.lock().unwrap();
         let idle = |line: &String| line.contains(r#""state":"idle""#);
         bus.len() > 1 && bus.last().is_some_and(idle)
+    }
+}
+
+enum Real {
+    None,
+    Thinking(Arc<dyn Thinking>),
+    HandOff(Arc<dyn Thinking>),
+}
+
+impl Real {
+    fn thinking(self, fake: &FakeThinking) -> Arc<dyn Thinking> {
+        match self {
+            Real::None => Arc::new(fake.clone()),
+            Real::Thinking(real) => real,
+            Real::HandOff(hand_off) => Arc::new(HandOffTo {
+                fake: fake.clone(),
+                hand_off,
+            }),
+        }
+    }
+}
+
+struct HandOffTo {
+    fake: FakeThinking,
+    hand_off: Arc<dyn Thinking>,
+}
+
+impl Thinking for HandOffTo {
+    fn open(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+    ) -> Box<dyn SessionModel> {
+        self.fake.open(provider, events, relay, instructions)
+    }
+
+    fn health(&self, provider: &Provider) -> Result<(), String> {
+        self.fake.health(provider)
+    }
+
+    fn check(&self, provider: &Provider) -> Result<(), String> {
+        self.fake.check(provider)
+    }
+
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        self.hand_off
+            .open_hand_off(provider, events, relay, instructions, hand_off)
+    }
+
+    fn shutdown(&self) {
+        self.hand_off.shutdown();
     }
 }
 
@@ -723,6 +810,7 @@ pub struct FakeThinking {
     unhealthy: Arc<Mutex<HashMap<String, String>>>,
     failing_checks: Arc<Mutex<HashMap<String, String>>>,
     pub delegate: FakeDelegate,
+    pub hand_off: FakeDelegate,
 }
 
 impl FakeThinking {
@@ -730,6 +818,7 @@ impl FakeThinking {
         let (turns_tx, turns) = std_mpsc::channel();
         FakeThinking {
             delegate: FakeDelegate::new(),
+            hand_off: FakeDelegate::new(),
             turns_tx,
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
@@ -945,6 +1034,26 @@ impl Thinking for FakeThinking {
             interrupts: Arc::default(),
         })
     }
+
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        let delegate = &self.hand_off;
+        delegate.opened.lock().unwrap().push(provider.clone());
+        *delegate.events.lock().unwrap() = Some(events);
+        *delegate.relay.lock().unwrap() = Some(relay);
+        *delegate.instructions.lock().unwrap() = Some(instructions);
+        *delegate.hand_off.lock().unwrap() = Some(hand_off);
+        Box::new(FakeSessionModel {
+            turns: delegate.turns_tx.clone(),
+            interrupts: Arc::default(),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -955,6 +1064,7 @@ pub struct FakeDelegate {
     relay: Arc<Mutex<Option<Relay>>>,
     instructions: Arc<Mutex<Option<String>>>,
     workspace: Arc<Mutex<Option<Workspace>>>,
+    hand_off: Arc<Mutex<Option<HandOff>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
 }
 
@@ -968,6 +1078,7 @@ impl FakeDelegate {
             relay: Arc::default(),
             instructions: Arc::default(),
             workspace: Arc::default(),
+            hand_off: Arc::default(),
             opened: Arc::default(),
         }
     }
@@ -998,6 +1109,11 @@ impl FakeDelegate {
         workspace.clone().expect("a Delegate was opened")
     }
 
+    pub fn hand_off(&self) -> HandOff {
+        let opened = || self.hand_off.lock().unwrap().clone();
+        wait_until("a Hand-off to open", opened)
+    }
+
     pub fn call_tool_with(
         &self,
         name: &str,
@@ -1018,11 +1134,27 @@ impl FakeDelegate {
     }
 
     pub fn turn_end(&self) {
+        self.send(ThinkingEvent::TurnEnd);
+    }
+
+    pub fn conversation(&self, conversation: &str) {
+        self.send(ThinkingEvent::Conversation(conversation.to_owned()));
+    }
+
+    pub fn answer(&self, conversation: &str, answer: &str) {
+        self.send(ThinkingEvent::Conversation(conversation.to_owned()));
+        self.send(ThinkingEvent::Final(answer.to_owned()));
+        self.send(ThinkingEvent::TurnEnd);
+    }
+
+    pub fn dies(&self) {
+        self.send(ThinkingEvent::Died);
+    }
+
+    fn send(&self, event: ThinkingEvent) {
         let events = self.events.lock().unwrap();
         let events = events.as_ref().expect("a Delegate is open");
-        events
-            .send(ThinkingEvent::TurnEnd)
-            .expect("lucyd is reading the Delegate");
+        events.send(event).expect("lucyd is reading the Delegate");
     }
 
     fn relay(&self) -> Relay {

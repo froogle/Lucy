@@ -5,7 +5,7 @@ use std::sync::Arc;
 use lucy_config::{Kind, Provider};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{HandOff, Relay, SessionModel, Thinking, ThinkingEvent, Workspace};
 
 /// Hands each call to the adapter for the Provider's kind.
 pub struct ByKind {
@@ -52,6 +52,18 @@ impl Thinking for ByKind {
     ) -> Box<dyn SessionModel> {
         self.adapter(provider)
             .open_delegate(provider, events, relay, instructions, workspace)
+    }
+
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        self.adapter(provider)
+            .open_hand_off(provider, events, relay, instructions, hand_off)
     }
 
     fn shutdown(&self) {

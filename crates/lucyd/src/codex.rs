@@ -9,7 +9,7 @@ use lucy_config::Provider;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 use crate::sync::Locked;
@@ -140,9 +140,12 @@ impl Codex {
         let Role {
             relay,
             instructions,
-            workspace,
+            place,
         } = role;
-        let workspace = workspace.as_ref();
+        let workspace = match place {
+            Place::Workspace(workspace) => Some(workspace),
+            Place::WorkDir | Place::HandOff(_) => None,
+        };
         let started = self
             .connect(provider, Some(relay), workspace, inbox)
             .and_then(|(mut server, child)| {
@@ -228,7 +231,7 @@ impl Thinking for Codex {
         let role = Role {
             relay,
             instructions,
-            workspace: None,
+            place: Place::WorkDir,
         };
         self.open_as(provider, events, role)
     }
@@ -244,7 +247,7 @@ impl Thinking for Codex {
         let role = Role {
             relay,
             instructions,
-            workspace: Some(workspace),
+            place: Place::Workspace(workspace),
         };
         self.open_as(provider, events, role)
     }
