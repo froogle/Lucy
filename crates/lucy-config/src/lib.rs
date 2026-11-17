@@ -39,6 +39,7 @@ impl Default for Config {
             kind: Kind::Claude,
             model: Some(recommended_model(Kind::Claude, tier).to_owned()),
             allow_api_key: false,
+            program: None,
         };
         Config {
             session: Session::default(),
@@ -89,6 +90,9 @@ pub struct Provider {
     /// Turns the subscription guard off, so the CLI may bill an API key.
     #[serde(default)]
     pub allow_api_key: bool,
+    /// The CLI to run, used as given; `None` finds it on `PATH`, past a mise shim.
+    #[serde(default)]
+    pub program: Option<PathBuf>,
 }
 
 /// Which CLI a Thinking Provider drives.

@@ -257,7 +257,7 @@ impl Session {
                 outputs
             }
             Input::Thinking(ThinkingEvent::RateLimit(_)) => vec![],
-            Input::Thinking(ThinkingEvent::Died) => vec![],
+            Input::Thinking(ThinkingEvent::Died(_) | ThinkingEvent::Failed(_)) => vec![],
             Input::Thinking(ThinkingEvent::Unavailable(reason)) => {
                 self.sentence = reason;
                 self.turn_in_progress = false;
