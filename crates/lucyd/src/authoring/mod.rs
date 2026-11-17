@@ -14,10 +14,10 @@ use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use crate::adapters::{
-    Adapters, Clock, Notification, NotificationKind, Notifier, SessionModel, Thinking,
+    short, Adapters, Clock, Exit, Notification, NotificationKind, Notifier, SessionModel, Thinking,
     ThinkingEvent, Timer, Workspace,
 };
-use crate::mcp::{error, text, tool, Caller, Relays, Token};
+use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::PLUGIN_BUILD;
 use crate::plugins::{sandbox, Host};
 use crate::runner::{self, Command, When};
@@ -473,7 +473,14 @@ impl Build {
                 event = events.recv() => match event {
                     Some(ThinkingEvent::TurnEnd) => self.turn_ended(),
                     Some(ThinkingEvent::Unavailable(reason)) => self.give_up(reason),
-                    Some(ThinkingEvent::Died) | None => {
+                    Some(ThinkingEvent::Failed(message)) => {
+                        self.give_up(format!("the builder failed: {}", short(&message)));
+                    }
+                    Some(ThinkingEvent::Died(exit)) => {
+                        self.died(&exit);
+                        return;
+                    }
+                    None => {
                         self.give_up("the builder stopped unexpectedly".to_owned());
                         return;
                     }
@@ -769,10 +776,23 @@ impl Build {
         self.give_up(reason.unwrap_or_else(|| "the builder stopped without submitting it".into()));
     }
 
+    fn died(&self, exit: &Exit) {
+        if self.state.locked().stage != Stage::Over {
+            eprintln!(
+                "lucyd: the {} Plugin's builder stopped ({}); the end of its stderr:\n{}",
+                self.name,
+                exit.status_text(),
+                exit.stderr.join("\n")
+            );
+        }
+        self.give_up(exit.stopped("the builder"));
+    }
+
     fn give_up(&self, reason: String) {
         if self.state.locked().stage == Stage::Over {
             return;
         }
+        eprintln!("lucyd: gave up building the {} Plugin: {reason}", self.name);
         self.tell(
             format!(
                 "{PLUGIN_BUILD} The {} Plugin couldn't be built: {reason}\n\nTell the \
@@ -837,12 +857,4 @@ fn is_plugin_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-fn string(arguments: &JsonObject, key: &str) -> String {
-    arguments
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned()
 }

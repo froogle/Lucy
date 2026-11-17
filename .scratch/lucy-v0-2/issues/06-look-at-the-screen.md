@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Screen access. ADR 0008. Stories 32–36, 42, 43.
 
 **Seams:** owns the Manifest mark for screen tools (one hash-covered field per tool, `screen = "look" | "click" | "key" | "probe"`; 07 and 10 use the last three), the start-up transcript sweep, image passthrough in proxied results, the `[screen]` config section, the "looking" `state` flag and the `Screen` trait inside the Omarchy Plugin (capture now; pointer and keyboard in 07).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -25,3 +25,5 @@ Spec: [v0.2](../spec.md), Screen access. ADR 0008. Stories 32–36, 42, 43.
 - [ ] Once, by hand on Omarchy: "what's on my screen?" gets a sensible answer after a yes
 
 ## Comments
+
+2026-11-17: built in slice 1 (`lucy-v0-2-slice-1`). The Plugin captures with `grim`. Images are scaled to at most 1568 px on the long edge and 1.15 MP (the smallest Claude limit, so the API never rescales and 07's coordinates hold). The "looking" mark shows on every allowed look, the first included, and lasts until the Turn ends: cleared per call, it flashed too briefly to see. Any answer but yes, a cut-in included, declines for the Session. lucyd holds rmcp's log to warnings, since at trace it logged whole tool results, images included (ADR 0008). Hand check left: on Omarchy, "what's on my screen?" after a yes.

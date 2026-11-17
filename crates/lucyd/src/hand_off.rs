@@ -1,0 +1,472 @@
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
+
+use lucy_config::{Kind, Provider};
+use rmcp::model::{CallToolResult, JsonObject, Tool};
+use serde_json::json;
+use tokio::sync::{mpsc, watch, Notify};
+
+use crate::adapters::{
+    Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
+    Thinking, ThinkingEvent, PERMISSION_TOOL,
+};
+use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
+use crate::model_text::HAND_OFF;
+use crate::plugins::Environment;
+use crate::runner::Command;
+use crate::sync::Locked;
+
+const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice assistant, and \
+                     isn't at the keyboard. Work on your own. Lucy reads a short summary of your \
+                     final message aloud and shows them the whole of it, so end with a final \
+                     message that says plainly what you did or found.";
+
+const CAPTURE_WAIT: Duration = Duration::from_secs(5);
+
+const DENIED: &str = "The user's Claude settings don't allow this, and Lucy can't ask them about \
+                      it, so it's denied. Carry on without it, and say in your final message \
+                      what you'd need.";
+
+pub struct HandOffs {
+    thinking: Arc<dyn Thinking>,
+    relays: Relays,
+    env: Environment,
+    commands: mpsc::UnboundedSender<Command>,
+    notifier: Arc<dyn Notifier>,
+    clock: Arc<dyn Clock>,
+    working: watch::Sender<Working>,
+    current: Mutex<Option<Arc<Job>>>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Working {
+    #[default]
+    No,
+    Yes,
+}
+
+impl HandOffs {
+    pub fn new(
+        adapters: &Adapters,
+        relays: Relays,
+        env: Environment,
+        commands: mpsc::UnboundedSender<Command>,
+    ) -> Arc<HandOffs> {
+        Arc::new(HandOffs {
+            thinking: adapters.thinking.clone(),
+            relays,
+            env,
+            commands,
+            notifier: adapters.notifier.clone(),
+            clock: adapters.clock.clone(),
+            working: watch::Sender::new(Working::No),
+            current: Mutex::default(),
+        })
+    }
+
+    pub fn working(&self) -> watch::Receiver<Working> {
+        self.working.subscribe()
+    }
+
+    pub fn request(self: &Arc<Self>, arguments: &JsonObject) -> CallToolResult {
+        let request = string(arguments, "request");
+        if request.trim().is_empty() {
+            return error("request must be what the user wants Claude to do, in their words.");
+        }
+        let folder = match self.folder(&string(arguments, "folder")) {
+            Ok(folder) => folder,
+            Err(refused) => return error(refused),
+        };
+        let mut current = self.current.locked();
+        if current.is_some() {
+            return error(
+                "Claude is still working on the last thing the user handed it. Tell them, and \
+                 that they can ask again once it's done.",
+            );
+        }
+        let job = Arc::new(Job {
+            request,
+            folder,
+            hand_offs: Arc::downgrade(self),
+            state: Mutex::default(),
+            stopping: Notify::new(),
+        });
+        *current = Some(job.clone());
+        drop(current);
+        self.working.send_replace(Working::Yes);
+        tokio::spawn(job.run());
+        text(
+            "Claude has started on it. Tell the user so in a few words, and carry on with \
+             anything else they ask. Lucy will tell you when Claude has finished.",
+        )
+    }
+
+    fn folder(&self, said: &str) -> Result<PathBuf, String> {
+        let said = said.trim();
+        let home = || self.env.var("HOME").map(PathBuf::from).unwrap_or_default();
+        let folder = if said.is_empty() || said == "~" {
+            home()
+        } else if let Some(below_home) = said.strip_prefix("~/") {
+            home().join(below_home)
+        } else if Path::new(said).is_absolute() {
+            PathBuf::from(said)
+        } else {
+            return Err(format!(
+                "\"{said}\" isn't a full path, and Lucy can't find folders by name yet. Ask \
+                 the user to say the full path, such as ~/projects/{said}."
+            ));
+        };
+        if !folder.is_dir() {
+            return Err(format!(
+                "There's no folder at {}. Tell the user, and ask them to say the full path.",
+                folder.display()
+            ));
+        }
+        Ok(folder)
+    }
+
+    pub fn stop(&self) {
+        let current = self.current.locked().clone();
+        if let Some(job) = current {
+            job.stop();
+        }
+    }
+
+    fn show(&self, notification: Notification) {
+        self.notifier
+            .notify(notification, mpsc::unbounded_channel().0);
+    }
+
+    fn finished(&self, job: &Job) {
+        let mut current = self.current.locked();
+        if current.as_deref().is_some_and(|c| std::ptr::eq(c, job)) {
+            *current = None;
+            self.working.send_replace(Working::No);
+        }
+    }
+
+    async fn environment(&self) -> Vec<(OsString, OsString)> {
+        match login_env(&self.env, &*self.clock).await {
+            Ok(env) => env,
+            Err(why) => {
+                eprintln!("lucyd: the Hand-off uses lucyd's own environment: {why}");
+                self.env.vars()
+            }
+        }
+    }
+}
+
+pub fn hand_to_claude_tool() -> Tool {
+    tool(
+        "hand_to_claude",
+        "Pass a request to the user's own Claude Code when they say \"tell Claude to …\" or \
+         \"ask Claude to …\". It works on its own, with their settings and integrations, in the \
+         folder they named. Lucy tells you when it has finished.",
+        json!({
+            "type": "object",
+            "properties": {
+                "request": {"type": "string", "description": "What the user wants Claude to do, in their words"},
+                "folder": {"type": "string", "description": "The folder as the user said it: an absolute path or one starting with ~. Leave it out when they named none."},
+            },
+            "required": ["request"],
+        }),
+    )
+}
+
+fn permission_tool() -> Tool {
+    tool(
+        PERMISSION_TOOL,
+        "Asks the user whether Claude may use a tool their Claude settings don't allow.",
+        json!({
+            "type": "object",
+            "properties": {
+                "tool_name": {"type": "string"},
+                "input": {"type": "object"},
+                "tool_use_id": {"type": "string"},
+            },
+            "required": ["tool_name", "input"],
+        }),
+    )
+}
+
+pub fn hand_off_tools() -> Vec<Tool> {
+    vec![permission_tool()]
+}
+
+pub struct Job {
+    request: String,
+    folder: PathBuf,
+    hand_offs: Weak<HandOffs>,
+    state: Mutex<JobState>,
+    stopping: Notify,
+}
+
+#[derive(Default)]
+struct JobState {
+    over: bool,
+    model: Option<Box<dyn SessionModel>>,
+    token: Option<Token>,
+    conversation: Option<String>,
+    answer: Option<String>,
+}
+
+impl Job {
+    async fn run(self: Arc<Self>) {
+        let Some(hand_offs) = self.hand_offs.upgrade() else {
+            return;
+        };
+        let env = hand_offs.environment().await;
+        let (relay, token) = hand_offs
+            .relays
+            .issue(Caller::HandOff(Arc::downgrade(&self)));
+        let (events_tx, events) = mpsc::unbounded_channel();
+        let hand_off = HandOff {
+            folder: self.folder.clone(),
+            env,
+        };
+        {
+            let mut state = self.state.locked();
+            if state.over {
+                return;
+            }
+            let mut model = hand_offs.thinking.open_hand_off(
+                &claude(),
+                events_tx,
+                relay,
+                BRIEF.to_owned(),
+                hand_off,
+            );
+            model.send_turn(self.request.clone());
+            state.model = Some(model);
+            state.token = Some(token);
+        }
+        drop(hand_offs);
+        self.follow(events).await;
+    }
+
+    async fn follow(&self, mut events: mpsc::UnboundedReceiver<ThinkingEvent>) {
+        loop {
+            tokio::select! {
+                biased;
+                event = events.recv() => match event {
+                    Some(ThinkingEvent::Conversation(id)) => {
+                        self.state.locked().conversation = Some(id);
+                    }
+                    Some(ThinkingEvent::Final(answer)) => self.state.locked().answer = Some(answer),
+                    Some(ThinkingEvent::TurnEnd) => return self.answered(),
+                    Some(ThinkingEvent::Unavailable(reason)) => return self.failed(&reason),
+                    Some(ThinkingEvent::Failed(message)) => return self.failed(&message),
+                    Some(ThinkingEvent::Died(exit)) => return self.died(&exit),
+                    None => return self.failed("Claude stopped unexpectedly."),
+                    Some(_) => {}
+                },
+                () = self.stopping.notified() => return self.stopped(),
+            }
+        }
+    }
+
+    pub async fn call(&self, name: &str, _arguments: &JsonObject) -> Option<CallToolResult> {
+        (name == PERMISSION_TOOL)
+            .then(|| text(json!({"behavior": "deny", "message": DENIED}).to_string()))
+    }
+
+    fn answered(&self) {
+        let (answer, conversation) = {
+            let state = self.state.locked();
+            (state.answer.clone(), state.conversation.clone())
+        };
+        let resume = self.resume(conversation.as_deref());
+        let summary = "Claude has finished";
+        match answer.filter(|answer| !answer.trim().is_empty()) {
+            Some(answer) => {
+                self.show(summary, format!("{answer}{resume}"));
+                self.tell(
+                    format!(
+                        "{HAND_OFF} Claude has finished what the user handed it: \"{}\". Its \
+                         final message:\n\n{answer}\n\nTell the user what it says in one to \
+                         three short spoken sentences. They have the whole message in a \
+                         notification.",
+                        self.request
+                    ),
+                    summary,
+                    "Lucy will tell you about it at your next Session.",
+                );
+            }
+            None => {
+                self.show(
+                    summary,
+                    format!("Claude left no final message, so Lucy can't say what it did.{resume}"),
+                );
+                self.tell(
+                    format!(
+                        "{HAND_OFF} Claude has finished what the user handed it: \"{}\", but \
+                         left no final message, so there's nothing to report. Tell the user \
+                         plainly, in a sentence.",
+                        self.request
+                    ),
+                    summary,
+                    "Lucy will tell you more at your next Session.",
+                );
+            }
+        }
+        self.finish();
+    }
+
+    fn failed(&self, reason: &str) {
+        let conversation = self.state.locked().conversation.clone();
+        self.show(
+            "Claude couldn't finish",
+            format!("{reason}{}", self.resume(conversation.as_deref())),
+        );
+        self.tell(
+            format!(
+                "{HAND_OFF} Claude couldn't finish what the user handed it: {reason}\n\nTell \
+                 the user plainly, in a sentence."
+            ),
+            "Claude couldn't finish",
+            "Lucy will tell you more at your next Session.",
+        );
+        self.finish();
+    }
+
+    fn died(&self, exit: &Exit) {
+        eprintln!(
+            "lucyd: the Hand-off's claude stopped ({}); the end of its stderr:\n{}",
+            exit.status_text(),
+            exit.stderr.join("\n")
+        );
+        self.failed(&exit.stopped("Claude"));
+    }
+
+    fn stop(&self) {
+        let started = {
+            let mut state = self.state.locked();
+            if state.over {
+                return;
+            }
+            state.over = state.model.is_none();
+            state.model.is_some()
+        };
+        if started {
+            self.stopping.notify_one();
+        } else {
+            self.stopped();
+        }
+    }
+
+    fn stopped(&self) {
+        let conversation = self.state.locked().conversation.clone();
+        self.show(
+            "Lucy stopped Claude",
+            format!(
+                "The Session ended before Claude had finished.{}",
+                self.resume(conversation.as_deref())
+            ),
+        );
+        self.finish();
+    }
+
+    fn resume(&self, conversation: Option<&str>) -> String {
+        match conversation {
+            Some(id) => format!(
+                "\n\nTo carry on at your keyboard, in {}: claude --resume {id}",
+                self.folder.display()
+            ),
+            None => String::new(),
+        }
+    }
+
+    fn show(&self, summary: &str, body: String) {
+        if let Some(hand_offs) = self.hand_offs.upgrade() {
+            hand_offs.show(Notification {
+                summary: summary.to_owned(),
+                body,
+                action: None,
+                kind: NotificationKind::HandOff,
+            });
+        }
+    }
+
+    fn tell(&self, text: String, summary: &str, kept: &str) {
+        if let Some(hand_offs) = self.hand_offs.upgrade() {
+            let kept = Notification {
+                summary: summary.to_owned(),
+                body: kept.to_owned(),
+                action: None,
+                kind: NotificationKind::HandOff,
+            };
+            let _ = hand_offs
+                .commands
+                .send(Command::TurnOrNextSession(text, kept));
+        }
+    }
+
+    fn finish(&self) {
+        let (model, token) = {
+            let mut state = self.state.locked();
+            state.over = true;
+            (state.model.take(), state.token.take())
+        };
+        drop((model, token));
+        if let Some(hand_offs) = self.hand_offs.upgrade() {
+            hand_offs.finished(self);
+        }
+    }
+}
+
+fn claude() -> Provider {
+    Provider {
+        kind: Kind::Claude,
+        model: None,
+        allow_api_key: false,
+        program: None,
+    }
+}
+
+async fn login_env(
+    own: &Environment,
+    clock: &dyn Clock,
+) -> Result<Vec<(OsString, OsString)>, String> {
+    let shell = own.var("SHELL").ok_or("SHELL isn't set")?;
+    let mut command = tokio::process::Command::new(shell);
+    command
+        .args(["-lic", "env -0"])
+        .env_clear()
+        .envs(own.vars())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut timer = clock.timer();
+    timer.set(Some(clock.now() + CAPTURE_WAIT));
+    let output = tokio::select! {
+        output = command.output() => output.map_err(|e| format!("the login shell couldn't run: {e}"))?,
+        () = timer.fired() => return Err(format!("the login shell took over {} s", CAPTURE_WAIT.as_secs())),
+    };
+    if !output.status.success() {
+        return Err(format!("the login shell failed ({})", output.status));
+    }
+    let env = parse_env(&output.stdout);
+    if env.is_empty() {
+        return Err("the login shell printed no environment".to_owned());
+    }
+    Ok(env)
+}
+
+fn parse_env(printed: &[u8]) -> Vec<(OsString, OsString)> {
+    use std::os::unix::ffi::OsStrExt;
+    printed
+        .split(|byte| *byte == 0)
+        .filter_map(|var| {
+            let equals = var.iter().position(|byte| *byte == b'=')?;
+            let (name, value) = (&var[..equals], &var[equals + 1..]);
+            (!name.is_empty()).then(|| {
+                (
+                    std::ffi::OsStr::from_bytes(name).to_owned(),
+                    std::ffi::OsStr::from_bytes(value).to_owned(),
+                )
+            })
+        })
+        .collect()
+}

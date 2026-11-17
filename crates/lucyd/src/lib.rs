@@ -9,6 +9,8 @@ pub mod claude;
 pub mod codex;
 mod desktop;
 pub mod desktop_entries;
+mod files;
+mod hand_off;
 mod input;
 mod ipc;
 pub mod launcher;
@@ -21,6 +23,7 @@ mod persona;
 pub mod piper;
 mod playback;
 pub mod plugins;
+mod process;
 mod runner;
 mod sentences;
 mod session;
@@ -57,6 +60,22 @@ pub struct Options {
     /// What Plugins are checked against and start with; normally
     /// `plugins::Environment::from_process()`.
     pub plugin_env: plugins::Environment,
+}
+
+/// Starts lucyd's log on stderr, silent unless `RUST_LOG` asks for it.
+///
+/// `rmcp` logs only warnings and errors, whatever `RUST_LOG` says (ADR 0008).
+///
+/// # Errors
+///
+/// When a logger is already set.
+pub fn start_log() -> Result<(), log::SetLoggerError> {
+    let silent_unless_rust_log = "off";
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(silent_unless_rust_log),
+    )
+    .filter_module("rmcp", log::LevelFilter::Warn)
+    .try_init()
 }
 
 /// A running lucyd. Dropping it stops lucyd and removes its sockets.
@@ -112,6 +131,12 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         notifications::fallback(&buses.status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
     let plugins_dir = plugin_paths.user.clone();
+    let hand_offs = hand_off::HandOffs::new(
+        &adapters,
+        relays.clone(),
+        plugin_env.clone(),
+        sessions.clone(),
+    );
     let plugin_host = plugins::Host::new(
         plugin_paths,
         sessions.clone(),
@@ -120,6 +145,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         plugin_env,
     );
     let thinking = adapters.thinking.clone();
+    thinking.sweep();
     let authoring = authoring::Authoring::new(
         &adapters,
         relays.clone(),
@@ -143,7 +169,10 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
                 persona: persona.clone(),
                 config_path,
             },
-            authoring.clone(),
+            runner::Delegates {
+                authoring: authoring.clone(),
+                hand_offs: hand_offs.clone(),
+            },
         )
         .run(),
     );
@@ -153,6 +182,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         persona,
         sessions.clone(),
         authoring,
+        hand_offs,
     ));
     runtime.spawn(ipc::serve(
         listener,

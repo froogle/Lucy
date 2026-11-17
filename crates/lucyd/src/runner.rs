@@ -18,6 +18,7 @@ use crate::adapters::{
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
 use crate::authoring::{Authoring, Building};
+use crate::hand_off::{HandOffs, Working};
 use crate::input::{Dialog, OpenDialog, Opened};
 use crate::limits;
 use crate::mcp::Relays;
@@ -108,6 +109,11 @@ const FALSE_WAKE_TIMEOUT: Duration = Duration::from_secs(8);
 
 const REOPEN_MIC_EVERY: Duration = Duration::from_secs(1);
 
+pub struct Delegates {
+    pub authoring: Arc<Authoring>,
+    pub hand_offs: Arc<HandOffs>,
+}
+
 pub struct StartError;
 pub struct EndError;
 
@@ -124,7 +130,11 @@ pub struct Runner {
     sessions_started: u64,
     building: watch::Receiver<Building>,
     authoring: Arc<Authoring>,
+    working: watch::Receiver<Working>,
+    hand_offs: Arc<HandOffs>,
     parked: VecDeque<Parked>,
+    looks: Option<watch::Receiver<u64>>,
+    looking: bool,
 }
 
 enum Parked {
@@ -149,8 +159,12 @@ impl Runner {
         relays: Relays,
         plugin_host: Arc<plugins::Host>,
         files: SessionFiles,
-        authoring: Arc<Authoring>,
+        delegates: Delegates,
     ) -> Self {
+        let Delegates {
+            authoring,
+            hand_offs,
+        } = delegates;
         Runner {
             commands,
             buses,
@@ -164,7 +178,11 @@ impl Runner {
             sessions_started: 0,
             building: authoring.building(),
             authoring,
+            working: hand_offs.working(),
+            hand_offs,
             parked: VecDeque::new(),
+            looks: None,
+            looking: false,
         }
     }
 
@@ -231,8 +249,15 @@ impl Runner {
     ) {
         self.sessions_started += 1;
         let id = SessionId(self.sessions_started);
-        let plugin_tools = self.plugin_host.open_session().await;
-        self.session_loop(id, started, plugin_tools.clone()).await;
+        let config = lucy_config::load(&self.files.config_path);
+        let screen = config.as_ref().cloned().unwrap_or_default().screen;
+        let plugin_tools = self.plugin_host.open_session(screen).await;
+        self.looks = Some(plugin_tools.looks());
+        self.session_loop(id, started, config, plugin_tools.clone())
+            .await;
+        self.looks = None;
+        self.looking = false;
+        self.hand_offs.stop();
         self.keep_unsaid_for_next_session();
         if let Some(hearing) = &mut self.adapters.hearing {
             hearing.lucy_speaking(false);
@@ -262,6 +287,7 @@ impl Runner {
         &mut self,
         id: SessionId,
         started: Option<oneshot::Sender<Result<SessionId, StartError>>>,
+        config: Result<lucy_config::Config, lucy_config::Error>,
         plugin_tools: Arc<plugins::SessionTools>,
     ) {
         let woken = started.is_none();
@@ -273,7 +299,7 @@ impl Runner {
             first_run,
             opened,
             devices,
-        } = self.start(plugin_tools.clone(), events_tx.clone());
+        } = self.start(config, plugin_tools.clone(), events_tx.clone());
         let provider_name = opened.as_ref().map_or("the Thinking Provider", |opened| {
             opened.provider.kind.name()
         });
@@ -302,6 +328,7 @@ impl Runner {
             session.handle(Input::Speaking(true));
         }
         session.handle(Input::Building(*self.building.borrow_and_update()));
+        session.handle(Input::Working(*self.working.borrow_and_update()));
         let silence_timeout = Duration::from_secs_f64(silence_timeout);
         let clock = &self.adapters.clock;
         let mut silence = SilenceTimer::new(silence_timeout, clock.clone());
@@ -363,6 +390,11 @@ impl Runner {
             } else {
                 tokio::select! {
                 biased;
+                Ok(()) = or_pending(self.looks.as_mut().map(watch::Receiver::changed)) => {
+                    self.looking = true;
+                    self.publish(session.state(), Some(id));
+                    continue;
+                }
                 Some(event) = events.recv() => Input::Thinking(event),
                 Some(event) = speaker_events.recv() => match event {
                     SpeakerEvent::Played => Input::Played,
@@ -447,6 +479,9 @@ impl Runner {
                 Ok(()) = self.building.changed() => {
                     Input::Building(*self.building.borrow_and_update())
                 }
+                Ok(()) = self.working.changed() => {
+                    Input::Working(*self.working.borrow_and_update())
+                }
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
                     Some(()) => {
                         log::debug!("wake word in {:?}", session.state());
@@ -496,7 +531,7 @@ impl Runner {
                 }
             };
             let input = match input {
-                Input::Thinking(ThinkingEvent::Died) => match opened.as_ref() {
+                Input::Thinking(ThinkingEvent::Died(_)) => match opened.as_ref() {
                     Some(opened) if !respawned_since_turn_end => {
                         eprintln!("lucyd: the model process died; opening it again");
                         respawned_since_turn_end = true;
@@ -523,10 +558,14 @@ impl Runner {
                     let said = limits::spoken(&limit, provider_name);
                     Input::Thinking(ThinkingEvent::Unavailable(said))
                 }
+                Input::Thinking(ThinkingEvent::Failed(_)) => {
+                    Input::Thinking(ThinkingEvent::TurnEnd)
+                }
                 input => input,
             };
             if matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
                 respawned_since_turn_end = false;
+                self.looking = false;
             }
             if introducing && matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
                 introducing = false;
@@ -658,6 +697,7 @@ impl Runner {
             state,
             session_id: session_id.map(|id| id.to_string()),
             building: *self.building.borrow() == Building::Working,
+            looking: self.looking && session_id.is_some(),
         });
     }
 }

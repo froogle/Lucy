@@ -21,6 +21,7 @@ impl StatusBus {
                 state: State::Idle,
                 session_id: None,
                 building: false,
+                looking: false,
             },
             subscribers: vec![],
         })))

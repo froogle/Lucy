@@ -61,8 +61,10 @@ fn read_turn(
             Ok(ThinkingEvent::SentenceEnd) => text.push('|'),
             Ok(ThinkingEvent::TurnEnd) => return (text, rate_limits),
             Ok(event @ ThinkingEvent::RateLimit(_)) => rate_limits.push(event),
+            Ok(ThinkingEvent::Final(_) | ThinkingEvent::Conversation(_)) => {}
             Ok(ThinkingEvent::Unavailable(reason)) => panic!("Provider unavailable: {reason}"),
-            Ok(ThinkingEvent::Died) => panic!("claude died: {text:?}"),
+            Ok(ThinkingEvent::Died(_)) => panic!("claude died: {text:?}"),
+            Ok(ThinkingEvent::Failed(message)) => panic!("the Turn failed: {message}"),
             Err(_) => {
                 assert!(Instant::now() < deadline, "the Turn never ended: {text:?}");
                 // sleep-ok: poll loop with a deadline
@@ -144,7 +146,7 @@ fn claude_dying_mid_turn_reports_that_it_died() {
             text.push_str(&delta);
             None
         }
-        Ok(ThinkingEvent::Died) => Some(()),
+        Ok(ThinkingEvent::Died(_)) => Some(()),
         Ok(ThinkingEvent::TurnEnd) => panic!("the Turn ended as if claude had finished"),
         _ => None,
     });
@@ -169,7 +171,12 @@ fn ending_the_session_is_not_a_death() {
         rest.is_finished().then_some(())
     });
     let rest = rest.join().unwrap();
-    assert!(!rest.contains(&ThinkingEvent::Died), "{rest:?}");
+    assert!(
+        !rest
+            .iter()
+            .any(|event| matches!(event, ThinkingEvent::Died(_))),
+        "{rest:?}"
+    );
 }
 
 const SESSION_ID: &str = "09dd6ca6-f8e2-473e-812c-ab5acf9cdfd5";
@@ -234,6 +241,63 @@ fn stopping_lucyd_deletes_the_conversations_still_open() {
     assert_eq!(kept(config.path(), SESSION_ID), Vec::<PathBuf>::new());
     assert!(theirs.is_file(), "another conversation was deleted");
     drop(model);
+}
+
+fn copy(from: &Path, to: &Path) {
+    let copied = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(from)
+        .arg(to)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+}
+
+#[test]
+fn a_session_transcript_a_crash_left_behind_is_swept_when_lucyd_starts() {
+    let work = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude").with_config_dir(config.path().to_owned());
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model = claude.open(&fast(), tx, relay(), String::new());
+    model.send_turn("Remember the word kiwi.".into());
+    read_turn(&mut events, WAIT);
+    let left = kept(config.path(), SESSION_ID);
+    assert_eq!(left.len(), 2, "no transcript to leave behind");
+    let aside = tempfile::tempdir().unwrap();
+    for path in &left {
+        copy(path, aside.path());
+    }
+    drop(model);
+    for path in &left {
+        copy(
+            &aside.path().join(path.file_name().unwrap()),
+            path.parent().unwrap(),
+        );
+    }
+    let theirs = config
+        .path()
+        .join("projects")
+        .join("-home-someone-code")
+        .join(format!("{SESSION_ID}.jsonl"));
+    std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+    std::fs::write(&theirs, "{}\n").unwrap();
+    let theirs_in_lucys = the_users_own(config.path(), SESSION_ID);
+    assert_eq!(kept(config.path(), SESSION_ID).len(), 3);
+
+    let _lucyd = harness::Harness::with_thinking(
+        None,
+        std::sync::Arc::new(
+            Claude::new(fixtures().join("fake-claude"), work.path().to_owned())
+                .with_config_dir(config.path().to_owned()),
+        ),
+    );
+
+    assert_eq!(kept(config.path(), SESSION_ID), [theirs]);
+    assert!(
+        theirs_in_lucys.is_file(),
+        "a file that isn't a transcript was deleted"
+    );
 }
 
 #[test]
@@ -314,7 +378,7 @@ fn start_unfinished_turn(
         while let Ok(event) = events.try_recv() {
             match event {
                 ThinkingEvent::Delta(delta) => text.push_str(&delta),
-                ThinkingEvent::RateLimit(_) => {}
+                ThinkingEvent::RateLimit(_) | ThinkingEvent::Conversation(_) => {}
                 other => panic!("unexpected {other:?}"),
             }
         }

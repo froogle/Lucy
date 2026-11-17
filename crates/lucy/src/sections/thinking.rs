@@ -89,7 +89,13 @@ pub(super) fn check<B: Backend>(ui: &mut Ui<B>, context: &Context, row: usize) -
     let name = context.config().tiers.name(TIERS[row]).to_owned();
     ui.say(format!("Real check of {name}: asking it to reply OK..."))?;
     let outcome = match client.check_provider(&name) {
-        Ok(result) => result.problem.unwrap_or_else(|| "it works.".to_owned()),
+        Ok(result) => {
+            let outcome = result.problem.unwrap_or_else(|| "it works.".to_owned());
+            match result.program {
+                Some(program) => format!("{outcome} It runs {program}."),
+                None => outcome,
+            }
+        }
         Err(e) => e.to_string(),
     };
     ui.say(format!("Real check of {name}: {outcome}"))

@@ -8,6 +8,7 @@ use super::Runner;
 use crate::adapters::{InertSessionModel, Relay, SessionModel, ThinkingEvent};
 use crate::audio::Devices;
 use crate::desktop::Desktop;
+use crate::files::{Files, Search};
 use crate::mcp::{Caller, Token};
 use crate::notifications;
 use crate::persona::{Loaded, Persona};
@@ -37,6 +38,7 @@ pub struct Opened {
 impl Runner {
     pub(super) fn start(
         &mut self,
+        config: Result<Config, lucy_config::Error>,
         plugin_tools: Arc<SessionTools>,
         events: mpsc::UnboundedSender<ThinkingEvent>,
     ) -> Started {
@@ -45,7 +47,6 @@ impl Runner {
             eprintln!("lucyd: can't load {path}: {e}");
             Loaded::fallback()
         });
-        let config = lucy_config::load(&self.files.config_path);
         let settings = config.as_ref().cloned().unwrap_or_default();
         let devices = match &mut self.adapters.hearing {
             Some(hearing) => {
@@ -60,6 +61,14 @@ impl Runner {
             launcher: self.adapters.launcher.clone(),
             applications: self.adapters.applications.clone(),
             launcher_command: settings.desktop.launcher.clone(),
+            files: Files {
+                launcher: self.adapters.launcher.clone(),
+                search: Search::new(
+                    &settings.files.roots,
+                    &self.adapters.home,
+                    &settings.files.skip,
+                ),
+            },
         };
         let mut instructions = persona.text;
         if let Some(report) = plugin_tools.scan_report() {

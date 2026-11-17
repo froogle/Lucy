@@ -5,6 +5,7 @@
 //! An adapter keeps the sender it was handed alive for as long as the handle
 //! it returned (`SessionModel`, `Speaker`).
 
+use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,11 @@ pub enum ThinkingEvent {
     SentenceEnd,
     /// The model has finished the Turn.
     TurnEnd,
+    /// The model's final message for the Turn, sent just before `TurnEnd`.
+    Final(String),
+    /// The id the CLI keeps this conversation under, for `--resume`. Sent
+    /// once, when the CLI first names it.
+    Conversation(String),
     /// Where the subscription stands against its usage limits.
     RateLimit(RateLimit),
     /// The Provider can't be used. The text says why and how to fix it,
@@ -53,7 +59,45 @@ pub enum ThinkingEvent {
     Unavailable(String),
     /// The model process ended while the SessionModel was still open. Lucy
     /// opens a new one once and resends the Turn in progress.
-    Died,
+    Died(Exit),
+    /// The model ended the Turn with an error; the text is its message.
+    Failed(String),
+}
+
+/// How a model process ended, as far as lucyd could see.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Exit {
+    /// `None` when it couldn't be waited for.
+    pub status: Option<std::process::ExitStatus>,
+    /// The last lines it wrote to stderr, oldest first; empty when they aren't kept.
+    pub stderr: Vec<String>,
+}
+
+impl Exit {
+    pub(crate) fn status_text(&self) -> String {
+        self.status.map_or_else(
+            || "exit status unknown".to_owned(),
+            |status| status.to_string(),
+        )
+    }
+
+    pub(crate) fn stopped(&self, what: &str) -> String {
+        let status = self.status_text();
+        match self.stderr.last() {
+            Some(line) => format!("{what} stopped unexpectedly ({status}): {}", short(line)),
+            None => format!("{what} stopped unexpectedly ({status})"),
+        }
+    }
+}
+
+const SHORT_CHARS: usize = 200;
+
+pub(crate) fn short(line: &str) -> String {
+    let line = line.trim();
+    match line.char_indices().nth(SHORT_CHARS) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_owned(),
+    }
 }
 
 /// A `rate_limit_event` from `claude`.
@@ -118,6 +162,12 @@ pub trait Thinking: Send + Sync {
     /// A reason ready to speak, with the fix.
     fn check(&self, provider: &Provider) -> Result<(), String>;
 
+    /// The executable a Delegate of `provider` runs, past any mise shim, if found.
+    /// Blocking.
+    fn executable(&self, _provider: &Provider) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Starts a Delegate's model process, as `open` starts a Session's.
     /// It has the CLI's own file and shell tools, works in `workspace.dir`,
     /// and is confined by Landlock to `workspace` plus the CLI's own program
@@ -136,9 +186,31 @@ pub trait Thinking: Send + Sync {
         Box::new(InertSessionModel::new(events))
     }
 
+    /// Starts a Hand-off: the user's own CLI, with their own settings and
+    /// MCP servers plus `relay`, working in `hand_off.folder` with
+    /// `hand_off.env`. It is not sandboxed. Whatever its settings don't
+    /// allow goes to `relay`'s `PERMISSION_TOOL`. Its conversation is kept.
+    /// A Provider that can't take a Hand-off sends `Unavailable`.
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        let _ = (provider, relay, instructions, hand_off);
+        let reason = "This Provider can't take a Hand-off.".to_owned();
+        let _ = events.send(ThinkingEvent::Unavailable(reason));
+        Box::new(InertSessionModel::new(events))
+    }
+
     /// lucyd is stopping: ends every model process still open.
     /// It also ends what they keep on disk, as dropping each SessionModel would.
     fn shutdown(&self) {}
+
+    /// lucyd is starting: deletes Session transcripts a crash left on disk.
+    fn sweep(&self) {}
 }
 
 /// Where a Delegate works, and the only other places it may touch.
@@ -155,10 +227,29 @@ pub struct Workspace {
     pub readable: Vec<PathBuf>,
 }
 
+/// Where a Hand-off works and the environment it starts with.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HandOff {
+    pub folder: PathBuf,
+    /// The whole environment, before the subscription guard removes the
+    /// billing variables.
+    pub env: Vec<(OsString, OsString)>,
+}
+
+/// The tool on a Hand-off's relay that its CLI asks before doing anything
+/// the user's settings don't allow.
+pub const PERMISSION_TOOL: &str = "permission";
+
 pub(crate) struct Role {
     pub relay: Relay,
     pub instructions: String,
-    pub workspace: Option<Workspace>,
+    pub place: Place,
+}
+
+pub(crate) enum Place {
+    WorkDir,
+    Workspace(Workspace),
+    HandOff(HandOff),
 }
 
 /// The model process of one Session.
@@ -237,6 +328,7 @@ pub enum NotificationKind {
     Problem,
     Details,
     Build,
+    HandOff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,6 +413,18 @@ pub trait Launcher: Send + Sync {
     ///
     /// When the opener can't be started.
     fn open_url(&self, url: &str) -> io::Result<()>;
+    /// Opens the file manager with `paths` highlighted.
+    ///
+    /// # Errors
+    ///
+    /// When no file manager can be reached or started.
+    fn show_items(&self, paths: &[PathBuf]) -> io::Result<()>;
+    /// Opens the file at `path` in its default app.
+    ///
+    /// # Errors
+    ///
+    /// When the opener can't be started.
+    fn open_file(&self, path: &Path) -> io::Result<()>;
     /// Starts the app whose desktop entry is at `entry`.
     /// It goes through `launcher` (`[desktop] launcher`, with the entry's path
     /// appended) if it is set.
@@ -362,6 +466,8 @@ pub struct Adapters {
     pub clock: Arc<dyn Clock>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
+    /// The user's home, which `~` means in `[files] roots`.
+    pub home: PathBuf,
 }
 
 impl Adapters {
@@ -384,6 +490,7 @@ impl Adapters {
             credentials: Arc::new(Inert),
             clock: Arc::new(SystemClock),
             applications: vec![],
+            home: PathBuf::new(),
         }
     }
 }
@@ -482,6 +589,14 @@ impl Notifier for Inert {
 
 impl Launcher for Inert {
     fn open_url(&self, _url: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn show_items(&self, _paths: &[PathBuf]) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn open_file(&self, _path: &Path) -> io::Result<()> {
         Ok(())
     }
 

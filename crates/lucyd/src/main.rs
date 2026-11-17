@@ -9,11 +9,7 @@ use lucyd::superwhisper::Superwhisper;
 use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
-    let silent_unless_rust_log = "off";
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or(silent_unless_rust_log),
-    )
-    .init();
+    lucyd::start_log().expect("nothing else sets the logger");
     let config_path = lucy_config::default_path();
     let startup_config = match lucy_config::load(&config_path) {
         Ok(config) => config,
@@ -63,6 +59,7 @@ fn main() -> ExitCode {
         utterances.to_owned(),
     ));
     adapters.applications = lucyd::desktop_entries::xdg_dirs();
+    adapters.home = std::env::var_os("HOME").unwrap_or_default().into();
     if let Err(e) = hear(&startup_config, &mut adapters, echo) {
         eprintln!("lucyd: {e}; Lucy can't hear");
     }

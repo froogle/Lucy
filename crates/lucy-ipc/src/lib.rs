@@ -120,6 +120,10 @@ pub struct Status {
     /// Indicator adds a "building" mark.
     #[serde(default)]
     pub building: bool,
+    /// A screen tool is capturing the screen for the model. The Indicator
+    /// adds a "looking" mark.
+    #[serde(default)]
+    pub looking: bool,
 }
 
 /// Lucy's Session state.
@@ -199,6 +203,9 @@ pub struct ProviderCheck {
 pub struct ProviderCheckResult {
     /// What's wrong and how to fix it, or `None` if the check passed.
     pub problem: Option<String>,
+    /// The executable a Delegate of it runs, past any mise shim; `None` if not found.
+    #[serde(default)]
+    pub program: Option<String>,
 }
 
 /// Params of `subscribe`.

@@ -8,6 +8,7 @@ use lucy_config::Provider;
 use serde_json::Value;
 
 use super::Claude;
+use crate::plugins::sandbox;
 
 const ROUND_TRIP_WAIT: Duration = Duration::from_secs(60);
 
@@ -39,7 +40,7 @@ impl Claude {
             return Ok(version);
         }
         let output = self
-            .base_command(provider)
+            .base_command(sandbox::program(provider, &self.program), provider)
             .args(["auth", "status", "--json"])
             .stdin(Stdio::null())
             .output()
@@ -64,7 +65,7 @@ impl Claude {
 
     fn version(&self, provider: &Provider) -> Result<String, String> {
         let output = std::fs::create_dir_all(&self.work_dir).and_then(|()| {
-            self.base_command(provider)
+            self.base_command(sandbox::program(provider, &self.program), provider)
                 .arg("--version")
                 .stdin(Stdio::null())
                 .output()
@@ -79,7 +80,7 @@ impl Claude {
             Err(e) if e.kind() == ErrorKind::NotFound => Err(format!(
                 "I can't find Claude Code at {}. Please install it, or put claude on \
                  my PATH.",
-                self.program.display()
+                sandbox::program(provider, &self.program).display()
             )),
             Err(e) => Err(format!("I couldn't run Claude Code: {e}.")),
         }
@@ -116,7 +117,14 @@ impl Claude {
 
     fn reply_ok(&self, provider: &Provider) -> Result<Reply, String> {
         let mut child = self
-            .command(provider, None, "", &[], None)
+            .command(
+                sandbox::program(provider, &self.program),
+                provider,
+                None,
+                "",
+                &[],
+                None,
+            )
             .arg("--no-session-persistence")
             .spawn()
             .map_err(|e| format!("I couldn't start Claude Code: {e}."))?;

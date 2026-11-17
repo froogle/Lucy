@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub session: Session,
     pub desktop: Desktop,
+    pub files: Files,
     /// `[providers.<name>]`: the Thinking Providers the tiers can name.
     pub providers: BTreeMap<String, Provider>,
     pub tiers: Tiers,
@@ -31,6 +32,7 @@ pub struct Config {
     pub input: Input,
     pub barge_in: BargeIn,
     pub authoring: Authoring,
+    pub screen: Screen,
 }
 
 impl Default for Config {
@@ -39,10 +41,12 @@ impl Default for Config {
             kind: Kind::Claude,
             model: Some(recommended_model(Kind::Claude, tier).to_owned()),
             allow_api_key: false,
+            program: None,
         };
         Config {
             session: Session::default(),
             desktop: Desktop::default(),
+            files: Files::default(),
             providers: BTreeMap::from([
                 ("claude-fast".to_owned(), claude(Tier::Fast)),
                 ("claude-advanced".to_owned(), claude(Tier::Advanced)),
@@ -58,6 +62,7 @@ impl Default for Config {
             input: Input::default(),
             barge_in: BargeIn::default(),
             authoring: Authoring::default(),
+            screen: Screen::default(),
         }
     }
 }
@@ -89,6 +94,9 @@ pub struct Provider {
     /// Turns the subscription guard off, so the CLI may bill an API key.
     #[serde(default)]
     pub allow_api_key: bool,
+    /// The CLI to run, used as given; `None` finds it on `PATH`, past a mise shim.
+    #[serde(default)]
+    pub program: Option<PathBuf>,
 }
 
 /// Which CLI a Thinking Provider drives.
@@ -556,6 +564,20 @@ impl Default for Authoring {
     }
 }
 
+/// `[screen]`: whether Lucy may look at the screen (ADR 0008).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Screen {
+    /// When false, the Plugins' screen tools are left out of the tool list.
+    pub enabled: bool,
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Screen { enabled: true }
+    }
+}
+
 /// `[desktop]`
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -564,6 +586,34 @@ pub struct Desktop {
     /// appended. Unset, Lucy uses `uwsm app --` when uwsm is running and
     /// `gio launch` otherwise.
     pub launcher: Option<Vec<String>>,
+}
+
+/// `[files]`: where `find_files` looks.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Files {
+    /// The folders searched; `~` is the user's home.
+    pub roots: Vec<PathBuf>,
+    /// Folder and file names left out, besides hidden ones.
+    pub skip: Vec<String>,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Files {
+            roots: vec![PathBuf::from("~")],
+            skip: [
+                "node_modules",
+                "target",
+                ".cache",
+                ".git",
+                "venv",
+                "__pycache__",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        }
+    }
 }
 
 /// `$XDG_CONFIG_HOME/lucy/config.toml`, falling back to `~/.config`.

@@ -28,7 +28,7 @@ Spec: none. The user found it on 2026-11-16 while using Lucy, and it was diagnos
 
 **Seams:** owns the Provider `program` config field and the resolution of shims to real executables (used by the `claude` and `codex` adapters).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -45,3 +45,5 @@ Spec: none. The user found it on 2026-11-16 while using Lucy, and it was diagnos
 - [ ] Once, by hand on this machine (mise-installed `claude`): "build me a Plugin that …" runs to the Approval
 
 ## Comments
+
+2026-11-17: built in slice 1 (`lucy-v0-2-slice-1`). A Provider `program` is used as given; otherwise a mise shim is resolved with `mise which`, and only the real binary's folder is readable. `lucy setup`'s Provider check names the resolved path. The `claude` and Codex Delegates (and the Hand-off) keep a 20-line stderr tail and exit status (`src/process.rs`); an error `result` is `ThinkingEvent::Failed`. Hand check left: on this machine, "build me a Plugin that …" runs to the Approval.

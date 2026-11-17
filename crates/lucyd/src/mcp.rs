@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::adapters::Relay;
 use crate::authoring::{self, Authoring, Build};
 use crate::desktop::Desktop;
+use crate::hand_off::{self, HandOffs, Job};
 use crate::input;
 use crate::persona::Persona;
 use crate::plugins::{self, SessionTools};
@@ -30,6 +31,7 @@ pub enum Caller {
         desktop: Desktop,
     },
     Delegate(Weak<Build>),
+    HandOff(Weak<Job>),
 }
 
 #[derive(Clone)]
@@ -106,6 +108,7 @@ pub async fn serve(
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
     authoring: Arc<Authoring>,
+    hand_offs: Arc<HandOffs>,
 ) {
     loop {
         match listener.accept().await {
@@ -116,6 +119,7 @@ pub async fn serve(
                     persona.clone(),
                     commands.clone(),
                     authoring.clone(),
+                    hand_offs.clone(),
                 ));
             }
             Err(e) => eprintln!("lucyd: MCP accept failed: {e}"),
@@ -129,6 +133,7 @@ async fn connection(
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
     authoring: Arc<Authoring>,
+    hand_offs: Arc<HandOffs>,
 ) {
     let Some(token) = read_token(&mut stream).await else {
         return;
@@ -146,6 +151,7 @@ async fn connection(
         persona,
         commands,
         authoring,
+        hand_offs,
     };
     if let Ok(service) = tools.serve(stream).await {
         if let Caller::SessionModel { plugins, .. } = grant {
@@ -172,6 +178,7 @@ struct Tools {
     persona: Persona,
     commands: mpsc::UnboundedSender<Command>,
     authoring: Arc<Authoring>,
+    hand_offs: Arc<HandOffs>,
 }
 
 impl Tools {
@@ -270,6 +277,14 @@ pub fn error(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text.into())])
 }
 
+pub fn string(arguments: &JsonObject, key: &str) -> String {
+    arguments
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_owned()
+}
+
 impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(
@@ -293,6 +308,7 @@ impl ServerHandler for Tools {
                     plugins::manage_plugin_tool(),
                     plugins::approve_plugin_tool(),
                     authoring::request_plugin_tool(),
+                    hand_off::hand_to_claude_tool(),
                     input::ask_typed_tool(),
                 ],
                 Desktop::tools(),
@@ -300,6 +316,7 @@ impl ServerHandler for Tools {
             ]
             .concat(),
             Caller::Delegate(_) => authoring::delegate_tools(),
+            Caller::HandOff(_) => hand_off::hand_off_tools(),
         };
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -317,6 +334,11 @@ impl ServerHandler for Tools {
                 let result = build.call(&request.name, &arguments).await;
                 return result.map(Into::into).ok_or_else(|| no_tool(&request.name));
             }
+            Caller::HandOff(job) => {
+                let job = job.upgrade().ok_or_else(revoked)?;
+                let result = job.call(&request.name, &arguments).await;
+                return result.map(Into::into).ok_or_else(|| no_tool(&request.name));
+            }
         };
         match &*request.name {
             "end_session" => Ok(self.end_session().await.into()),
@@ -324,6 +346,7 @@ impl ServerHandler for Tools {
             "manage_plugin" => Ok(plugins.manage(&arguments).await.into()),
             "approve_plugin" => Ok(plugins.approve(&arguments).await.into()),
             "request_plugin" => Ok(self.authoring.request(&arguments).into()),
+            "hand_to_claude" => Ok(self.hand_offs.request(&arguments).into()),
             "ask_typed" => Ok(input::ask_typed(&self.commands, &arguments).await.into()),
             name => {
                 if let Some(result) = desktop.call(name, &arguments).await {

@@ -8,6 +8,10 @@ Clicks. The runtime can't know what a button does, and screen content is untrust
 
 _Amended 2026-11-17._ `describe` is the model's own words, so on its own the check catches mistakes, not a hostile model. The text under the point is therefore checked too, through a probe tool in the desktop Plugin that the core calls before every click and never lists to the model. When the probe can't read the target (a terminal, a canvas app, a browser with accessibility off) the click needs a Confirmation: an unreadable target fails closed. `key` carries a `describe` and gets the same word check, because Enter can send as surely as a click. The password check lives in the desktop Plugin, which can see the focused element, and lets typing through when it can't tell, because the model never holds the user's secrets: the check prevents a mistake, not a leak. Lucy never turns a browser's accessibility on herself; when it is off she says so and offers to open the browser's own setting. Screenshots exist on disk only inside the Session's `claude` transcript, which is deleted at Session end and swept at lucyd's next start after a crash.
 
+## Consequences
+
+- lucyd holds `rmcp`'s log to warnings whatever `RUST_LOG` asks, because its trace prints whole MCP messages, screenshots included, and images are never logged.
+
 ## Considered Options
 
 - Accessibility tree (AT-SPI) only: exact targets, but Chromium and Electron need accessibility turned on and many apps expose little. Kept as a later addition for exact targets; used from v0.2 for the risk check and the password check.

@@ -9,8 +9,9 @@ use lucy_config::Provider;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
+use crate::process::{self, Process, StderrTail};
 use crate::sentences::Sentences;
 use crate::sync::Locked;
 
@@ -39,19 +40,26 @@ impl Codex {
         relay: Option<&Relay>,
         workspace: Option<&Workspace>,
     ) -> std::io::Result<Command> {
-        let mut command = Command::new(&self.program);
+        let program = match workspace {
+            Some(_) => sandbox::delegate_program(provider, &self.program)?,
+            None => sandbox::program(provider, &self.program).to_owned(),
+        };
+        let mut command = Command::new(&program);
         command
             .arg("app-server")
             .current_dir(workspace.map_or(&self.work_dir, |w| &w.dir))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(match workspace {
+                Some(_) => Stdio::piped(),
+                None => Stdio::null(),
+            });
         let mut config = vec![r#"web_search="disabled""#.to_owned()];
         match workspace {
             Some(workspace) => {
                 let codex_home = std::env::var_os("CODEX_HOME")
                     .map_or_else(|| sandbox::home().join(".codex"), PathBuf::from);
-                sandbox::confine_cli(&mut command, workspace, &self.program, &[codex_home])?;
+                sandbox::confine_cli(&mut command, workspace, &program, &[codex_home])?;
             }
             None => config.push("features.shell_tool=false".to_owned()),
         }
@@ -87,12 +95,13 @@ impl Codex {
             .map_err(|e| match e.kind() {
                 ErrorKind::NotFound => format!(
                     "I can't find Codex at {}. Please install it, or put codex on my PATH.",
-                    self.program.display()
+                    sandbox::program(provider, &self.program).display()
                 ),
                 _ => format!("I couldn't start Codex: {e}."),
             })?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().map(StderrTail::follow);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Ok(message) = serde_json::from_str(&line) {
@@ -106,6 +115,7 @@ impl Codex {
             inputs,
             next_id: 0,
             held: VecDeque::new(),
+            stderr,
         };
         let signed_in = server.signed_in(provider);
         if let Err(reason) = signed_in {
@@ -140,9 +150,12 @@ impl Codex {
         let Role {
             relay,
             instructions,
-            workspace,
+            place,
         } = role;
-        let workspace = workspace.as_ref();
+        let workspace = match place {
+            Place::Workspace(workspace) => Some(workspace),
+            Place::WorkDir | Place::HandOff(_) => None,
+        };
         let started = self
             .connect(provider, Some(relay), workspace, inbox)
             .and_then(|(mut server, child)| {
@@ -228,7 +241,7 @@ impl Thinking for Codex {
         let role = Role {
             relay,
             instructions,
-            workspace: None,
+            place: Place::WorkDir,
         };
         self.open_as(provider, events, role)
     }
@@ -244,7 +257,7 @@ impl Thinking for Codex {
         let role = Role {
             relay,
             instructions,
-            workspace: Some(workspace),
+            place: Place::Workspace(workspace),
         };
         self.open_as(provider, events, role)
     }
@@ -260,6 +273,10 @@ impl Thinking for Codex {
             server.reply_ok(&thread)
         })
     }
+
+    fn executable(&self, provider: &Provider) -> Option<PathBuf> {
+        sandbox::delegate_program(provider, &self.program).ok()
+    }
 }
 
 enum Input {
@@ -272,12 +289,6 @@ enum Input {
 struct Inbox {
     tx: std_mpsc::Sender<Input>,
     inputs: std_mpsc::Receiver<Input>,
-}
-
-enum Process {
-    Starting,
-    Running(Child),
-    Ended,
 }
 
 struct CodexSessionModel {
@@ -311,6 +322,7 @@ struct AppServer {
     inputs: std_mpsc::Receiver<Input>,
     next_id: u64,
     held: VecDeque<Input>,
+    stderr: Option<StderrTail>,
 }
 
 impl AppServer {
@@ -531,7 +543,8 @@ impl Session<'_> {
                 Input::StdoutClosed => {
                     let stopped_on_its_own = !matches!(*process.locked(), Process::Ended);
                     if stopped_on_its_own {
-                        let _ = self.events.send(ThinkingEvent::Died);
+                        let exit = process::exit(process, self.server.stderr.take());
+                        let _ = self.events.send(ThinkingEvent::Died(exit));
                     }
                     return;
                 }

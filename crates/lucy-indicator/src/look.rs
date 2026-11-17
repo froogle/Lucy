@@ -11,6 +11,7 @@ pub struct Indicator {
     level: f32,
     flash_until: Option<f32>,
     building: bool,
+    looking: bool,
 }
 
 impl Indicator {
@@ -21,6 +22,7 @@ impl Indicator {
             level: 0.0,
             flash_until: None,
             building: false,
+            looking: false,
         }
     }
 
@@ -34,6 +36,10 @@ impl Indicator {
 
     pub fn on_building(&mut self, building: bool) {
         self.building = building;
+    }
+
+    pub fn on_looking(&mut self, looking: bool) {
+        self.looking = looking;
     }
 
     pub fn on_state(&mut self, state: State, t: f32) {
@@ -60,6 +66,9 @@ impl Indicator {
         if self.building {
             building(&mut canvas, self.palette.accent);
         }
+        if self.looking {
+            looking(&mut canvas, self.palette.warning);
+        }
         Some(canvas)
     }
 }
@@ -74,6 +83,17 @@ fn flash(canvas: &mut Pixmap, colour: Color, remaining: f32) {
 
 fn building(canvas: &mut Pixmap, colour: Color) {
     let dot = PathBuilder::from_circle(SIZE as f32 - 5.0, 5.0, 4.0).expect("positive radius");
+    canvas.fill_path(
+        &dot,
+        &paint(colour),
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
+fn looking(canvas: &mut Pixmap, colour: Color) {
+    let dot = PathBuilder::from_circle(5.0, 5.0, 4.0).expect("positive radius");
     canvas.fill_path(
         &dot,
         &paint(colour),
@@ -274,6 +294,26 @@ mod tests {
 
         indicator.on_state(State::Idle, 0.0);
         assert!(indicator.draw(0.0).is_none());
+    }
+
+    #[test]
+    fn a_look_adds_a_warning_mark_in_the_other_corner() {
+        let corner = |frame: &Pixmap| {
+            (0..8)
+                .flat_map(|x| (0..8).map(move |y| (x, y)))
+                .filter(|&(x, y)| frame.pixel(x, y).is_some_and(|p| p.alpha() >= 64))
+                .count()
+        };
+        let mut indicator = Indicator::new(palette());
+        indicator.on_state(State::Thinking, 0.0);
+        assert_eq!(corner(&indicator.draw(0.0).expect("shown")), 0);
+
+        indicator.on_looking(true);
+        let frame = indicator.draw(0.0).expect("shown");
+        assert!(corner(&frame) > 10);
+
+        indicator.on_looking(false);
+        assert_eq!(corner(&indicator.draw(0.0).expect("shown")), 0);
     }
 
     #[test]

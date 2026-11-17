@@ -393,8 +393,13 @@ impl Connection {
             ));
         };
         let thinking = self.providers.thinking.clone();
-        let problem = blocking(move || thinking.check(&provider).err()).await?;
-        Ok(ProviderCheckResult { problem })
+        let (problem, program) = blocking(move || {
+            let program = thinking.executable(&provider);
+            (thinking.check(&provider).err(), program)
+        })
+        .await?;
+        let program = program.map(|program| program.display().to_string());
+        Ok(ProviderCheckResult { problem, program })
     }
 
     fn config(&self) -> Result<Config, RpcError> {

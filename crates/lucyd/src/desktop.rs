@@ -6,7 +6,8 @@ use serde_json::json;
 
 use crate::adapters::Launcher;
 use crate::desktop_entries::{self, Found};
-use crate::mcp::{error, text, tool};
+use crate::files::Files;
+use crate::mcp::{error, string, text, tool};
 use crate::system_status;
 
 #[derive(Clone)]
@@ -14,11 +15,12 @@ pub struct Desktop {
     pub launcher: Arc<dyn Launcher>,
     pub applications: Vec<PathBuf>,
     pub launcher_command: Option<Vec<String>>,
+    pub files: Files,
 }
 
 impl Desktop {
     pub fn tools() -> Vec<Tool> {
-        vec![
+        let mut tools = vec![
             tool(
                 "open_url",
                 "Open a web page in the user's browser. Only http and https URLs.",
@@ -49,7 +51,9 @@ impl Desktop {
                     "required": ["topic"],
                 }),
             ),
-        ]
+        ];
+        tools.extend(Files::tools());
+        tools
     }
 
     pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
@@ -57,7 +61,7 @@ impl Desktop {
             "open_url" => Some(self.open_url(string(arguments, "url")).await),
             "launch_app" => Some(self.launch_app(string(arguments, "name")).await),
             "system_status" => Some(system_status(string(arguments, "topic")).await),
-            _ => None,
+            name => self.files.call(name, arguments).await,
         }
     }
 
@@ -119,12 +123,4 @@ fn is_web_url(url: &str) -> bool {
     let web = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
     web && !host.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-fn string(arguments: &JsonObject, key: &str) -> String {
-    arguments
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned()
 }

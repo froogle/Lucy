@@ -18,6 +18,8 @@
 //!   and the response it got, as JSON.
 //! - `wait {path}`: writes `<path>.waiting`, then returns `done` once `path`
 //!   exists. If the call is cancelled first, it writes `<path>.cancelled`.
+//! - `look`: returns an `image/png` image, base64 of a PNG signature then
+//!   `LucyScreenSecret`, and the text `a fake screen`.
 
 use std::sync::Arc;
 
@@ -29,6 +31,8 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{json, Value};
+
+const SCREEN: &str = "iVBORw0KGgpMdWN5U2NyZWVuU2VjcmV0";
 
 struct Fixture {
     tools: Vec<String>,
@@ -137,6 +141,13 @@ impl ServerHandler for Fixture {
                     .map(|()| "ok".into())
             }
             "pid" => Ok(std::process::id().to_string()),
+            "look" => {
+                let looked = CallToolResult::success(vec![
+                    ContentBlock::image(SCREEN, "image/png"),
+                    ContentBlock::text("a fake screen"),
+                ]);
+                return Ok(looked.into());
+            }
             "ask" => match &request.input_responses {
                 None => return Ok(ask(&arg(&request, "question")).into()),
                 Some(responses) => Ok(responses
