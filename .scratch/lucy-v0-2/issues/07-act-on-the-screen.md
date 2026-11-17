@@ -13,7 +13,7 @@ Spec: [v0.2](../spec.md), Screen access. ADR 0008. Stories 29–31, 37–39, 41,
 **Notes:**
 
 - Settled in a grilling session (2026-11-16) and split into tracer slices by `to-tickets` the same day. Moved from lucy-v0-1-build tickets 38 and 41.
-- Amended 2026-11-17: `key` gained a required `describe` (every key, harmless ones included) and the risk check; a newline-ending `type` counts as a key. The password-field check and the AT-SPI text under a click moved to ticket 10, so this ticket needs no AT-SPI. Until 10 lands, `type` has no password check and the click check rests on `describe` alone.
+- Amended 2026-11-17: `key` gained a required `describe` (every key, harmless ones included) and the risk check; a newline-ending `type` counts as a key. The AT-SPI text under a click moved to ticket 10 and the password-field check to 13, so this ticket needs no AT-SPI. Until they land, `type` has no password check and the click check rests on `describe` alone.
 - Coordinates are in screenshot pixels; the Plugin maps them back to real pixels (06 scales the screenshot).
 
 **Acceptance:**
