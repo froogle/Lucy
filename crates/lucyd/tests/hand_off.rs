@@ -256,3 +256,48 @@ fn nothing_about_the_hand_off_reaches_the_public_socket() {
         CONVERSATION,
     ]);
 }
+
+#[test]
+fn a_failure_kept_for_the_next_session_is_not_notified_as_finished() {
+    let lucyd = Harness::start();
+    let _events = handed_off(&lucyd, &lucyd.scratch());
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    lucyd.say("what time is it");
+    lucyd.thinking.next_turn();
+
+    hand_off.fail("Linear's MCP server isn't connected");
+    let shown = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(shown.summary, "Claude couldn't finish");
+    lucyd.client().end_session().unwrap();
+
+    let kept = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(kept.summary, "Claude couldn't finish");
+}
+
+#[test]
+fn claude_finishing_without_a_final_message_says_so() {
+    let lucyd = Harness::start();
+    let _events = handed_off(&lucyd, &lucyd.scratch());
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+
+    hand_off.conversation(CONVERSATION);
+    hand_off.turn_end();
+
+    let shown = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert!(
+        shown.body.starts_with("Claude left no final message"),
+        "{}",
+        shown.body
+    );
+    let turn = lucyd.thinking.next_turn();
+    assert!(turn.contains("left no final message"), "{turn}");
+    assert!(!turn.contains("Its final message"), "{turn}");
+}

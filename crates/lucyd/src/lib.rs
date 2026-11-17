@@ -23,6 +23,7 @@ mod persona;
 pub mod piper;
 mod playback;
 pub mod plugins;
+mod process;
 mod runner;
 mod sentences;
 mod session;
@@ -63,8 +64,7 @@ pub struct Options {
 
 /// Starts lucyd's log on stderr, silent unless `RUST_LOG` asks for it.
 ///
-/// `rmcp` logs only warnings and errors whatever `RUST_LOG` says, since its
-/// trace holds whole MCP messages: tool results, screenshots among them.
+/// `rmcp` logs only warnings and errors, whatever `RUST_LOG` says (ADR 0008).
 ///
 /// # Errors
 ///

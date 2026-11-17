@@ -7,7 +7,7 @@ use serde_json::json;
 use crate::adapters::Launcher;
 use crate::desktop_entries::{self, Found};
 use crate::files::Files;
-use crate::mcp::{error, text, tool};
+use crate::mcp::{error, string, text, tool};
 use crate::system_status;
 
 #[derive(Clone)]
@@ -123,12 +123,4 @@ fn is_web_url(url: &str) -> bool {
     let web = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
     let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
     web && !host.is_empty() && !url.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
-fn string(arguments: &JsonObject, key: &str) -> String {
-    arguments
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned()
 }

@@ -13,7 +13,6 @@ pub(crate) mod sandbox;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
@@ -196,7 +195,7 @@ impl Host {
         })
     }
 
-    pub async fn open_session(self: &Arc<Self>) -> Arc<SessionTools> {
+    pub async fn open_session(self: &Arc<Self>, screen: lucy_config::Screen) -> Arc<SessionTools> {
         let mut usable = Vec::new();
         let mut broken = Vec::new();
         let mut awaiting = Vec::new();
@@ -238,7 +237,7 @@ impl Host {
             watchers: Mutex::default(),
             barge_ins: watch::Sender::new(0),
             finished: Mutex::default(),
-            screen_off: AtomicBool::new(false),
+            screen,
             first_look: tokio::sync::Mutex::new(FirstLook::Unasked),
             looks: watch::Sender::new(0),
         });
@@ -783,7 +782,7 @@ pub struct SessionTools {
     watchers: Mutex<Vec<Peer<RoleServer>>>,
     barge_ins: watch::Sender<u64>,
     finished: Mutex<Vec<String>>,
-    screen_off: AtomicBool,
+    screen: lucy_config::Screen,
     first_look: tokio::sync::Mutex<FirstLook>,
     looks: watch::Sender<u64>,
 }
@@ -803,16 +802,12 @@ impl SessionTools {
         self.barge_ins.send_modify(|count| *count += 1);
     }
 
-    pub fn turn_screen_off(&self) {
-        self.screen_off.store(true, Ordering::SeqCst);
-    }
-
     pub fn looks(&self) -> watch::Receiver<u64> {
         self.looks.subscribe()
     }
 
     fn offers(&self, tool: &ToolEntry) -> bool {
-        tool.screen.is_none() || !self.screen_off.load(Ordering::SeqCst)
+        tool.screen.is_none() || self.screen.enabled
     }
 
     async fn look(&self) -> Result<(), Declined> {

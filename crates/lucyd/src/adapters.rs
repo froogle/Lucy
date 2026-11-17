@@ -73,6 +73,33 @@ pub struct Exit {
     pub stderr: Vec<String>,
 }
 
+impl Exit {
+    pub(crate) fn status_text(&self) -> String {
+        self.status.map_or_else(
+            || "exit status unknown".to_owned(),
+            |status| status.to_string(),
+        )
+    }
+
+    pub(crate) fn stopped(&self, what: &str) -> String {
+        let status = self.status_text();
+        match self.stderr.last() {
+            Some(line) => format!("{what} stopped unexpectedly ({status}): {}", short(line)),
+            None => format!("{what} stopped unexpectedly ({status})"),
+        }
+    }
+}
+
+const SHORT_CHARS: usize = 200;
+
+pub(crate) fn short(line: &str) -> String {
+    let line = line.trim();
+    match line.char_indices().nth(SHORT_CHARS) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_owned(),
+    }
+}
+
 /// A `rate_limit_event` from `claude`.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

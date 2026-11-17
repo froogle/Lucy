@@ -14,10 +14,10 @@ use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use crate::adapters::{
-    Adapters, Clock, Exit, Notification, NotificationKind, Notifier, SessionModel, Thinking,
+    short, Adapters, Clock, Exit, Notification, NotificationKind, Notifier, SessionModel, Thinking,
     ThinkingEvent, Timer, Workspace,
 };
-use crate::mcp::{error, text, tool, Caller, Relays, Token};
+use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::PLUGIN_BUILD;
 use crate::plugins::{sandbox, Host};
 use crate::runner::{self, Command, When};
@@ -31,8 +31,6 @@ const A_FEW_MINUTES: &str = "This is going to take a few minutes.";
 const IS_THAT_THE_ONE: &str = "Is that the one?";
 
 const OUTPUT_LINES: usize = 20;
-
-const SHORT_CHARS: usize = 200;
 
 pub struct Authoring {
     thinking: Arc<dyn Thinking>,
@@ -779,25 +777,15 @@ impl Build {
     }
 
     fn died(&self, exit: &Exit) {
-        let status = exit.status.map_or_else(
-            || "exit status unknown".to_owned(),
-            |status| status.to_string(),
-        );
         if self.state.locked().stage != Stage::Over {
             eprintln!(
-                "lucyd: the {} Plugin's builder stopped ({status}); the end of its stderr:\n{}",
+                "lucyd: the {} Plugin's builder stopped ({}); the end of its stderr:\n{}",
                 self.name,
+                exit.status_text(),
                 exit.stderr.join("\n")
             );
         }
-        let reason = match exit.stderr.last() {
-            Some(line) => format!(
-                "the builder stopped unexpectedly ({status}): {}",
-                short(line)
-            ),
-            None => format!("the builder stopped unexpectedly ({status})"),
-        };
-        self.give_up(reason);
+        self.give_up(exit.stopped("the builder"));
     }
 
     fn give_up(&self, reason: String) {
@@ -854,14 +842,6 @@ fn build_notification(summary: String, body: String) -> Notification {
     }
 }
 
-fn short(line: &str) -> String {
-    let line = line.trim();
-    match line.char_indices().nth(SHORT_CHARS) {
-        Some((cut, _)) => format!("{}…", &line[..cut]),
-        None => line.to_owned(),
-    }
-}
-
 fn spoken_duration(duration: Duration) -> String {
     let secs = duration.as_secs_f64();
     if secs >= 60.0 {
@@ -877,12 +857,4 @@ fn is_plugin_name(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-}
-
-fn string(arguments: &JsonObject, key: &str) -> String {
-    arguments
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned()
 }
