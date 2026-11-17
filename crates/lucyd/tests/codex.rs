@@ -27,6 +27,7 @@ fn codex_provider(model: Option<&str>) -> Provider {
         kind: Kind::Codex,
         model: model.map(str::to_owned),
         allow_api_key: false,
+        program: None,
     }
 }
 
@@ -68,9 +69,14 @@ fn read_turn(events: &mut mpsc::UnboundedReceiver<ThinkingEvent>, wait: Duration
             Ok(ThinkingEvent::Delta(delta)) => text.push_str(&delta),
             Ok(ThinkingEvent::SentenceEnd) => text.push('|'),
             Ok(ThinkingEvent::TurnEnd) => return text,
-            Ok(ThinkingEvent::RateLimit(_)) => {}
+            Ok(
+                ThinkingEvent::RateLimit(_)
+                | ThinkingEvent::Final(_)
+                | ThinkingEvent::Conversation(_),
+            ) => {}
             Ok(ThinkingEvent::Unavailable(reason)) => panic!("Provider unavailable: {reason}"),
-            Ok(ThinkingEvent::Died) => panic!("codex died: {text:?}"),
+            Ok(ThinkingEvent::Died(_)) => panic!("codex died: {text:?}"),
+            Ok(ThinkingEvent::Failed(message)) => panic!("the Turn failed: {message}"),
             Err(_) => {
                 assert!(Instant::now() < deadline, "the Turn never ended: {text:?}");
                 // sleep-ok: poll loop with a deadline
@@ -139,7 +145,11 @@ fn one_app_server_serves_every_turn_of_a_session() {
     wait_until("codex's events never closed", || {
         rest.is_finished().then_some(())
     });
-    assert!(!rest.join().unwrap().contains(&ThinkingEvent::Died));
+    assert!(!rest
+        .join()
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, ThinkingEvent::Died(_))));
 }
 
 #[test]
@@ -274,7 +284,7 @@ fn codex_dying_mid_turn_reports_that_it_died() {
             text.push_str(&delta);
             None
         }
-        Ok(ThinkingEvent::Died) => Some(()),
+        Ok(ThinkingEvent::Died(_)) => Some(()),
         Ok(ThinkingEvent::TurnEnd) => panic!("the Turn ended as if codex had finished"),
         _ => None,
     });

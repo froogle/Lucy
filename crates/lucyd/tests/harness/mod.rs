@@ -15,8 +15,8 @@ use lucy_config::credentials::CredentialStore;
 use lucy_config::{Config, Provider};
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Clock, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay,
-    SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
+    Adapters, Clock, HandOff, Launcher, Notification, NotificationAction, Notifier, RateLimit,
+    Relay, SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
     ThinkingEvent, Timer, Tts, Workspace,
 };
 use lucyd::plugins::Environment;
@@ -46,6 +46,7 @@ pub struct Harness {
     applications: [PathBuf; 2],
     bus: Arc<Mutex<Vec<String>>>,
     typed: Mutex<Vec<String>>,
+    home_paths: Mutex<Vec<String>>,
     config_path: PathBuf,
     plugin_paths: lucyd::plugins::Paths,
     persona_path: PathBuf,
@@ -189,6 +190,8 @@ impl Harness {
         for dir in &applications {
             std::fs::create_dir(dir).unwrap();
         }
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config_path: config_path.clone(),
@@ -210,6 +213,7 @@ impl Harness {
                 credentials: Arc::new(credentials.clone()),
                 clock: Arc::new(clock.clone()),
                 applications: applications.to_vec(),
+                home,
             },
         })
         .expect("lucyd starts");
@@ -231,6 +235,7 @@ impl Harness {
             applications,
             bus: Arc::default(),
             typed: Mutex::default(),
+            home_paths: Mutex::default(),
             config_path,
             plugin_paths,
             persona_path,
@@ -340,6 +345,31 @@ impl Harness {
             .stdin(Stdio::null())
             .output()
             .unwrap()
+    }
+
+    pub fn home(&self) -> PathBuf {
+        self._dir.path().join("home")
+    }
+
+    pub fn home_file(&self, relative: &str) -> PathBuf {
+        let path = self.home().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+        self.home_paths
+            .lock()
+            .unwrap()
+            .push(path.display().to_string());
+        path
+    }
+
+    pub fn home_folder(&self, relative: &str) -> PathBuf {
+        let path = self.home().join(relative);
+        std::fs::create_dir_all(&path).unwrap();
+        self.home_paths
+            .lock()
+            .unwrap()
+            .push(path.display().to_string());
+        path
     }
 
     pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
@@ -489,6 +519,7 @@ impl Harness {
             self.tts.sentences(),
             self.credentials.values(),
             self.typed.lock().unwrap().clone(),
+            self.home_paths.lock().unwrap().clone(),
         ]
         .concat()
         .into_iter()
@@ -508,9 +539,12 @@ impl Harness {
         }
     }
 
-    pub fn assert_not_on_bus(&self, text: &str) {
-        for line in self.bus_once_idle() {
-            assert!(!line.contains(text), "{text:?} appeared on the bus: {line}");
+    pub fn assert_not_on_bus(&self, texts: &[&str]) {
+        let lines = self.bus.lock().unwrap().clone();
+        for line in &lines {
+            for text in texts {
+                assert!(!line.contains(text), "{text:?} appeared on the bus: {line}");
+            }
         }
     }
 
@@ -573,6 +607,21 @@ fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
     )
     .unwrap();
     path
+}
+
+/// Writes an executable script from a child, so no fd of ours leaks into it.
+pub fn write_script(path: &Path, script: &str) {
+    let written = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            "sh",
+        ])
+        .arg(script)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(written.success());
 }
 
 pub fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
@@ -733,6 +782,7 @@ pub struct FakeThinking {
     unhealthy: Arc<Mutex<HashMap<String, String>>>,
     failing_checks: Arc<Mutex<HashMap<String, String>>>,
     pub delegate: FakeDelegate,
+    pub hand_off: FakeDelegate,
 }
 
 impl FakeThinking {
@@ -740,6 +790,7 @@ impl FakeThinking {
         let (turns_tx, turns) = std_mpsc::channel();
         FakeThinking {
             delegate: FakeDelegate::new(),
+            hand_off: FakeDelegate::new(),
             turns_tx,
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
@@ -794,7 +845,7 @@ impl FakeThinking {
     }
 
     pub fn dies(&self) {
-        self.send(ThinkingEvent::Died);
+        self.send(ThinkingEvent::Died(lucyd::adapters::Exit::default()));
     }
 
     pub fn rate_limit(&self, limit: RateLimit) {
@@ -946,10 +997,36 @@ impl Thinking for FakeThinking {
     ) -> Box<dyn SessionModel> {
         let delegate = &self.delegate;
         delegate.opened.lock().unwrap().push(provider.clone());
+        if let Some(real) = delegate.real.lock().unwrap().clone() {
+            return real.open_delegate(provider, events, relay, instructions, workspace);
+        }
         *delegate.events.lock().unwrap() = Some(events);
         *delegate.relay.lock().unwrap() = Some(relay);
         *delegate.instructions.lock().unwrap() = Some(instructions);
         *delegate.workspace.lock().unwrap() = Some(workspace);
+        Box::new(FakeSessionModel {
+            turns: delegate.turns_tx.clone(),
+            interrupts: Arc::default(),
+        })
+    }
+
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        let delegate = &self.hand_off;
+        delegate.opened.lock().unwrap().push(provider.clone());
+        if let Some(real) = delegate.real.lock().unwrap().clone() {
+            return real.open_hand_off(provider, events, relay, instructions, hand_off);
+        }
+        *delegate.events.lock().unwrap() = Some(events);
+        *delegate.relay.lock().unwrap() = Some(relay);
+        *delegate.instructions.lock().unwrap() = Some(instructions);
+        *delegate.hand_off.lock().unwrap() = Some(hand_off);
         Box::new(FakeSessionModel {
             turns: delegate.turns_tx.clone(),
             interrupts: Arc::default(),
@@ -965,7 +1042,9 @@ pub struct FakeDelegate {
     relay: Arc<Mutex<Option<Relay>>>,
     instructions: Arc<Mutex<Option<String>>>,
     workspace: Arc<Mutex<Option<Workspace>>>,
+    hand_off: Arc<Mutex<Option<HandOff>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
+    real: Arc<Mutex<Option<Arc<dyn Thinking>>>>,
 }
 
 impl FakeDelegate {
@@ -978,8 +1057,15 @@ impl FakeDelegate {
             relay: Arc::default(),
             instructions: Arc::default(),
             workspace: Arc::default(),
+            hand_off: Arc::default(),
             opened: Arc::default(),
+            real: Arc::default(),
         }
+    }
+
+    /// Opens later Delegates on `real`, a real adapter, while the Session stays scripted.
+    pub fn open_on(&self, real: Arc<dyn Thinking>) {
+        *self.real.lock().unwrap() = Some(real);
     }
 
     pub fn opened(&self) -> Vec<Provider> {
@@ -1027,12 +1113,29 @@ impl FakeDelegate {
         .unwrap()
     }
 
+    pub fn hand_off(&self) -> HandOff {
+        let opened = || self.hand_off.lock().unwrap().clone();
+        wait_until("a Hand-off to open", opened)
+    }
+
     pub fn turn_end(&self) {
+        self.send(ThinkingEvent::TurnEnd);
+    }
+
+    pub fn conversation(&self, conversation: &str) {
+        self.send(ThinkingEvent::Conversation(conversation.to_owned()));
+    }
+
+    pub fn answer(&self, conversation: &str, answer: &str) {
+        self.conversation(conversation);
+        self.send(ThinkingEvent::Final(answer.to_owned()));
+        self.send(ThinkingEvent::TurnEnd);
+    }
+
+    fn send(&self, event: ThinkingEvent) {
         let events = self.events.lock().unwrap();
         let events = events.as_ref().expect("a Delegate is open");
-        events
-            .send(ThinkingEvent::TurnEnd)
-            .expect("lucyd is reading the Delegate");
+        events.send(event).expect("lucyd is reading the Delegate");
     }
 
     fn relay(&self) -> Relay {
@@ -1345,6 +1448,8 @@ impl Drop for NoModelText {
 #[derive(Clone, Default)]
 pub struct FakeLauncher {
     opened: Arc<Mutex<Vec<String>>>,
+    shown: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+    opened_files: Arc<Mutex<Vec<PathBuf>>>,
     launched: Arc<Mutex<Vec<PathBuf>>>,
     launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
     terminals: Arc<Mutex<Vec<Vec<String>>>>,
@@ -1354,6 +1459,14 @@ pub struct FakeLauncher {
 impl FakeLauncher {
     pub fn opened(&self) -> Vec<String> {
         self.opened.lock().unwrap().clone()
+    }
+
+    pub fn shown(&self) -> Vec<Vec<PathBuf>> {
+        self.shown.lock().unwrap().clone()
+    }
+
+    pub fn opened_files(&self) -> Vec<PathBuf> {
+        self.opened_files.lock().unwrap().clone()
     }
 
     pub fn launched(&self) -> Vec<PathBuf> {
@@ -1376,6 +1489,16 @@ impl FakeLauncher {
 impl Launcher for FakeLauncher {
     fn open_url(&self, url: &str) -> std::io::Result<()> {
         self.opened.lock().unwrap().push(url.to_owned());
+        Ok(())
+    }
+
+    fn show_items(&self, paths: &[PathBuf]) -> std::io::Result<()> {
+        self.shown.lock().unwrap().push(paths.to_vec());
+        Ok(())
+    }
+
+    fn open_file(&self, path: &Path) -> std::io::Result<()> {
+        self.opened_files.lock().unwrap().push(path.to_owned());
         Ok(())
     }
 

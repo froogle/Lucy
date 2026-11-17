@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
@@ -5,6 +6,8 @@ use landlock::{
     Access, AccessFs, BitFlags, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreated,
     RulesetCreatedAttr, RulesetStatus, ABI,
 };
+
+use lucy_config::Provider;
 
 use super::manifest::Access as Declared;
 use super::Environment;
@@ -153,12 +156,64 @@ fn base(dir: PathBuf) -> Option<PathBuf> {
 }
 
 pub fn program_dir(program: &Path) -> Option<PathBuf> {
-    let found = if program.components().count() > 1 {
-        Some(program.to_owned())
-    } else {
-        std::env::split_paths(&std::env::var_os("PATH")?)
-            .map(|dir| dir.join(program))
-            .find(|path| path.is_file())
-    }?;
+    let found = on_path(program)?;
     Some(std::fs::canonicalize(found).ok()?.parent()?.to_owned())
+}
+
+fn on_path(program: &Path) -> Option<PathBuf> {
+    if program.components().count() > 1 {
+        return Some(program.to_owned());
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|path| path.is_file())
+}
+
+/// The CLI a Delegate of `provider` runs: its `program` as given, else `default`'s executable.
+///
+/// # Errors
+///
+/// As [`executable`].
+pub fn delegate_program(provider: &Provider, default: &Path) -> io::Result<PathBuf> {
+    match &provider.program {
+        Some(given) => Ok(given.clone()),
+        None => executable(default),
+    }
+}
+
+/// The executable running `program` really starts, past symlinks and mise shims.
+///
+/// A bare name is found on `PATH`. A mise shim is asked, unconfined, which
+/// binary it runs (`mise which <name>`), so a sandbox can allow just that one.
+///
+/// # Errors
+///
+/// When `program` isn't found, or mise can't say what it runs.
+pub fn executable(program: &Path) -> io::Result<PathBuf> {
+    let found = on_path(program).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} isn't on PATH", program.display()),
+        )
+    })?;
+    let real = std::fs::canonicalize(&found)?;
+    if real.file_name() != Some(OsStr::new("mise")) {
+        return Ok(real);
+    }
+    let name = found.file_name().unwrap_or_default();
+    let output = std::process::Command::new(&real)
+        .arg("which")
+        .arg(name)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let answer = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success() || answer.trim().is_empty() {
+        return Err(io::Error::other(format!(
+            "mise can't say which {} it runs ({}): {}",
+            name.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    std::fs::canonicalize(answer.trim())
 }

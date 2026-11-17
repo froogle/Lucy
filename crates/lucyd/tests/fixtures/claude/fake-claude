@@ -3,7 +3,8 @@
 # directory, so each test scripts its own:
 # - `--version` prints ./version, or a recorded real version;
 # - `auth status --json` prints ./auth.json, or a recorded subscription login;
-# - anything else is `claude -p` stream-json: it records how it was run, then
+# - anything else is `claude -p` stream-json: it records how it was run
+#   (./argv, NUL-separated) and its environment (./environ), then
 #   answers the Nth stdin line with turnN.jsonl, from here if the test hasn't
 #   put one in the working directory. The recorded turns are real transcripts.
 #   If CLAUDE_CONFIG_DIR is set (never the real ~/.claude), it keeps the
@@ -27,6 +28,7 @@ auth)
 esac
 echo $$ >> pids
 printf '%s\0' "$@" > argv.tmp && mv argv.tmp argv
+env > environ.tmp && mv environ.tmp environ
 n=0
 while IFS= read -r line; do
     n=$((n + 1))

@@ -39,7 +39,7 @@ impl Claude {
             return Ok(version);
         }
         let output = self
-            .base_command(provider)
+            .base_command(self.program(provider), provider)
             .args(["auth", "status", "--json"])
             .stdin(Stdio::null())
             .output()
@@ -64,7 +64,7 @@ impl Claude {
 
     fn version(&self, provider: &Provider) -> Result<String, String> {
         let output = std::fs::create_dir_all(&self.work_dir).and_then(|()| {
-            self.base_command(provider)
+            self.base_command(self.program(provider), provider)
                 .arg("--version")
                 .stdin(Stdio::null())
                 .output()
@@ -79,7 +79,7 @@ impl Claude {
             Err(e) if e.kind() == ErrorKind::NotFound => Err(format!(
                 "I can't find Claude Code at {}. Please install it, or put claude on \
                  my PATH.",
-                self.program.display()
+                self.program(provider).display()
             )),
             Err(e) => Err(format!("I couldn't run Claude Code: {e}.")),
         }
@@ -116,7 +116,7 @@ impl Claude {
 
     fn reply_ok(&self, provider: &Provider) -> Result<Reply, String> {
         let mut child = self
-            .command(provider, None, "", &[], None)
+            .command(self.program(provider), provider, None, "", &[], None)
             .arg("--no-session-persistence")
             .spawn()
             .map_err(|e| format!("I couldn't start Claude Code: {e}."))?;

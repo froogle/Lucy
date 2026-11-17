@@ -203,6 +203,9 @@ pub struct ProviderCheck {
 pub struct ProviderCheckResult {
     /// What's wrong and how to fix it, or `None` if the check passed.
     pub problem: Option<String>,
+    /// The executable a Delegate of it runs, past any mise shim; `None` if not found.
+    #[serde(default)]
+    pub program: Option<String>,
 }
 
 /// Params of `subscribe`.

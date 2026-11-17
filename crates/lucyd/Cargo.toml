@@ -32,6 +32,8 @@ whisper-rs.workspace = true
 livekit-wakeword = { git = "https://github.com/livekit/rust-sdks", rev = "1b19002692239946fa7c31ca59d320b95833819c" }
 log = "0.4"
 env_logger = { version = "0.11", default-features = false }
+ignore = "0.4"
+zbus = { version = "6", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
 tempfile.workspace = true

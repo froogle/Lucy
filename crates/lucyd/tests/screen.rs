@@ -153,8 +153,8 @@ fn the_image_reaches_nothing_but_the_model() {
 
     events.end_session().unwrap();
 
-    lucyd.assert_not_on_bus(SCREEN);
-    lucyd.assert_not_on_bus(SCREEN_TEXT);
+    lucyd.assert_nothing_private_on_bus();
+    lucyd.assert_not_on_bus(&[SCREEN, SCREEN_TEXT]);
     for shown in lucyd.notifier.shown() {
         let shown = format!("{shown:?}");
         assert!(!shown.contains(SCREEN), "{shown}");

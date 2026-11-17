@@ -427,6 +427,14 @@
             "string",
             "null"
           ]
+        },
+        "program": {
+          "default": null,
+          "description": "The executable a Delegate of it runs, past any mise shim; `None` if not found.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"

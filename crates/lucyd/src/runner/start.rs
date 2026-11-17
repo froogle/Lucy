@@ -8,6 +8,7 @@ use super::Runner;
 use crate::adapters::{InertSessionModel, Relay, SessionModel, ThinkingEvent};
 use crate::audio::Devices;
 use crate::desktop::Desktop;
+use crate::files::{Files, Search};
 use crate::mcp::{Caller, Token};
 use crate::notifications;
 use crate::persona::{Loaded, Persona};
@@ -60,6 +61,14 @@ impl Runner {
             launcher: self.adapters.launcher.clone(),
             applications: self.adapters.applications.clone(),
             launcher_command: settings.desktop.launcher.clone(),
+            files: Files {
+                launcher: self.adapters.launcher.clone(),
+                search: Search::new(
+                    &settings.files.roots,
+                    &self.adapters.home,
+                    &settings.files.skip,
+                ),
+            },
         };
         if !settings.screen.enabled {
             plugin_tools.turn_screen_off();

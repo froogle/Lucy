@@ -18,6 +18,7 @@ use crate::adapters::{
 };
 use crate::audio::{BargeInEvent, Direction, Heard, Hearing};
 use crate::authoring::{Authoring, Building};
+use crate::hand_off::{HandOffs, Working};
 use crate::input::{Dialog, OpenDialog, Opened};
 use crate::limits;
 use crate::mcp::Relays;
@@ -108,6 +109,11 @@ const FALSE_WAKE_TIMEOUT: Duration = Duration::from_secs(8);
 
 const REOPEN_MIC_EVERY: Duration = Duration::from_secs(1);
 
+pub struct Delegates {
+    pub authoring: Arc<Authoring>,
+    pub hand_offs: Arc<HandOffs>,
+}
+
 pub struct StartError;
 pub struct EndError;
 
@@ -124,6 +130,8 @@ pub struct Runner {
     sessions_started: u64,
     building: watch::Receiver<Building>,
     authoring: Arc<Authoring>,
+    working: watch::Receiver<Working>,
+    hand_offs: Arc<HandOffs>,
     parked: VecDeque<Parked>,
     looks: Option<watch::Receiver<u64>>,
     looking: bool,
@@ -151,8 +159,12 @@ impl Runner {
         relays: Relays,
         plugin_host: Arc<plugins::Host>,
         files: SessionFiles,
-        authoring: Arc<Authoring>,
+        delegates: Delegates,
     ) -> Self {
+        let Delegates {
+            authoring,
+            hand_offs,
+        } = delegates;
         Runner {
             commands,
             buses,
@@ -166,6 +178,8 @@ impl Runner {
             sessions_started: 0,
             building: authoring.building(),
             authoring,
+            working: hand_offs.working(),
+            hand_offs,
             parked: VecDeque::new(),
             looks: None,
             looking: false,
@@ -240,6 +254,7 @@ impl Runner {
         self.session_loop(id, started, plugin_tools.clone()).await;
         self.looks = None;
         self.looking = false;
+        self.hand_offs.stop();
         self.keep_unsaid_for_next_session();
         if let Some(hearing) = &mut self.adapters.hearing {
             hearing.lucy_speaking(false);
@@ -309,6 +324,7 @@ impl Runner {
             session.handle(Input::Speaking(true));
         }
         session.handle(Input::Building(*self.building.borrow_and_update()));
+        session.handle(Input::Working(*self.working.borrow_and_update()));
         let silence_timeout = Duration::from_secs_f64(silence_timeout);
         let clock = &self.adapters.clock;
         let mut silence = SilenceTimer::new(silence_timeout, clock.clone());
@@ -459,6 +475,9 @@ impl Runner {
                 Ok(()) = self.building.changed() => {
                     Input::Building(*self.building.borrow_and_update())
                 }
+                Ok(()) = self.working.changed() => {
+                    Input::Working(*self.working.borrow_and_update())
+                }
                 wake = self.adapters.wake_word.recv(), if self.wake_open => match wake {
                     Some(()) => {
                         log::debug!("wake word in {:?}", session.state());
@@ -508,7 +527,7 @@ impl Runner {
                 }
             };
             let input = match input {
-                Input::Thinking(ThinkingEvent::Died) => match opened.as_ref() {
+                Input::Thinking(ThinkingEvent::Died(_)) => match opened.as_ref() {
                     Some(opened) if !respawned_since_turn_end => {
                         eprintln!("lucyd: the model process died; opening it again");
                         respawned_since_turn_end = true;
@@ -534,6 +553,9 @@ impl Runner {
                 {
                     let said = limits::spoken(&limit, provider_name);
                     Input::Thinking(ThinkingEvent::Unavailable(said))
+                }
+                Input::Thinking(ThinkingEvent::Failed(_)) => {
+                    Input::Thinking(ThinkingEvent::TurnEnd)
                 }
                 input => input,
             };
