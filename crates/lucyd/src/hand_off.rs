@@ -1,5 +1,7 @@
 use std::ffi::OsString;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -12,10 +14,15 @@ use crate::adapters::{
     Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
     Thinking, ThinkingEvent, PERMISSION_TOOL,
 };
+use crate::authoring::{spoken_duration, Authoring};
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
-use crate::runner::Command;
+use crate::runner::{self, Command};
+use crate::session::{
+    which_to_cancel, Answer, Cancel, Expects, Question, BOTH_RUNNING, BOTH_STOPPED, BUILD_STOPPED,
+    HAND_OFF_STOPPED, WHICH_TO_CANCEL,
+};
 use crate::sync::Locked;
 
 const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice assistant, and \
@@ -37,7 +44,19 @@ pub struct HandOffs {
     notifier: Arc<dyn Notifier>,
     clock: Arc<dyn Clock>,
     working: watch::Sender<Working>,
-    current: Mutex<Option<Arc<Job>>>,
+    config_path: PathBuf,
+    jobs: Mutex<Jobs>,
+}
+
+#[derive(Default)]
+struct Jobs {
+    current: Option<Arc<Job>>,
+    queued: Option<Request>,
+}
+
+struct Request {
+    request: String,
+    folder: PathBuf,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +71,7 @@ impl HandOffs {
         adapters: &Adapters,
         relays: Relays,
         env: Environment,
+        config_path: PathBuf,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Arc<HandOffs> {
         Arc::new(HandOffs {
@@ -62,7 +82,8 @@ impl HandOffs {
             notifier: adapters.notifier.clone(),
             clock: adapters.clock.clone(),
             working: watch::Sender::new(Working::No),
-            current: Mutex::default(),
+            config_path,
+            jobs: Mutex::default(),
         })
     }
 
@@ -79,28 +100,63 @@ impl HandOffs {
             Ok(folder) => folder,
             Err(refused) => return error(refused),
         };
-        let mut current = self.current.locked();
-        if current.is_some() {
-            return error(
-                "Claude is still working on the last thing the user handed it. Tell them, and \
-                 that they can ask again once it's done.",
-            );
+        let request = Request { request, folder };
+        let mut jobs = self.jobs.locked();
+        if let Some(running) = &jobs.current {
+            let running = running.request.clone();
+            return Self::queue(&mut jobs, &running, request, arguments);
         }
-        let job = Arc::new(Job {
-            request,
-            folder,
-            hand_offs: Arc::downgrade(self),
-            state: Mutex::default(),
-            stopping: Notify::new(),
-        });
-        *current = Some(job.clone());
-        drop(current);
+        jobs.current = Some(self.start(request));
+        drop(jobs);
         self.working.send_replace(Working::Yes);
-        tokio::spawn(job.run());
         text(
             "Claude has started on it. Tell the user so in a few words, and carry on with \
              anything else they ask. Lucy will tell you when Claude has finished.",
         )
+    }
+
+    fn queue(
+        jobs: &mut Jobs,
+        running: &str,
+        request: Request,
+        arguments: &JsonObject,
+    ) -> CallToolResult {
+        if let Some(queued) = &jobs.queued {
+            return error(format!(
+                "Claude is still working on \"{running}\", and \"{}\" is queued after it. Tell \
+                 the user Lucy can't take another until those are done.",
+                queued.request
+            ));
+        }
+        if arguments.get("queue").and_then(serde_json::Value::as_bool) != Some(true) {
+            return error(format!(
+                "Nothing has started: Claude is still working on \"{running}\". Ask the user \
+                 whether to queue this, naming that one in a few words, such as \"Claude's \
+                 still on the lucy test; want me to queue this?\" If they say yes, call \
+                 hand_to_claude again with the same request and folder, and queue set to true."
+            ));
+        }
+        jobs.queued = Some(request);
+        text(
+            "It's queued: Claude starts on it once it has finished the one it's on. Tell the \
+             user so in a few words.",
+        )
+    }
+
+    fn start(self: &Arc<Self>, request: Request) -> Arc<Job> {
+        let budget = lucy_config::load(&self.config_path)
+            .map(|config| config.handoff)
+            .unwrap_or_default();
+        let job = Arc::new(Job {
+            request: request.request,
+            folder: request.folder,
+            budget: Duration::from_secs_f64(budget.budget_mins * 60.0),
+            hand_offs: Arc::downgrade(self),
+            state: Mutex::default(),
+            stopping: Notify::new(),
+        });
+        tokio::spawn(job.clone().run());
+        job
     }
 
     fn folder(&self, said: &str) -> Result<PathBuf, String> {
@@ -128,10 +184,54 @@ impl HandOffs {
     }
 
     pub fn stop(&self) {
-        let current = self.current.locked().clone();
+        self.halt(Stop::SessionEnded);
+    }
+
+    pub fn cancel(&self) {
+        self.halt(Stop::Cancelled);
+    }
+
+    fn halt(&self, why: Stop) {
+        let current = {
+            let mut jobs = self.jobs.locked();
+            jobs.queued = None;
+            jobs.current.clone()
+        };
         if let Some(job) = current {
-            job.stop();
+            job.stop(why);
         }
+    }
+
+    pub fn ask_which_to_cancel(self: &Arc<Self>, authoring: Arc<Authoring>) {
+        let hand_offs = self.clone();
+        tokio::spawn(async move {
+            let question = Question {
+                prompt: WHICH_TO_CANCEL.to_owned(),
+                expects: Expects::Words,
+            };
+            let answer = runner::ask(&hand_offs.commands, question, None).await;
+            let choice = match answer {
+                Some(Answer::Said(said)) => which_to_cancel(&said),
+                _ => Cancel::Neither,
+            };
+            let said = match choice {
+                Cancel::Build => {
+                    authoring.cancel();
+                    BUILD_STOPPED
+                }
+                Cancel::HandOff => {
+                    hand_offs.cancel();
+                    HAND_OFF_STOPPED
+                }
+                Cancel::Both => {
+                    authoring.cancel();
+                    hand_offs.cancel();
+                    BOTH_STOPPED
+                }
+                Cancel::Neither => BOTH_RUNNING,
+            };
+            let _ = hand_offs.commands.send(Command::Say(said.to_owned()));
+        });
     }
 
     fn show(&self, notification: Notification) {
@@ -139,10 +239,17 @@ impl HandOffs {
             .notify(notification, mpsc::unbounded_channel().0);
     }
 
-    fn finished(&self, job: &Job) {
-        let mut current = self.current.locked();
-        if current.as_deref().is_some_and(|c| std::ptr::eq(c, job)) {
-            *current = None;
+    fn finished(self: &Arc<Self>, job: &Job) {
+        let mut jobs = self.jobs.locked();
+        if !jobs
+            .current
+            .as_deref()
+            .is_some_and(|c| std::ptr::eq(c, job))
+        {
+            return;
+        }
+        jobs.current = jobs.queued.take().map(|next| self.start(next));
+        if jobs.current.is_none() {
             self.working.send_replace(Working::No);
         }
     }
@@ -169,6 +276,7 @@ pub fn hand_to_claude_tool() -> Tool {
             "properties": {
                 "request": {"type": "string", "description": "What the user wants Claude to do, in their words"},
                 "folder": {"type": "string", "description": "The folder as the user said it: an absolute path or one starting with ~. Leave it out when they named none."},
+                "queue": {"type": "boolean", "description": "True once the user has said yes to queueing this behind the Hand-off running"},
             },
             "required": ["request"],
         }),
@@ -198,6 +306,7 @@ pub fn hand_off_tools() -> Vec<Tool> {
 pub struct Job {
     request: String,
     folder: PathBuf,
+    budget: Duration,
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
     stopping: Notify,
@@ -210,6 +319,13 @@ struct JobState {
     token: Option<Token>,
     conversation: Option<String>,
     answer: Option<String>,
+    stop: Option<Stop>,
+}
+
+#[derive(Clone, Copy)]
+enum Stop {
+    SessionEnded,
+    Cancelled,
 }
 
 impl Job {
@@ -217,6 +333,8 @@ impl Job {
         let Some(hand_offs) = self.hand_offs.upgrade() else {
             return;
         };
+        let mut budget = hand_offs.clock.timer();
+        budget.set(Some(hand_offs.clock.now() + self.budget));
         let env = hand_offs.environment().await;
         let (relay, token) = hand_offs
             .relays
@@ -243,10 +361,14 @@ impl Job {
             state.token = Some(token);
         }
         drop(hand_offs);
-        self.follow(events).await;
+        self.follow(events, budget.fired()).await;
     }
 
-    async fn follow(&self, mut events: mpsc::UnboundedReceiver<ThinkingEvent>) {
+    async fn follow(
+        &self,
+        mut events: mpsc::UnboundedReceiver<ThinkingEvent>,
+        mut budget_spent: Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) {
         loop {
             tokio::select! {
                 biased;
@@ -262,6 +384,7 @@ impl Job {
                     None => return self.failed("Claude stopped unexpectedly."),
                     Some(_) => {}
                 },
+                () = &mut budget_spent => return self.out_of_time(),
                 () = self.stopping.notified() => return self.stopped(),
             }
         }
@@ -340,13 +463,14 @@ impl Job {
         self.failed(&exit.stopped("Claude"));
     }
 
-    fn stop(&self) {
+    fn stop(&self, why: Stop) {
         let started = {
             let mut state = self.state.locked();
             if state.over {
                 return;
             }
             state.over = state.model.is_none();
+            state.stop = Some(why);
             state.model.is_some()
         };
         if started {
@@ -357,13 +481,40 @@ impl Job {
     }
 
     fn stopped(&self) {
-        let conversation = self.state.locked().conversation.clone();
+        let (conversation, why) = {
+            let state = self.state.locked();
+            (state.conversation.clone(), state.stop)
+        };
+        let why = match why.expect("a Hand-off is stopped for a reason") {
+            Stop::SessionEnded => "The Session ended before Claude had finished.",
+            Stop::Cancelled => "You asked Lucy to cancel it.",
+        };
         self.show(
             "Lucy stopped Claude",
+            format!("{why}{}", self.resume(conversation.as_deref())),
+        );
+        self.finish();
+    }
+
+    fn out_of_time(&self) {
+        let conversation = self.state.locked().conversation.clone();
+        let budget = spoken_duration(self.budget);
+        self.show(
+            "Claude ran out of time",
             format!(
-                "The Session ended before Claude had finished.{}",
+                "Claude wasn't done after {budget}, so Lucy stopped it.{}",
                 self.resume(conversation.as_deref())
             ),
+        );
+        self.tell(
+            format!(
+                "{HAND_OFF} Claude ran out of time on what the user handed it: \"{}\". It \
+                 wasn't done after {budget}, so Lucy stopped it. Tell the user plainly, in a \
+                 sentence, and that the notification says how to carry on at their keyboard.",
+                self.request
+            ),
+            "Claude ran out of time",
+            "Lucy will tell you more at your next Session.",
         );
         self.finish();
     }

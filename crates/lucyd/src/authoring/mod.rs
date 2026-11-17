@@ -842,7 +842,7 @@ fn build_notification(summary: String, body: String) -> Notification {
     }
 }
 
-fn spoken_duration(duration: Duration) -> String {
+pub(crate) fn spoken_duration(duration: Duration) -> String {
     let secs = duration.as_secs_f64();
     if secs >= 60.0 {
         format!("{} minutes", (secs / 60.0).round())

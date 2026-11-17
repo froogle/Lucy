@@ -611,6 +611,10 @@ impl Runner {
                         speaker.stop();
                     }
                     Output::CancelBuild => self.authoring.cancel(),
+                    Output::CancelHandOff => self.hand_offs.cancel(),
+                    Output::AskWhichToCancel => {
+                        self.hand_offs.ask_which_to_cancel(self.authoring.clone());
+                    }
                     Output::Interrupt => {
                         model.interrupt();
                         plugin_tools.barge_in();

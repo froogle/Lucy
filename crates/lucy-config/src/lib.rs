@@ -32,6 +32,7 @@ pub struct Config {
     pub input: Input,
     pub barge_in: BargeIn,
     pub authoring: Authoring,
+    pub handoff: HandOff,
     pub screen: Screen,
 }
 
@@ -62,6 +63,7 @@ impl Default for Config {
             input: Input::default(),
             barge_in: BargeIn::default(),
             authoring: Authoring::default(),
+            handoff: HandOff::default(),
             screen: Screen::default(),
         }
     }
@@ -564,6 +566,20 @@ impl Default for Authoring {
     }
 }
 
+/// `[handoff]`: how a Hand-off to the user's own Claude runs.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct HandOff {
+    /// Minutes a Hand-off may run before Lucy stops it.
+    pub budget_mins: f64,
+}
+
+impl Default for HandOff {
+    fn default() -> Self {
+        HandOff { budget_mins: 60.0 }
+    }
+}
+
 /// `[screen]`: whether Lucy may look at the screen (ADR 0008).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -863,6 +879,15 @@ mod tests {
 
         assert_eq!(config.authoring.budget_secs, 60.0);
         assert!(!config.authoring.progress_notifications);
+    }
+
+    #[test]
+    fn a_hand_off_has_an_hour_unless_config_says_otherwise() {
+        assert_eq!(Config::default().handoff.budget_mins, 60.0);
+
+        let config = parse("[handoff]\nbudget_mins = 90\n");
+
+        assert_eq!(config.handoff.budget_mins, 90.0);
     }
 
     #[test]
