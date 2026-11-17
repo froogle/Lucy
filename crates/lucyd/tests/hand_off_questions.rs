@@ -198,3 +198,36 @@ fn report_progress_is_notified_and_never_spoken() {
     assert!(lucyd.tts.sentences().is_empty());
     lucyd.thinking.assert_no_turn();
 }
+
+#[test]
+fn a_question_answered_and_then_a_permission_request_both_reach_claude() {
+    let lucyd = Harness::start();
+    let _events = handed_off(&lucyd);
+    let call = claude_calls(&lucyd, "ask_user", json!({"question": QUESTION}));
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        format!("Claude asks: {QUESTION}")
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("update the snapshot");
+    let said = text(&call.join().unwrap().unwrap());
+    assert!(said.contains("update the snapshot"), "{said}");
+
+    let call = claude_calls(
+        &lucyd,
+        "permission",
+        json!({
+            "tool_name": "Bash",
+            "input": {"command": "cargo insta accept", "description": "Accept the new snapshot"},
+        }),
+    );
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Claude wants to accept the new snapshot. Okay?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+
+    let decision: Value = serde_json::from_str(&text(&call.join().unwrap().unwrap())).unwrap();
+    assert_eq!(decision["behavior"], "allow", "{decision}");
+}

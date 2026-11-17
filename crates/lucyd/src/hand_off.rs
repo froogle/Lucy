@@ -27,9 +27,12 @@ const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice
 
 const CAPTURE_WAIT: Duration = Duration::from_secs(5);
 
-const DENIED: &str = "The user's Claude settings don't allow this, and Lucy can't ask them about \
-                      it, so it's denied. Carry on without it, and say in your final message \
-                      what you'd need.";
+const UNASKED: &str = "The user's Claude settings don't allow this, and Lucy couldn't ask them \
+                       about it, so it's denied. Carry on without it, and say in your final \
+                       message what you'd need.";
+
+const REFUSED: &str = "The user didn't allow this when Lucy asked them. Carry on without it, and \
+                       say in your final message what you'd need.";
 
 pub struct HandOffs {
     thinking: Arc<dyn Thinking>,
@@ -300,7 +303,7 @@ impl Job {
                 let kept = question_kept("Claude wants you to type something");
                 input::ask_typed_at(&commands, arguments, kept).await
             }
-            PERMISSION_TOOL => text(json!({"behavior": "deny", "message": DENIED}).to_string()),
+            PERMISSION_TOOL => text(self.permission(arguments).await.to_string()),
             _ => return None,
         })
     }
@@ -329,6 +332,32 @@ impl Job {
                 "The user couldn't be asked. Carry on with your best judgement, and say in \
                  your final message what you assumed.",
             ),
+        }
+    }
+
+    async fn permission(&self, arguments: &JsonObject) -> serde_json::Value {
+        let tool_name = string(arguments, "tool_name");
+        let empty = serde_json::Value::Object(JsonObject::new());
+        let input = arguments.get("input").unwrap_or(&empty);
+        let question = Question {
+            prompt: format!("Claude wants to {}. Okay?", description(&tool_name, input)),
+            expects: Expects::Yes,
+        };
+        let shown = Notification {
+            summary: "Claude needs your yes".into(),
+            body: format!("{tool_name}\n{input:#}"),
+            action: None,
+            kind: NotificationKind::Details,
+        };
+        let Some(hand_offs) = self.hand_offs.upgrade() else {
+            return json!({"behavior": "deny", "message": UNASKED});
+        };
+        let commands = hand_offs.commands.clone();
+        drop(hand_offs);
+        match runner::ask(&commands, question, Some(shown)).await {
+            Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
+            Some(_) => json!({"behavior": "deny", "message": REFUSED}),
+            None => json!({"behavior": "deny", "message": UNASKED}),
         }
     }
 
@@ -483,6 +512,31 @@ fn question_kept(summary: &str) -> When {
         action: None,
         kind: NotificationKind::HandOff,
     })
+}
+
+fn description(tool_name: &str, input: &serde_json::Value) -> String {
+    let said = input
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .map(|said| said.trim().trim_end_matches('.').trim())
+        .filter(|said| !said.is_empty());
+    let Some(said) = said else {
+        let tool = tool_name.strip_prefix("mcp__").unwrap_or(tool_name);
+        return format!(
+            "use {}",
+            tool.replace('_', " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    };
+    let mut chars = said.chars();
+    match (chars.next(), chars.next()) {
+        (Some(first), Some(second)) if first.is_uppercase() && !second.is_uppercase() => {
+            format!("{}{}", first.to_lowercase(), &said[first.len_utf8()..])
+        }
+        _ => said.to_owned(),
+    }
 }
 
 fn claude() -> Provider {
