@@ -59,7 +59,18 @@ pub enum ThinkingEvent {
     Unavailable(String),
     /// The model process ended while the SessionModel was still open. Lucy
     /// opens a new one once and resends the Turn in progress.
-    Died,
+    Died(Exit),
+    /// The model ended the Turn with an error; the text is its message.
+    Failed(String),
+}
+
+/// How a model process ended, as far as lucyd could see.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Exit {
+    /// `None` when it couldn't be waited for.
+    pub status: Option<std::process::ExitStatus>,
+    /// The last lines it wrote to stderr, oldest first; empty when they aren't kept.
+    pub stderr: Vec<String>,
 }
 
 /// A `rate_limit_event` from `claude`.
@@ -123,6 +134,12 @@ pub trait Thinking: Send + Sync {
     ///
     /// A reason ready to speak, with the fix.
     fn check(&self, provider: &Provider) -> Result<(), String>;
+
+    /// The executable a Delegate of `provider` runs, past any mise shim, if found.
+    /// Blocking.
+    fn executable(&self, _provider: &Provider) -> Option<std::path::PathBuf> {
+        None
+    }
 
     /// Starts a Delegate's model process, as `open` starts a Session's.
     /// It has the CLI's own file and shell tools, works in `workspace.dir`,
@@ -366,6 +383,18 @@ pub trait Launcher: Send + Sync {
     ///
     /// When the opener can't be started.
     fn open_url(&self, url: &str) -> io::Result<()>;
+    /// Opens the file manager with `paths` highlighted.
+    ///
+    /// # Errors
+    ///
+    /// When no file manager can be reached or started.
+    fn show_items(&self, paths: &[PathBuf]) -> io::Result<()>;
+    /// Opens the file at `path` in its default app.
+    ///
+    /// # Errors
+    ///
+    /// When the opener can't be started.
+    fn open_file(&self, path: &Path) -> io::Result<()>;
     /// Starts the app whose desktop entry is at `entry`.
     /// It goes through `launcher` (`[desktop] launcher`, with the entry's path
     /// appended) if it is set.
@@ -407,6 +436,8 @@ pub struct Adapters {
     pub clock: Arc<dyn Clock>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
+    /// The user's home, which `~` means in `[files] roots`.
+    pub home: PathBuf,
 }
 
 impl Adapters {
@@ -429,6 +460,7 @@ impl Adapters {
             credentials: Arc::new(Inert),
             clock: Arc::new(SystemClock),
             applications: vec![],
+            home: PathBuf::new(),
         }
     }
 }
@@ -527,6 +559,14 @@ impl Notifier for Inert {
 
 impl Launcher for Inert {
     fn open_url(&self, _url: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn show_items(&self, _paths: &[PathBuf]) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn open_file(&self, _path: &Path) -> io::Result<()> {
         Ok(())
     }
 

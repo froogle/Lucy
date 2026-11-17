@@ -14,7 +14,7 @@ use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use crate::adapters::{
-    Adapters, Clock, Notification, NotificationKind, Notifier, SessionModel, Thinking,
+    Adapters, Clock, Exit, Notification, NotificationKind, Notifier, SessionModel, Thinking,
     ThinkingEvent, Timer, Workspace,
 };
 use crate::mcp::{error, text, tool, Caller, Relays, Token};
@@ -31,6 +31,8 @@ const A_FEW_MINUTES: &str = "This is going to take a few minutes.";
 const IS_THAT_THE_ONE: &str = "Is that the one?";
 
 const OUTPUT_LINES: usize = 20;
+
+const SHORT_CHARS: usize = 200;
 
 pub struct Authoring {
     thinking: Arc<dyn Thinking>,
@@ -473,7 +475,14 @@ impl Build {
                 event = events.recv() => match event {
                     Some(ThinkingEvent::TurnEnd) => self.turn_ended(),
                     Some(ThinkingEvent::Unavailable(reason)) => self.give_up(reason),
-                    Some(ThinkingEvent::Died) | None => {
+                    Some(ThinkingEvent::Failed(message)) => {
+                        self.give_up(format!("the builder failed: {}", short(&message)));
+                    }
+                    Some(ThinkingEvent::Died(exit)) => {
+                        self.died(&exit);
+                        return;
+                    }
+                    None => {
                         self.give_up("the builder stopped unexpectedly".to_owned());
                         return;
                     }
@@ -769,10 +778,33 @@ impl Build {
         self.give_up(reason.unwrap_or_else(|| "the builder stopped without submitting it".into()));
     }
 
+    fn died(&self, exit: &Exit) {
+        let status = exit.status.map_or_else(
+            || "exit status unknown".to_owned(),
+            |status| status.to_string(),
+        );
+        if self.state.locked().stage != Stage::Over {
+            eprintln!(
+                "lucyd: the {} Plugin's builder stopped ({status}); the end of its stderr:\n{}",
+                self.name,
+                exit.stderr.join("\n")
+            );
+        }
+        let reason = match exit.stderr.last() {
+            Some(line) => format!(
+                "the builder stopped unexpectedly ({status}): {}",
+                short(line)
+            ),
+            None => format!("the builder stopped unexpectedly ({status})"),
+        };
+        self.give_up(reason);
+    }
+
     fn give_up(&self, reason: String) {
         if self.state.locked().stage == Stage::Over {
             return;
         }
+        eprintln!("lucyd: gave up building the {} Plugin: {reason}", self.name);
         self.tell(
             format!(
                 "{PLUGIN_BUILD} The {} Plugin couldn't be built: {reason}\n\nTell the \
@@ -819,6 +851,14 @@ fn build_notification(summary: String, body: String) -> Notification {
         body,
         action: None,
         kind: NotificationKind::Build,
+    }
+}
+
+fn short(line: &str) -> String {
+    let line = line.trim();
+    match line.char_indices().nth(SHORT_CHARS) {
+        Some((cut, _)) => format!("{}…", &line[..cut]),
+        None => line.to_owned(),
     }
 }
 

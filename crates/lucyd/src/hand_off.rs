@@ -257,7 +257,8 @@ impl Job {
                     Some(ThinkingEvent::Final(answer)) => self.state.locked().answer = Some(answer),
                     Some(ThinkingEvent::TurnEnd) => return self.answered(),
                     Some(ThinkingEvent::Unavailable(reason)) => return self.failed(&reason),
-                    Some(ThinkingEvent::Died) | None => {
+                    Some(ThinkingEvent::Failed(message)) => return self.failed(&message),
+                    Some(ThinkingEvent::Died(_)) | None => {
                         return self.failed("Claude stopped unexpectedly.");
                     }
                     Some(_) => {}
@@ -392,6 +393,7 @@ fn claude() -> Provider {
         kind: Kind::Claude,
         model: None,
         allow_api_key: false,
+        program: None,
     }
 }
 

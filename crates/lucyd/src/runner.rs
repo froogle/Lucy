@@ -515,7 +515,7 @@ impl Runner {
                 }
             };
             let input = match input {
-                Input::Thinking(ThinkingEvent::Died) => match opened.as_ref() {
+                Input::Thinking(ThinkingEvent::Died(_)) => match opened.as_ref() {
                     Some(opened) if !respawned_since_turn_end => {
                         eprintln!("lucyd: the model process died; opening it again");
                         respawned_since_turn_end = true;
@@ -541,6 +541,9 @@ impl Runner {
                 {
                     let said = limits::spoken(&limit, provider_name);
                     Input::Thinking(ThinkingEvent::Unavailable(said))
+                }
+                Input::Thinking(ThinkingEvent::Failed(_)) => {
+                    Input::Thinking(ThinkingEvent::TurnEnd)
                 }
                 input => input,
             };

@@ -4,8 +4,12 @@
 
 mod harness;
 
-use harness::Harness;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use harness::{write_script, Harness};
 use lucy_ipc::{error_code, Error, ProviderKind, ProviderStatus, Tier};
+use lucyd::claude::Claude;
 
 const TWO_PROVIDERS: &str = r#"
 [providers.quick]
@@ -93,4 +97,47 @@ fn a_config_that_does_not_parse_is_an_error_naming_the_file() {
             if *code == error_code::INVALID_CONFIG && message.contains("config.toml")),
         "{status:?}"
     );
+}
+
+fn fake_claude() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude/fake-claude")
+        .canonicalize()
+        .unwrap()
+}
+
+#[test]
+fn provider_check_names_the_real_binary_behind_a_mise_shim() {
+    let bin = tempfile::tempdir().unwrap();
+    let mise = bin.path().join("mise");
+    write_script(
+        &mise,
+        &format!(
+            "#!/bin/sh\n[ \"$1 $2\" = 'which claude' ] && echo '{}'\n",
+            fake_claude().display()
+        ),
+    );
+    let shim = bin.path().join("claude");
+    std::os::unix::fs::symlink(&mise, &shim).unwrap();
+    let claude = Claude::new(shim, bin.path().join("work"));
+    let lucyd = Harness::with_thinking(Some(TWO_PROVIDERS), Arc::new(claude));
+
+    let checked = lucyd.client().check_provider("quick").unwrap();
+
+    assert_eq!(checked.program, Some(fake_claude().display().to_string()));
+}
+
+#[test]
+fn provider_check_names_a_providers_program_as_given() {
+    let work = tempfile::tempdir().unwrap();
+    let config = format!(
+        "[providers.quick]\nkind = \"claude\"\nprogram = \"{}\"\n",
+        fake_claude().display()
+    );
+    let claude = Claude::new("/nonexistent/claude".into(), work.path().to_owned());
+    let lucyd = Harness::with_thinking(Some(&config), Arc::new(claude));
+
+    let checked = lucyd.client().check_provider("quick").unwrap();
+
+    assert_eq!(checked.program, Some(fake_claude().display().to_string()));
 }

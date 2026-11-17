@@ -71,6 +71,12 @@ impl Dirs {
     }
 }
 
+fn with_claude(dirs: &Dirs, env: &[(&str, &str)]) -> Harness {
+    let lucyd = Harness::with_env(env);
+    lucyd.thinking.hand_off.open_on(dirs.claude());
+    lucyd
+}
+
 fn path() -> String {
     std::env::var("PATH").unwrap()
 }
@@ -101,9 +107,9 @@ fn the_users_own_claude_runs_with_their_settings_lucys_relay_and_the_permission_
         "printf 'PATH={}\\0HANDOFF_TOKEN=from-login-shell\\0ANTHROPIC_API_KEY=sk-ant-billed\\0'",
         path()
     ));
-    let lucyd = Harness::with_hand_off(
+    let lucyd = with_claude(
+        &dirs,
         &[("SHELL", shell.to_str().unwrap()), ("PATH", &path())],
-        dirs.claude(),
     );
 
     let finished = hand_off(&lucyd, dirs.folder.path());
@@ -155,9 +161,9 @@ fn the_users_own_claude_runs_with_their_settings_lucys_relay_and_the_permission_
 fn the_hand_off_transcript_is_left_in_place() {
     let dirs = Dirs::new();
     let shell = dirs.shell(&format!("printf 'PATH={}\\0'", path()));
-    let lucyd = Harness::with_hand_off(
+    let lucyd = with_claude(
+        &dirs,
         &[("SHELL", shell.to_str().unwrap()), ("PATH", &path())],
-        dirs.claude(),
     );
 
     hand_off(&lucyd, dirs.folder.path());
@@ -181,16 +187,49 @@ fn the_hand_off_transcript_is_left_in_place() {
 }
 
 #[test]
+fn a_turn_claude_ends_with_an_error_is_notified_as_unfinished_with_its_message() {
+    let dirs = Dirs::new();
+    std::fs::write(
+        dirs.folder.path().join("turn1.jsonl"),
+        format!(
+            "{}\n{}\n",
+            json!({"type": "system", "subtype": "init", "session_id": CONVERSATION}),
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                   "result": "Linear's MCP server isn't connected", "session_id": CONVERSATION}),
+        ),
+    )
+    .unwrap();
+    let shell = dirs.shell(&format!("printf 'PATH={}\\0'", path()));
+    let lucyd = with_claude(
+        &dirs,
+        &[("SHELL", shell.to_str().unwrap()), ("PATH", &path())],
+    );
+
+    let unfinished = hand_off(&lucyd, dirs.folder.path());
+
+    assert_eq!(unfinished.summary, "Claude couldn't finish");
+    assert!(
+        unfinished
+            .body
+            .starts_with("Linear's MCP server isn't connected"),
+        "{}",
+        unfinished.body
+    );
+    let resume = format!("claude --resume {CONVERSATION}");
+    assert!(unfinished.body.contains(&resume), "{}", unfinished.body);
+}
+
+#[test]
 fn a_login_shell_that_hangs_falls_back_to_lucyds_own_environment_after_5_s() {
     let dirs = Dirs::new();
     let shell = dirs.shell("printf 'HANDOFF_TOKEN=from-login-shell\\0'\nexec sleep 600");
-    let lucyd = Harness::with_hand_off(
+    let lucyd = with_claude(
+        &dirs,
         &[
             ("SHELL", shell.to_str().unwrap()),
             ("PATH", &path()),
             ("LUCYD_OWN", "yes"),
         ],
-        dirs.claude(),
     );
     let mut events = lucyd.state_client();
     events.start_session().unwrap();

@@ -63,6 +63,7 @@ fn main() -> ExitCode {
         utterances.to_owned(),
     ));
     adapters.applications = lucyd::desktop_entries::xdg_dirs();
+    adapters.home = std::env::var_os("HOME").unwrap_or_default().into();
     if let Err(e) = hear(&startup_config, &mut adapters, echo) {
         eprintln!("lucyd: {e}; Lucy can't hear");
     }

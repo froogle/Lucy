@@ -46,6 +46,7 @@ pub struct Harness {
     applications: [PathBuf; 2],
     bus: Arc<Mutex<Vec<String>>>,
     typed: Mutex<Vec<String>>,
+    home_paths: Mutex<Vec<String>>,
     config_path: PathBuf,
     plugin_paths: lucyd::plugins::Paths,
     persona_path: PathBuf,
@@ -56,46 +57,28 @@ const PERSONA: &str = "You are Lucy.";
 
 impl Harness {
     pub fn start() -> Harness {
-        Harness::launch(None, Some(PERSONA), Real::None, None, None)
+        Harness::launch(None, Some(PERSONA), None, None, None)
     }
 
     pub fn with_env(vars: &[(&str, &str)]) -> Harness {
         let env = Environment::new(vars.iter().copied());
-        Harness::launch_in(env, None, Some(PERSONA), Real::None, None, None)
+        Harness::launch_in(env, None, Some(PERSONA), None, None, None)
     }
 
     pub fn with_config(config: &str) -> Harness {
-        Harness::launch(Some(config), Some(PERSONA), Real::None, None, None)
+        Harness::launch(Some(config), Some(PERSONA), None, None, None)
     }
 
     pub fn first_run() -> Harness {
-        Harness::launch(None, None, Real::None, None, None)
+        Harness::launch(None, None, None, None, None)
     }
 
     pub fn with_thinking(config: Option<&str>, thinking: Arc<dyn Thinking>) -> Harness {
-        Harness::launch(config, Some(PERSONA), Real::Thinking(thinking), None, None)
-    }
-
-    pub fn with_hand_off(env: &[(&str, &str)], hand_off: Arc<dyn Thinking>) -> Harness {
-        let env = Environment::new(env.iter().copied());
-        Harness::launch_in(
-            env,
-            None,
-            Some(PERSONA),
-            Real::HandOff(hand_off),
-            None,
-            None,
-        )
+        Harness::launch(config, Some(PERSONA), Some(thinking), None, None)
     }
 
     pub fn with_superwhisper(config: &str, superwhisper: Arc<dyn Stt>) -> Harness {
-        Harness::launch(
-            Some(config),
-            Some(PERSONA),
-            Real::None,
-            None,
-            Some(superwhisper),
-        )
+        Harness::launch(Some(config), Some(PERSONA), None, None, Some(superwhisper))
     }
 
     pub fn with_superwhisper_and_thinking(
@@ -106,7 +89,7 @@ impl Harness {
         Harness::launch(
             Some(config),
             Some(PERSONA),
-            Real::Thinking(thinking),
+            Some(thinking),
             None,
             Some(superwhisper),
         )
@@ -126,25 +109,25 @@ impl Harness {
         )
         .expect("the fake microphone opens");
         let ears = Some((ears, mic, echo));
-        Harness::launch(Some(config), Some(PERSONA), Real::None, ears, None)
+        Harness::launch(Some(config), Some(PERSONA), None, ears, None)
     }
 
     fn launch(
         config: Option<&str>,
         persona: Option<&str>,
-        real: Real,
+        real_thinking: Option<Arc<dyn Thinking>>,
         ears: Option<(lucyd::audio::Ears, FakeMic, FakeEchoCanceller)>,
         superwhisper: Option<Arc<dyn Stt>>,
     ) -> Harness {
         let env = Environment::from_process();
-        Harness::launch_in(env, config, persona, real, ears, superwhisper)
+        Harness::launch_in(env, config, persona, real_thinking, ears, superwhisper)
     }
 
     fn launch_in(
         env: Environment,
         config: Option<&str>,
         persona: Option<&str>,
-        real: Real,
+        real_thinking: Option<Arc<dyn Thinking>>,
         ears: Option<(lucyd::audio::Ears, FakeMic, FakeEchoCanceller)>,
         superwhisper: Option<Arc<dyn Stt>>,
     ) -> Harness {
@@ -207,6 +190,8 @@ impl Harness {
         for dir in &applications {
             std::fs::create_dir(dir).unwrap();
         }
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config_path: config_path.clone(),
@@ -221,13 +206,14 @@ impl Harness {
                 hearing,
                 stt: Arc::new(stt.clone()),
                 superwhisper: superwhisper.unwrap_or_else(|| Arc::new(FakeStt::default())),
-                thinking: real.thinking(&thinking),
+                thinking: real_thinking.unwrap_or_else(|| Arc::new(thinking.clone())),
                 tts: Box::new(tts.clone()),
                 notifier: Arc::new(notifier.clone()),
                 launcher: Arc::new(launcher.clone()),
                 credentials: Arc::new(credentials.clone()),
                 clock: Arc::new(clock.clone()),
                 applications: applications.to_vec(),
+                home,
             },
         })
         .expect("lucyd starts");
@@ -249,6 +235,7 @@ impl Harness {
             applications,
             bus: Arc::default(),
             typed: Mutex::default(),
+            home_paths: Mutex::default(),
             config_path,
             plugin_paths,
             persona_path,
@@ -358,6 +345,31 @@ impl Harness {
             .stdin(Stdio::null())
             .output()
             .unwrap()
+    }
+
+    pub fn home(&self) -> PathBuf {
+        self._dir.path().join("home")
+    }
+
+    pub fn home_file(&self, relative: &str) -> PathBuf {
+        let path = self.home().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+        self.home_paths
+            .lock()
+            .unwrap()
+            .push(path.display().to_string());
+        path
+    }
+
+    pub fn home_folder(&self, relative: &str) -> PathBuf {
+        let path = self.home().join(relative);
+        std::fs::create_dir_all(&path).unwrap();
+        self.home_paths
+            .lock()
+            .unwrap()
+            .push(path.display().to_string());
+        path
     }
 
     pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
@@ -513,6 +525,7 @@ impl Harness {
             self.tts.sentences(),
             self.credentials.values(),
             self.typed.lock().unwrap().clone(),
+            self.home_paths.lock().unwrap().clone(),
         ]
         .concat()
         .into_iter()
@@ -554,66 +567,6 @@ impl Harness {
     }
 }
 
-enum Real {
-    None,
-    Thinking(Arc<dyn Thinking>),
-    HandOff(Arc<dyn Thinking>),
-}
-
-impl Real {
-    fn thinking(self, fake: &FakeThinking) -> Arc<dyn Thinking> {
-        match self {
-            Real::None => Arc::new(fake.clone()),
-            Real::Thinking(real) => real,
-            Real::HandOff(hand_off) => Arc::new(HandOffTo {
-                fake: fake.clone(),
-                hand_off,
-            }),
-        }
-    }
-}
-
-struct HandOffTo {
-    fake: FakeThinking,
-    hand_off: Arc<dyn Thinking>,
-}
-
-impl Thinking for HandOffTo {
-    fn open(
-        &self,
-        provider: &Provider,
-        events: mpsc::UnboundedSender<ThinkingEvent>,
-        relay: Relay,
-        instructions: String,
-    ) -> Box<dyn SessionModel> {
-        self.fake.open(provider, events, relay, instructions)
-    }
-
-    fn health(&self, provider: &Provider) -> Result<(), String> {
-        self.fake.health(provider)
-    }
-
-    fn check(&self, provider: &Provider) -> Result<(), String> {
-        self.fake.check(provider)
-    }
-
-    fn open_hand_off(
-        &self,
-        provider: &Provider,
-        events: mpsc::UnboundedSender<ThinkingEvent>,
-        relay: Relay,
-        instructions: String,
-        hand_off: HandOff,
-    ) -> Box<dyn SessionModel> {
-        self.hand_off
-            .open_hand_off(provider, events, relay, instructions, hand_off)
-    }
-
-    fn shutdown(&self) {
-        self.hand_off.shutdown();
-    }
-}
-
 pub struct ApprovalRequest(Mutex<std_mpsc::Receiver<Result<bool, String>>>);
 
 impl ApprovalRequest {
@@ -650,6 +603,21 @@ fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
     )
     .unwrap();
     path
+}
+
+/// Writes an executable script from a child, so no fd of ours leaks into it.
+pub fn write_script(path: &Path, script: &str) {
+    let written = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            "sh",
+        ])
+        .arg(script)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(written.success());
 }
 
 pub fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
@@ -873,7 +841,7 @@ impl FakeThinking {
     }
 
     pub fn dies(&self) {
-        self.send(ThinkingEvent::Died);
+        self.send(ThinkingEvent::Died(lucyd::adapters::Exit::default()));
     }
 
     pub fn rate_limit(&self, limit: RateLimit) {
@@ -1025,6 +993,9 @@ impl Thinking for FakeThinking {
     ) -> Box<dyn SessionModel> {
         let delegate = &self.delegate;
         delegate.opened.lock().unwrap().push(provider.clone());
+        if let Some(real) = delegate.real.lock().unwrap().clone() {
+            return real.open_delegate(provider, events, relay, instructions, workspace);
+        }
         *delegate.events.lock().unwrap() = Some(events);
         *delegate.relay.lock().unwrap() = Some(relay);
         *delegate.instructions.lock().unwrap() = Some(instructions);
@@ -1045,6 +1016,9 @@ impl Thinking for FakeThinking {
     ) -> Box<dyn SessionModel> {
         let delegate = &self.hand_off;
         delegate.opened.lock().unwrap().push(provider.clone());
+        if let Some(real) = delegate.real.lock().unwrap().clone() {
+            return real.open_hand_off(provider, events, relay, instructions, hand_off);
+        }
         *delegate.events.lock().unwrap() = Some(events);
         *delegate.relay.lock().unwrap() = Some(relay);
         *delegate.instructions.lock().unwrap() = Some(instructions);
@@ -1066,6 +1040,7 @@ pub struct FakeDelegate {
     workspace: Arc<Mutex<Option<Workspace>>>,
     hand_off: Arc<Mutex<Option<HandOff>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
+    real: Arc<Mutex<Option<Arc<dyn Thinking>>>>,
 }
 
 impl FakeDelegate {
@@ -1080,7 +1055,13 @@ impl FakeDelegate {
             workspace: Arc::default(),
             hand_off: Arc::default(),
             opened: Arc::default(),
+            real: Arc::default(),
         }
+    }
+
+    /// Opens later Delegates on `real`, a real adapter, while the Session stays scripted.
+    pub fn open_on(&self, real: Arc<dyn Thinking>) {
+        *self.real.lock().unwrap() = Some(real);
     }
 
     pub fn opened(&self) -> Vec<Provider> {
@@ -1109,11 +1090,6 @@ impl FakeDelegate {
         workspace.clone().expect("a Delegate was opened")
     }
 
-    pub fn hand_off(&self) -> HandOff {
-        let opened = || self.hand_off.lock().unwrap().clone();
-        wait_until("a Hand-off to open", opened)
-    }
-
     pub fn call_tool_with(
         &self,
         name: &str,
@@ -1133,6 +1109,11 @@ impl FakeDelegate {
         .unwrap()
     }
 
+    pub fn hand_off(&self) -> HandOff {
+        let opened = || self.hand_off.lock().unwrap().clone();
+        wait_until("a Hand-off to open", opened)
+    }
+
     pub fn turn_end(&self) {
         self.send(ThinkingEvent::TurnEnd);
     }
@@ -1142,13 +1123,9 @@ impl FakeDelegate {
     }
 
     pub fn answer(&self, conversation: &str, answer: &str) {
-        self.send(ThinkingEvent::Conversation(conversation.to_owned()));
+        self.conversation(conversation);
         self.send(ThinkingEvent::Final(answer.to_owned()));
         self.send(ThinkingEvent::TurnEnd);
-    }
-
-    pub fn dies(&self) {
-        self.send(ThinkingEvent::Died);
     }
 
     fn send(&self, event: ThinkingEvent) {
@@ -1467,6 +1444,8 @@ impl Drop for NoModelText {
 #[derive(Clone, Default)]
 pub struct FakeLauncher {
     opened: Arc<Mutex<Vec<String>>>,
+    shown: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+    opened_files: Arc<Mutex<Vec<PathBuf>>>,
     launched: Arc<Mutex<Vec<PathBuf>>>,
     launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
     terminals: Arc<Mutex<Vec<Vec<String>>>>,
@@ -1476,6 +1455,14 @@ pub struct FakeLauncher {
 impl FakeLauncher {
     pub fn opened(&self) -> Vec<String> {
         self.opened.lock().unwrap().clone()
+    }
+
+    pub fn shown(&self) -> Vec<Vec<PathBuf>> {
+        self.shown.lock().unwrap().clone()
+    }
+
+    pub fn opened_files(&self) -> Vec<PathBuf> {
+        self.opened_files.lock().unwrap().clone()
     }
 
     pub fn launched(&self) -> Vec<PathBuf> {
@@ -1498,6 +1485,16 @@ impl FakeLauncher {
 impl Launcher for FakeLauncher {
     fn open_url(&self, url: &str) -> std::io::Result<()> {
         self.opened.lock().unwrap().push(url.to_owned());
+        Ok(())
+    }
+
+    fn show_items(&self, paths: &[PathBuf]) -> std::io::Result<()> {
+        self.shown.lock().unwrap().push(paths.to_vec());
+        Ok(())
+    }
+
+    fn open_file(&self, path: &Path) -> std::io::Result<()> {
+        self.opened_files.lock().unwrap().push(path.to_owned());
         Ok(())
     }
 

@@ -3,18 +3,20 @@
 
 mod guard;
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lucy_config::Provider;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::adapters::{
-    HandOff, Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace, PERMISSION_TOOL,
+    Exit, HandOff, Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace,
+    PERMISSION_TOOL,
 };
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
@@ -25,6 +27,12 @@ const DELEGATE_TOOLS: &[&str] = &["Bash", "Read", "Write", "Edit", "Glob", "Grep
 const HAND_OFF_SETTINGS: &str = "user,project,local";
 
 const INTERRUPT_ACK_WAIT: Duration = Duration::from_secs(1);
+
+const EXIT_WAIT: Duration = Duration::from_secs(1);
+
+const EXIT_POLL: Duration = Duration::from_millis(10);
+
+const STDERR_LINES: usize = 20;
 
 const BILLING_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_BEDROCK",
@@ -68,8 +76,12 @@ impl Claude {
             .unwrap_or_else(|| sandbox::home().join(".claude"))
     }
 
-    fn base_command(&self, provider: &Provider) -> Command {
-        let mut command = Command::new(&self.program);
+    fn program<'a>(&'a self, provider: &'a Provider) -> &'a Path {
+        provider.program.as_deref().unwrap_or(&self.program)
+    }
+
+    fn base_command(&self, program: &Path, provider: &Provider) -> Command {
+        let mut command = Command::new(program);
         command.current_dir(&self.work_dir).stderr(Stdio::null());
         self.guard_env(&mut command, provider);
         command
@@ -98,7 +110,7 @@ impl Claude {
             "command": relay.program,
             "args": relay.args,
         }}});
-        let mut command = Command::new(&self.program);
+        let mut command = Command::new(self.program(provider));
         command
             .current_dir(&hand_off.folder)
             .stderr(Stdio::null())
@@ -127,6 +139,7 @@ impl Claude {
 
     fn command(
         &self,
+        program: &Path,
         provider: &Provider,
         relay: Option<&Relay>,
         instructions: &str,
@@ -141,7 +154,7 @@ impl Claude {
             None => serde_json::json!({}),
         };
         let mcp_config = serde_json::json!({ "mcpServers": servers });
-        let mut command = self.base_command(provider);
+        let mut command = self.base_command(program, provider);
         command
             .args(["-p", "--verbose"])
             .args(["--input-format", "stream-json"])
@@ -183,10 +196,19 @@ impl Claude {
         workspace: &Workspace,
         resume: Option<&str>,
     ) -> std::io::Result<Command> {
-        let mut command = self.command(provider, Some(relay), instructions, DELEGATE_TOOLS, resume);
+        let program = sandbox::delegate_program(provider, &self.program)?;
+        let mut command = self.command(
+            &program,
+            provider,
+            Some(relay),
+            instructions,
+            DELEGATE_TOOLS,
+            resume,
+        );
         let home = sandbox::home();
         let cli_home = [home.join(".claude"), home.join(".claude.json")];
-        sandbox::confine_cli(&mut command, workspace, &self.program, &cli_home)?;
+        sandbox::confine_cli(&mut command, workspace, &program, &cli_home)?;
+        command.stderr(Stdio::piped());
         Ok(command)
     }
 
@@ -268,7 +290,14 @@ impl Claude {
             place,
         } = role;
         let command = match place {
-            Place::WorkDir => Ok(self.command(provider, Some(relay), instructions, &[], resume)),
+            Place::WorkDir => Ok(self.command(
+                self.program(provider),
+                provider,
+                Some(relay),
+                instructions,
+                &[],
+                resume,
+            )),
             Place::Workspace(workspace) => {
                 self.delegate_command(provider, relay, instructions, workspace, resume)
             }
@@ -279,7 +308,8 @@ impl Claude {
         let mut child = match command.and_then(|mut command| command.spawn()) {
             Ok(child) => child,
             Err(e) => {
-                eprintln!("lucyd: can't start {}: {e}", self.program.display());
+                let program = self.program(provider).display();
+                eprintln!("lucyd: can't start {program}: {e}");
                 let reason = format!("I couldn't start Claude Code: {e}.");
                 let _ = events.send(ThinkingEvent::Unavailable(reason));
                 return None;
@@ -287,6 +317,7 @@ impl Claude {
         };
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().map(StderrTail::follow);
         {
             let mut process = run.process.locked();
             if matches!(*process, Process::Ended) {
@@ -340,10 +371,43 @@ impl Claude {
             let session_ended = matches!(*reader_run.process.locked(), Process::Ended);
             let stopped_on_its_own = !session_ended && !reader_turns.locked().sigint_sent;
             if stopped_on_its_own {
-                let _ = reader_events.send(ThinkingEvent::Died);
+                let exit = Exit {
+                    status: reader_run.exit_status(),
+                    stderr: stderr.map(StderrTail::lines).unwrap_or_default(),
+                };
+                let _ = reader_events.send(ThinkingEvent::Died(exit));
             }
         });
         Some(Running { stdin, turns, acks })
+    }
+}
+
+struct StderrTail {
+    kept: Arc<Mutex<VecDeque<String>>>,
+    closed: std_mpsc::Receiver<()>,
+}
+
+impl StderrTail {
+    fn follow(stderr: ChildStderr) -> StderrTail {
+        let kept = Arc::new(Mutex::new(VecDeque::new()));
+        let (closed_tx, closed) = std_mpsc::channel();
+        let reader_kept = kept.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let mut kept = reader_kept.locked();
+                if kept.len() == STDERR_LINES {
+                    kept.pop_front();
+                }
+                kept.push_back(line);
+            }
+            let _ = closed_tx.send(());
+        });
+        StderrTail { kept, closed }
+    }
+
+    fn lines(self) -> Vec<String> {
+        let _held_open_by_a_grandchild = self.closed.recv_timeout(EXIT_WAIT);
+        self.kept.locked().iter().cloned().collect()
     }
 }
 
@@ -470,6 +534,10 @@ impl Thinking for Claude {
         self.verify(provider)
     }
 
+    fn executable(&self, provider: &Provider) -> Option<PathBuf> {
+        sandbox::delegate_program(provider, &self.program).ok()
+    }
+
     fn shutdown(&self) {
         let live = std::mem::take(&mut *self.live.locked());
         for run in live.iter().filter_map(Weak::upgrade) {
@@ -506,6 +574,24 @@ impl Run {
             conversations.push(id.to_owned());
         }
         new
+    }
+
+    fn exit_status(&self) -> Option<ExitStatus> {
+        let deadline = Instant::now() + EXIT_WAIT;
+        loop {
+            match &mut *self.process.locked() {
+                Process::Running(child) => {
+                    if let Ok(Some(status)) = child.try_wait() {
+                        return Some(status);
+                    }
+                }
+                Process::Starting | Process::Ended => return None,
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(EXIT_POLL);
+        }
     }
 
     fn end(&self) {
@@ -589,15 +675,41 @@ impl Stream {
                 .collect(),
             Some("result") => {
                 let mut events: Vec<_> = self.sentences.finish().into_iter().collect();
-                if let Some(answer) = value["result"].as_str() {
-                    events.push(ThinkingEvent::Final(answer.to_owned()));
+                match failure(&value) {
+                    Some(message) => events.push(ThinkingEvent::Failed(message)),
+                    None => {
+                        if let Some(answer) = value["result"].as_str() {
+                            events.push(ThinkingEvent::Final(answer.to_owned()));
+                        }
+                        events.push(ThinkingEvent::TurnEnd);
+                    }
                 }
-                events.push(ThinkingEvent::TurnEnd);
                 events
             }
             _ => vec![],
         }
     }
+}
+
+fn failure(result: &Value) -> Option<String> {
+    let subtype = result["subtype"].as_str().unwrap_or_default();
+    if result["is_error"] != true && !subtype.starts_with("error") {
+        return None;
+    }
+    let errors = result["errors"].as_array().map(|errors| {
+        errors
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join("; ")
+    });
+    let message = result["result"]
+        .as_str()
+        .map(str::to_owned)
+        .or(errors)
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| format!("claude ended the Turn with {subtype}"));
+    Some(message)
 }
 
 fn is_subagent(value: &Value) -> bool {
@@ -620,12 +732,13 @@ mod tests {
             kind: lucy_config::Kind::Claude,
             model: None,
             allow_api_key,
+            program: None,
         };
         let relay = Relay {
             program: "lucy".into(),
             args: vec![],
         };
-        let command = claude.command(&provider, Some(&relay), "", &[], None);
+        let command = claude.command(Path::new("claude"), &provider, Some(&relay), "", &[], None);
         command
             .get_envs()
             .filter(|(_, value)| value.is_none())

@@ -9,6 +9,7 @@ pub mod claude;
 pub mod codex;
 mod desktop;
 pub mod desktop_entries;
+mod files;
 mod hand_off;
 mod input;
 mod ipc;

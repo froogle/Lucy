@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,7 +9,7 @@ use lucy_config::Provider;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Exit, Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 use crate::sync::Locked;
@@ -33,13 +33,21 @@ impl Codex {
         Codex { program, work_dir }
     }
 
+    fn program<'a>(&'a self, provider: &'a Provider) -> &'a Path {
+        provider.program.as_deref().unwrap_or(&self.program)
+    }
+
     fn command(
         &self,
         provider: &Provider,
         relay: Option<&Relay>,
         workspace: Option<&Workspace>,
     ) -> std::io::Result<Command> {
-        let mut command = Command::new(&self.program);
+        let program = match workspace {
+            Some(_) => sandbox::delegate_program(provider, &self.program)?,
+            None => self.program(provider).to_owned(),
+        };
+        let mut command = Command::new(&program);
         command
             .arg("app-server")
             .current_dir(workspace.map_or(&self.work_dir, |w| &w.dir))
@@ -51,7 +59,7 @@ impl Codex {
             Some(workspace) => {
                 let codex_home = std::env::var_os("CODEX_HOME")
                     .map_or_else(|| sandbox::home().join(".codex"), PathBuf::from);
-                sandbox::confine_cli(&mut command, workspace, &self.program, &[codex_home])?;
+                sandbox::confine_cli(&mut command, workspace, &program, &[codex_home])?;
             }
             None => config.push("features.shell_tool=false".to_owned()),
         }
@@ -87,7 +95,7 @@ impl Codex {
             .map_err(|e| match e.kind() {
                 ErrorKind::NotFound => format!(
                     "I can't find Codex at {}. Please install it, or put codex on my PATH.",
-                    self.program.display()
+                    self.program(provider).display()
                 ),
                 _ => format!("I couldn't start Codex: {e}."),
             })?;
@@ -262,6 +270,10 @@ impl Thinking for Codex {
             let thread = server.start_thread(provider, &work_dir, "")?;
             server.reply_ok(&thread)
         })
+    }
+
+    fn executable(&self, provider: &Provider) -> Option<PathBuf> {
+        sandbox::delegate_program(provider, &self.program).ok()
     }
 }
 
@@ -534,7 +546,7 @@ impl Session<'_> {
                 Input::StdoutClosed => {
                     let stopped_on_its_own = !matches!(*process.locked(), Process::Ended);
                     if stopped_on_its_own {
-                        let _ = self.events.send(ThinkingEvent::Died);
+                        let _ = self.events.send(ThinkingEvent::Died(Exit::default()));
                     }
                     return;
                 }

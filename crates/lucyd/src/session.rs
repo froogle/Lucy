@@ -267,7 +267,7 @@ impl Session {
                 | ThinkingEvent::Final(_)
                 | ThinkingEvent::Conversation(_),
             ) => vec![],
-            Input::Thinking(ThinkingEvent::Died) => vec![],
+            Input::Thinking(ThinkingEvent::Died(_) | ThinkingEvent::Failed(_)) => vec![],
             Input::Thinking(ThinkingEvent::Unavailable(reason)) => {
                 self.sentence = reason;
                 self.turn_in_progress = false;

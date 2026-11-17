@@ -63,7 +63,8 @@ fn read_turn(
             Ok(event @ ThinkingEvent::RateLimit(_)) => rate_limits.push(event),
             Ok(ThinkingEvent::Final(_) | ThinkingEvent::Conversation(_)) => {}
             Ok(ThinkingEvent::Unavailable(reason)) => panic!("Provider unavailable: {reason}"),
-            Ok(ThinkingEvent::Died) => panic!("claude died: {text:?}"),
+            Ok(ThinkingEvent::Died(_)) => panic!("claude died: {text:?}"),
+            Ok(ThinkingEvent::Failed(message)) => panic!("the Turn failed: {message}"),
             Err(_) => {
                 assert!(Instant::now() < deadline, "the Turn never ended: {text:?}");
                 // sleep-ok: poll loop with a deadline
@@ -145,7 +146,7 @@ fn claude_dying_mid_turn_reports_that_it_died() {
             text.push_str(&delta);
             None
         }
-        Ok(ThinkingEvent::Died) => Some(()),
+        Ok(ThinkingEvent::Died(_)) => Some(()),
         Ok(ThinkingEvent::TurnEnd) => panic!("the Turn ended as if claude had finished"),
         _ => None,
     });
@@ -170,7 +171,12 @@ fn ending_the_session_is_not_a_death() {
         rest.is_finished().then_some(())
     });
     let rest = rest.join().unwrap();
-    assert!(!rest.contains(&ThinkingEvent::Died), "{rest:?}");
+    assert!(
+        !rest
+            .iter()
+            .any(|event| matches!(event, ThinkingEvent::Died(_))),
+        "{rest:?}"
+    );
 }
 
 const SESSION_ID: &str = "09dd6ca6-f8e2-473e-812c-ab5acf9cdfd5";
