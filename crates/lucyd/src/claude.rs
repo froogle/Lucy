@@ -3,22 +3,21 @@
 
 mod guard;
 
-use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdin, Command, ExitStatus, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use lucy_config::Provider;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::adapters::{
-    Exit, HandOff, Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace,
-    PERMISSION_TOOL,
+    HandOff, Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace, PERMISSION_TOOL,
 };
 use crate::plugins::sandbox;
+use crate::process::{self, Process, StderrTail};
 use crate::sentences::Sentences;
 use crate::sync::Locked;
 
@@ -27,12 +26,6 @@ const DELEGATE_TOOLS: &[&str] = &["Bash", "Read", "Write", "Edit", "Glob", "Grep
 const HAND_OFF_SETTINGS: &str = "user,project,local";
 
 const INTERRUPT_ACK_WAIT: Duration = Duration::from_secs(1);
-
-const EXIT_WAIT: Duration = Duration::from_secs(1);
-
-const EXIT_POLL: Duration = Duration::from_millis(10);
-
-const STDERR_LINES: usize = 20;
 
 const BILLING_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_BEDROCK",
@@ -76,10 +69,6 @@ impl Claude {
             .unwrap_or_else(|| sandbox::home().join(".claude"))
     }
 
-    fn program<'a>(&'a self, provider: &'a Provider) -> &'a Path {
-        provider.program.as_deref().unwrap_or(&self.program)
-    }
-
     fn base_command(&self, program: &Path, provider: &Provider) -> Command {
         let mut command = Command::new(program);
         command.current_dir(&self.work_dir).stderr(Stdio::null());
@@ -110,10 +99,10 @@ impl Claude {
             "command": relay.program,
             "args": relay.args,
         }}});
-        let mut command = Command::new(self.program(provider));
+        let mut command = Command::new(sandbox::program(provider, &self.program));
         command
             .current_dir(&hand_off.folder)
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .env_clear()
             .envs(hand_off.env.iter().map(|(name, value)| (name, value)));
         self.guard_env(&mut command, provider);
@@ -291,7 +280,7 @@ impl Claude {
         } = role;
         let command = match place {
             Place::WorkDir => Ok(self.command(
-                self.program(provider),
+                sandbox::program(provider, &self.program),
                 provider,
                 Some(relay),
                 instructions,
@@ -308,7 +297,7 @@ impl Claude {
         let mut child = match command.and_then(|mut command| command.spawn()) {
             Ok(child) => child,
             Err(e) => {
-                let program = self.program(provider).display();
+                let program = sandbox::program(provider, &self.program).display();
                 eprintln!("lucyd: can't start {program}: {e}");
                 let reason = format!("I couldn't start Claude Code: {e}.");
                 let _ = events.send(ThinkingEvent::Unavailable(reason));
@@ -371,43 +360,11 @@ impl Claude {
             let session_ended = matches!(*reader_run.process.locked(), Process::Ended);
             let stopped_on_its_own = !session_ended && !reader_turns.locked().sigint_sent;
             if stopped_on_its_own {
-                let exit = Exit {
-                    status: reader_run.exit_status(),
-                    stderr: stderr.map(StderrTail::lines).unwrap_or_default(),
-                };
+                let exit = process::exit(&reader_run.process, stderr);
                 let _ = reader_events.send(ThinkingEvent::Died(exit));
             }
         });
         Some(Running { stdin, turns, acks })
-    }
-}
-
-struct StderrTail {
-    kept: Arc<Mutex<VecDeque<String>>>,
-    closed: std_mpsc::Receiver<()>,
-}
-
-impl StderrTail {
-    fn follow(stderr: ChildStderr) -> StderrTail {
-        let kept = Arc::new(Mutex::new(VecDeque::new()));
-        let (closed_tx, closed) = std_mpsc::channel();
-        let reader_kept = kept.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                let mut kept = reader_kept.locked();
-                if kept.len() == STDERR_LINES {
-                    kept.pop_front();
-                }
-                kept.push_back(line);
-            }
-            let _ = closed_tx.send(());
-        });
-        StderrTail { kept, closed }
-    }
-
-    fn lines(self) -> Vec<String> {
-        let _held_open_by_a_grandchild = self.closed.recv_timeout(EXIT_WAIT);
-        self.kept.locked().iter().cloned().collect()
     }
 }
 
@@ -566,12 +523,6 @@ impl Thinking for Claude {
     }
 }
 
-enum Process {
-    Starting,
-    Running(Child),
-    Ended,
-}
-
 struct Run {
     process: Mutex<Process>,
     conversations: Mutex<Vec<String>>,
@@ -594,24 +545,6 @@ impl Run {
             conversations.push(id.to_owned());
         }
         new
-    }
-
-    fn exit_status(&self) -> Option<ExitStatus> {
-        let deadline = Instant::now() + EXIT_WAIT;
-        loop {
-            match &mut *self.process.locked() {
-                Process::Running(child) => {
-                    if let Ok(Some(status)) = child.try_wait() {
-                        return Some(status);
-                    }
-                }
-                Process::Starting | Process::Ended => return None,
-            }
-            if Instant::now() >= deadline {
-                return None;
-            }
-            std::thread::sleep(EXIT_POLL);
-        }
     }
 
     fn end(&self) {

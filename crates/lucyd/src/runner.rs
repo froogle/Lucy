@@ -249,9 +249,12 @@ impl Runner {
     ) {
         self.sessions_started += 1;
         let id = SessionId(self.sessions_started);
-        let plugin_tools = self.plugin_host.open_session().await;
+        let config = lucy_config::load(&self.files.config_path);
+        let screen = config.as_ref().cloned().unwrap_or_default().screen;
+        let plugin_tools = self.plugin_host.open_session(screen).await;
         self.looks = Some(plugin_tools.looks());
-        self.session_loop(id, started, plugin_tools.clone()).await;
+        self.session_loop(id, started, config, plugin_tools.clone())
+            .await;
         self.looks = None;
         self.looking = false;
         self.hand_offs.stop();
@@ -284,6 +287,7 @@ impl Runner {
         &mut self,
         id: SessionId,
         started: Option<oneshot::Sender<Result<SessionId, StartError>>>,
+        config: Result<lucy_config::Config, lucy_config::Error>,
         plugin_tools: Arc<plugins::SessionTools>,
     ) {
         let woken = started.is_none();
@@ -295,7 +299,7 @@ impl Runner {
             first_run,
             opened,
             devices,
-        } = self.start(plugin_tools.clone(), events_tx.clone());
+        } = self.start(config, plugin_tools.clone(), events_tx.clone());
         let provider_name = opened.as_ref().map_or("the Thinking Provider", |opened| {
             opened.provider.kind.name()
         });

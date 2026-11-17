@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use lucy_config::{Kind, Provider};
-use lucyd::adapters::{Relay, Thinking, ThinkingEvent};
+use lucyd::adapters::{Relay, Thinking, ThinkingEvent, Workspace};
 use lucyd::codex::Codex;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -289,6 +289,54 @@ fn codex_dying_mid_turn_reports_that_it_died() {
         _ => None,
     });
     assert_eq!(text, "Got it, I'll remember the word kiwi.");
+}
+
+#[test]
+fn a_codex_delegate_that_dies_reports_its_exit_status_and_the_end_of_its_stderr() {
+    let bin = tempfile::tempdir().unwrap();
+    let copied = std::process::Command::new("cp")
+        .arg(fake_codex())
+        .arg(fake_codex().with_file_name("turn1.jsonl"))
+        .arg(bin.path())
+        .status()
+        .unwrap();
+    assert!(copied.success());
+    let dying = bin.path().join("codex");
+    harness::write_script(
+        &dying,
+        "#!/bin/sh\n\
+         \"$(dirname \"$0\")/fake-codex\" \"$@\"\n\
+         echo 'codex starting' >&2\n\
+         echo 'codex ERROR the sandbox said no' >&2\n\
+         exit 3\n",
+    );
+    let staging = tempfile::tempdir().unwrap();
+    std::fs::write(staging.path().join("dies"), "").unwrap();
+    let tmp = staging.path().join(".tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let workspace = Workspace {
+        dir: staging.path().to_owned(),
+        tmp,
+        writable: vec![],
+        readable: vec![],
+    };
+    let codex = Codex::new(dying, staging.path().join(".work"));
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model =
+        codex.open_delegate(&codex_provider(None), tx, relay(), String::new(), workspace);
+
+    model.send_turn("Build the photos Plugin.".into());
+
+    let exit = wait_until("no Died", || match events.try_recv() {
+        Ok(ThinkingEvent::Died(exit)) => Some(exit),
+        Ok(ThinkingEvent::Unavailable(reason)) => panic!("codex unavailable: {reason}"),
+        _ => None,
+    });
+    assert_eq!(exit.status.and_then(|status| status.code()), Some(3));
+    assert_eq!(
+        exit.stderr,
+        ["codex starting", "codex ERROR the sandbox said no"]
+    );
 }
 
 #[test]

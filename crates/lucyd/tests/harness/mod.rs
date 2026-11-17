@@ -1132,6 +1132,10 @@ impl FakeDelegate {
         self.send(ThinkingEvent::TurnEnd);
     }
 
+    pub fn fail(&self, message: &str) {
+        self.send(ThinkingEvent::Failed(message.to_owned()));
+    }
+
     fn send(&self, event: ThinkingEvent) {
         let events = self.events.lock().unwrap();
         let events = events.as_ref().expect("a Delegate is open");

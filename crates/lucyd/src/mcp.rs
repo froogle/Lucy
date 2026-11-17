@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject,
+    ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -275,6 +275,14 @@ pub fn result_text(result: &CallToolResult) -> String {
 
 pub fn error(text: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text.into())])
+}
+
+pub fn string(arguments: &JsonObject, key: &str) -> String {
+    arguments
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_owned()
 }
 
 impl ServerHandler for Tools {

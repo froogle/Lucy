@@ -9,10 +9,10 @@ use serde_json::json;
 use tokio::sync::{mpsc, watch, Notify};
 
 use crate::adapters::{
-    Adapters, Clock, HandOff, Notification, NotificationKind, Notifier, SessionModel, Thinking,
-    ThinkingEvent, PERMISSION_TOOL,
+    Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
+    Thinking, ThinkingEvent, PERMISSION_TOOL,
 };
-use crate::mcp::{error, text, tool, Caller, Relays, Token};
+use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
 use crate::runner::Command;
@@ -258,9 +258,8 @@ impl Job {
                     Some(ThinkingEvent::TurnEnd) => return self.answered(),
                     Some(ThinkingEvent::Unavailable(reason)) => return self.failed(&reason),
                     Some(ThinkingEvent::Failed(message)) => return self.failed(&message),
-                    Some(ThinkingEvent::Died(_)) | None => {
-                        return self.failed("Claude stopped unexpectedly.");
-                    }
+                    Some(ThinkingEvent::Died(exit)) => return self.died(&exit),
+                    None => return self.failed("Claude stopped unexpectedly."),
                     Some(_) => {}
                 },
                 () = self.stopping.notified() => return self.stopped(),
@@ -276,24 +275,42 @@ impl Job {
     fn answered(&self) {
         let (answer, conversation) = {
             let state = self.state.locked();
-            (
-                state.answer.clone().unwrap_or_default(),
-                state.conversation.clone(),
-            )
+            (state.answer.clone(), state.conversation.clone())
         };
-        self.show(
-            "Claude has finished",
-            format!("{answer}{}", self.resume(conversation.as_deref())),
-        );
-        self.tell(
-            format!(
-                "{HAND_OFF} Claude has finished what the user handed it: \"{}\". Its final \
-                 message:\n\n{answer}\n\nTell the user what it says in one to three short \
-                 spoken sentences. They have the whole message in a notification.",
-                self.request
-            ),
-            "Lucy will tell you about it at your next Session.",
-        );
+        let resume = self.resume(conversation.as_deref());
+        let summary = "Claude has finished";
+        match answer.filter(|answer| !answer.trim().is_empty()) {
+            Some(answer) => {
+                self.show(summary, format!("{answer}{resume}"));
+                self.tell(
+                    format!(
+                        "{HAND_OFF} Claude has finished what the user handed it: \"{}\". Its \
+                         final message:\n\n{answer}\n\nTell the user what it says in one to \
+                         three short spoken sentences. They have the whole message in a \
+                         notification.",
+                        self.request
+                    ),
+                    summary,
+                    "Lucy will tell you about it at your next Session.",
+                );
+            }
+            None => {
+                self.show(
+                    summary,
+                    format!("Claude left no final message, so Lucy can't say what it did.{resume}"),
+                );
+                self.tell(
+                    format!(
+                        "{HAND_OFF} Claude has finished what the user handed it: \"{}\", but \
+                         left no final message, so there's nothing to report. Tell the user \
+                         plainly, in a sentence.",
+                        self.request
+                    ),
+                    summary,
+                    "Lucy will tell you more at your next Session.",
+                );
+            }
+        }
         self.finish();
     }
 
@@ -308,17 +325,28 @@ impl Job {
                 "{HAND_OFF} Claude couldn't finish what the user handed it: {reason}\n\nTell \
                  the user plainly, in a sentence."
             ),
+            "Claude couldn't finish",
             "Lucy will tell you more at your next Session.",
         );
         self.finish();
     }
 
+    fn died(&self, exit: &Exit) {
+        eprintln!(
+            "lucyd: the Hand-off's claude stopped ({}); the end of its stderr:\n{}",
+            exit.status_text(),
+            exit.stderr.join("\n")
+        );
+        self.failed(&exit.stopped("Claude"));
+    }
+
     fn stop(&self) {
         let started = {
-            let state = self.state.locked();
+            let mut state = self.state.locked();
             if state.over {
                 return;
             }
+            state.over = state.model.is_none();
             state.model.is_some()
         };
         if started {
@@ -361,10 +389,10 @@ impl Job {
         }
     }
 
-    fn tell(&self, text: String, kept: &str) {
+    fn tell(&self, text: String, summary: &str, kept: &str) {
         if let Some(hand_offs) = self.hand_offs.upgrade() {
             let kept = Notification {
-                summary: "Claude has finished".to_owned(),
+                summary: summary.to_owned(),
                 body: kept.to_owned(),
                 action: None,
                 kind: NotificationKind::HandOff,
@@ -441,12 +469,4 @@ fn parse_env(printed: &[u8]) -> Vec<(OsString, OsString)> {
             })
         })
         .collect()
-}
-
-fn string(arguments: &JsonObject, key: &str) -> String {
-    arguments
-        .get(key)
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned()
 }

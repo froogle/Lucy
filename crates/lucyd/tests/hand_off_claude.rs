@@ -254,3 +254,39 @@ fn a_login_shell_that_hangs_falls_back_to_lucyds_own_environment_after_5_s() {
     );
     assert!(!environ.iter().any(|var| var.starts_with("HANDOFF_TOKEN=")));
 }
+
+#[test]
+fn a_claude_that_dies_is_notified_with_its_exit_status_and_the_end_of_its_stderr() {
+    let dirs = Dirs::new();
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/fake-claude");
+    let dying = dirs.bin.path().join("claude");
+    harness::write_script(
+        &dying,
+        &format!(
+            "#!/bin/sh\n\
+             [ -e dies ] || exec '{fake}' \"$@\"\n\
+             read -r line\n\
+             echo 'claude starting' >&2\n\
+             echo 'claude ERROR the MCP config is invalid' >&2\n\
+             exit 3\n",
+            fake = fake.display(),
+        ),
+    );
+    std::fs::write(dirs.folder.path().join("dies"), "").unwrap();
+    let shell = dirs.shell(&format!("printf 'PATH={}\\0'", path()));
+    let lucyd = Harness::with_env(&[("SHELL", shell.to_str().unwrap()), ("PATH", &path())]);
+    let claude = Claude::new(dying, dirs.work.path().to_owned())
+        .with_config_dir(dirs.config.path().to_owned());
+    lucyd.thinking.hand_off.open_on(Arc::new(claude));
+
+    let unfinished = hand_off(&lucyd, dirs.folder.path());
+
+    assert_eq!(unfinished.summary, "Claude couldn't finish");
+    assert!(
+        unfinished.body.starts_with(
+            "Claude stopped unexpectedly (exit status: 3): claude ERROR the MCP config is invalid"
+        ),
+        "{}",
+        unfinished.body
+    );
+}

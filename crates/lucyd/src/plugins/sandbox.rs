@@ -169,11 +169,10 @@ fn on_path(program: &Path) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// The CLI a Delegate of `provider` runs: its `program` as given, else `default`'s executable.
-///
-/// # Errors
-///
-/// As [`executable`].
+pub fn program<'a>(provider: &'a Provider, default: &'a Path) -> &'a Path {
+    provider.program.as_deref().unwrap_or(default)
+}
+
 pub fn delegate_program(provider: &Provider, default: &Path) -> io::Result<PathBuf> {
     match &provider.program {
         Some(given) => Ok(given.clone()),
@@ -181,14 +180,6 @@ pub fn delegate_program(provider: &Provider, default: &Path) -> io::Result<PathB
     }
 }
 
-/// The executable running `program` really starts, past symlinks and mise shims.
-///
-/// A bare name is found on `PATH`. A mise shim is asked, unconfined, which
-/// binary it runs (`mise which <name>`), so a sandbox can allow just that one.
-///
-/// # Errors
-///
-/// When `program` isn't found, or mise can't say what it runs.
 pub fn executable(program: &Path) -> io::Result<PathBuf> {
     let found = on_path(program).ok_or_else(|| {
         io::Error::new(

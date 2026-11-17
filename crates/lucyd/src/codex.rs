@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -9,8 +9,9 @@ use lucy_config::Provider;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use crate::adapters::{Exit, Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
 use crate::plugins::sandbox;
+use crate::process::{self, Process, StderrTail};
 use crate::sentences::Sentences;
 use crate::sync::Locked;
 
@@ -33,10 +34,6 @@ impl Codex {
         Codex { program, work_dir }
     }
 
-    fn program<'a>(&'a self, provider: &'a Provider) -> &'a Path {
-        provider.program.as_deref().unwrap_or(&self.program)
-    }
-
     fn command(
         &self,
         provider: &Provider,
@@ -45,7 +42,7 @@ impl Codex {
     ) -> std::io::Result<Command> {
         let program = match workspace {
             Some(_) => sandbox::delegate_program(provider, &self.program)?,
-            None => self.program(provider).to_owned(),
+            None => sandbox::program(provider, &self.program).to_owned(),
         };
         let mut command = Command::new(&program);
         command
@@ -53,7 +50,10 @@ impl Codex {
             .current_dir(workspace.map_or(&self.work_dir, |w| &w.dir))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(match workspace {
+                Some(_) => Stdio::piped(),
+                None => Stdio::null(),
+            });
         let mut config = vec![r#"web_search="disabled""#.to_owned()];
         match workspace {
             Some(workspace) => {
@@ -95,12 +95,13 @@ impl Codex {
             .map_err(|e| match e.kind() {
                 ErrorKind::NotFound => format!(
                     "I can't find Codex at {}. Please install it, or put codex on my PATH.",
-                    self.program(provider).display()
+                    sandbox::program(provider, &self.program).display()
                 ),
                 _ => format!("I couldn't start Codex: {e}."),
             })?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().map(StderrTail::follow);
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if let Ok(message) = serde_json::from_str(&line) {
@@ -114,6 +115,7 @@ impl Codex {
             inputs,
             next_id: 0,
             held: VecDeque::new(),
+            stderr,
         };
         let signed_in = server.signed_in(provider);
         if let Err(reason) = signed_in {
@@ -289,12 +291,6 @@ struct Inbox {
     inputs: std_mpsc::Receiver<Input>,
 }
 
-enum Process {
-    Starting,
-    Running(Child),
-    Ended,
-}
-
 struct CodexSessionModel {
     inputs: std_mpsc::Sender<Input>,
     process: Arc<Mutex<Process>>,
@@ -326,6 +322,7 @@ struct AppServer {
     inputs: std_mpsc::Receiver<Input>,
     next_id: u64,
     held: VecDeque<Input>,
+    stderr: Option<StderrTail>,
 }
 
 impl AppServer {
@@ -546,7 +543,8 @@ impl Session<'_> {
                 Input::StdoutClosed => {
                     let stopped_on_its_own = !matches!(*process.locked(), Process::Ended);
                     if stopped_on_its_own {
-                        let _ = self.events.send(ThinkingEvent::Died(Exit::default()));
+                        let exit = process::exit(process, self.server.stderr.take());
+                        let _ = self.events.send(ThinkingEvent::Died(exit));
                     }
                     return;
                 }
