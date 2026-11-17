@@ -35,6 +35,16 @@ pub struct ToolEntry {
     #[serde(default)]
     pub confirm: bool,
     pub confirm_prompt: Option<String>,
+    pub screen: Option<ScreenUse>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScreenUse {
+    Look,
+    Click,
+    Key,
+    Probe,
 }
 
 #[derive(Debug, Default, Deserialize)]

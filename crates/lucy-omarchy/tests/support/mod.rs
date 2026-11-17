@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lucy_omarchy::{Desktop, Omarchy};
+use lucy_omarchy::{Captured, Desktop, Grim, Image, Omarchy, Region, Screen};
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
 use rmcp::{RoleClient, ServiceExt};
@@ -14,6 +16,7 @@ use serde_json::{json, Value};
 struct Answers {
     clients: Value,
     active: Value,
+    monitors: Value,
     dispatch: String,
     requests: Vec<String>,
 }
@@ -27,6 +30,7 @@ impl Hyprland {
         let answers = Arc::new(Mutex::new(Answers {
             clients: json!([]),
             active: json!({}),
+            monitors: json!([]),
             dispatch: "ok".into(),
             requests: Vec::new(),
         }));
@@ -44,6 +48,7 @@ impl Hyprland {
                     match request.as_str() {
                         "j/clients" => answers.clients.to_string(),
                         "j/activewindow" => answers.active.to_string(),
+                        "j/monitors" => answers.monitors.to_string(),
                         dispatch if dispatch.starts_with("dispatch ") => answers.dispatch.clone(),
                         _ => "unknown request".into(),
                     }
@@ -69,6 +74,9 @@ impl Hyprland {
                     "pinned": false,
                     "fullscreen": 0,
                     "pid": 4242,
+                    "at": [0, 0],
+                    "size": [800, 600],
+                    "monitor": 0,
                 })
             })
             .collect();
@@ -93,6 +101,27 @@ impl Hyprland {
         }
     }
 
+    pub fn monitors(&self, monitors: &[Monitor]) {
+        let monitors: Vec<Value> = monitors
+            .iter()
+            .enumerate()
+            .map(|(id, monitor)| {
+                json!({
+                    "id": id,
+                    "name": monitor.name,
+                    "x": monitor.at.0,
+                    "y": monitor.at.1,
+                    "width": monitor.mode.0,
+                    "height": monitor.mode.1,
+                    "scale": monitor.scale,
+                    "transform": monitor.transform,
+                    "focused": monitor.focused,
+                })
+            })
+            .collect();
+        self.answers.lock().unwrap().monitors = Value::Array(monitors);
+    }
+
     pub fn answer_dispatches_with(&self, answer: &str) {
         self.answers.lock().unwrap().dispatch = answer.into();
     }
@@ -107,11 +136,60 @@ impl Hyprland {
     }
 }
 
+pub struct Monitor {
+    pub name: &'static str,
+    pub at: (i32, i32),
+    pub mode: (u32, u32),
+    pub scale: f64,
+    pub transform: u8,
+    pub focused: bool,
+}
+
+pub const PNG: &[u8] = b"\x89PNG fake screen";
+
+#[derive(Clone, Default)]
+pub struct FakeScreen {
+    captures: Arc<Mutex<Vec<(Region, f64)>>>,
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+impl FakeScreen {
+    pub fn captures(&self) -> Vec<(Region, f64)> {
+        self.captures.lock().unwrap().clone()
+    }
+
+    pub fn fail(&self, reason: &str) {
+        *self.failure.lock().unwrap() = Some(reason.into());
+    }
+}
+
+impl Screen for FakeScreen {
+    fn capture(&self, region: Region, scale: f64) -> Captured<'_> {
+        self.captures.lock().unwrap().push((region, scale));
+        let failure = self.failure.lock().unwrap().clone();
+        Box::pin(async move {
+            match failure {
+                Some(reason) => Err(reason),
+                None => Ok(Image {
+                    bytes: PNG.to_vec(),
+                    mime_type: "image/png".into(),
+                }),
+            }
+        })
+    }
+}
+
 pub struct Plugin {
     runtime: tokio::runtime::Runtime,
     client: RunningService<RoleClient, ()>,
     pub hyprland: Hyprland,
+    pub screen: FakeScreen,
     dir: tempfile::TempDir,
+}
+
+enum Capturing {
+    Fake,
+    Grim,
 }
 
 fn write_executable(path: &Path, script: &str) {
@@ -132,6 +210,14 @@ fn write_executable(path: &Path, script: &str) {
 
 impl Plugin {
     pub fn start() -> Plugin {
+        Plugin::capturing(Capturing::Fake)
+    }
+
+    pub fn with_grim() -> Plugin {
+        Plugin::capturing(Capturing::Grim)
+    }
+
+    fn capturing(capturing: Capturing) -> Plugin {
         let dir = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
         let hyprland = Hyprland::serve(&dir.path().join(".socket.sock"));
         let bin = dir.path().join("bin");
@@ -183,15 +269,24 @@ impl Plugin {
         );
         std::fs::write(dir.path().join("nightlight"), "false\n").unwrap();
         std::fs::write(dir.path().join("layout"), "dwindle\n").unwrap();
+        fake("grim", "printf 'grim png'\n");
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let omarchy = Omarchy::new(Desktop {
+        let desktop = Desktop {
             socket: dir.path().join(".socket.sock"),
             path: bin.into_os_string(),
-        });
+        };
+        let screen = FakeScreen::default();
+        let omarchy = match capturing {
+            Capturing::Fake => Omarchy::with_screen(desktop, Arc::new(screen.clone())),
+            Capturing::Grim => {
+                let grim = Grim::new(desktop.path.clone());
+                Omarchy::with_screen(desktop, Arc::new(grim))
+            }
+        };
         let client = runtime.block_on(async {
             let (ours, theirs) = tokio::io::duplex(1 << 16);
             tokio::spawn(async move {
@@ -210,6 +305,7 @@ impl Plugin {
             runtime,
             client,
             hyprland,
+            screen,
             dir,
         }
     }

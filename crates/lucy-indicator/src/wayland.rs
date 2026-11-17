@@ -34,7 +34,11 @@ const THEME_POLL: Duration = Duration::from_secs(2);
 const BTN_LEFT: u32 = 0x110;
 
 pub enum Update {
-    State { state: State, building: bool },
+    State {
+        state: State,
+        building: bool,
+        looking: bool,
+    },
     Level(f32),
     Lost(String),
 }
@@ -126,8 +130,13 @@ impl Display {
             .map_err(|e| format!("can't watch the Wayland connection: {e}"))?;
         handle
             .insert_source(updates, |event, _, app: &mut App| match event {
-                channel::Event::Msg(Update::State { state, building }) => {
+                channel::Event::Msg(Update::State {
+                    state,
+                    building,
+                    looking,
+                }) => {
                     app.indicator.on_building(building);
+                    app.indicator.on_looking(looking);
                     app.on_state(state);
                 }
                 channel::Event::Msg(Update::Level(rms)) => app.indicator.on_level(rms),

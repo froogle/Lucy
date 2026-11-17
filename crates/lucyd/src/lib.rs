@@ -61,6 +61,23 @@ pub struct Options {
     pub plugin_env: plugins::Environment,
 }
 
+/// Starts lucyd's log on stderr, silent unless `RUST_LOG` asks for it.
+///
+/// `rmcp` logs only warnings and errors whatever `RUST_LOG` says, since its
+/// trace holds whole MCP messages: tool results, screenshots among them.
+///
+/// # Errors
+///
+/// When a logger is already set.
+pub fn start_log() -> Result<(), log::SetLoggerError> {
+    let silent_unless_rust_log = "off";
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(silent_unless_rust_log),
+    )
+    .filter_module("rmcp", log::LevelFilter::Warn)
+    .try_init()
+}
+
 /// A running lucyd. Dropping it stops lucyd and removes its sockets.
 pub struct Daemon {
     socket_path: PathBuf,
@@ -128,6 +145,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         plugin_env,
     );
     let thinking = adapters.thinking.clone();
+    thinking.sweep();
     let authoring = authoring::Authoring::new(
         &adapters,
         relays.clone(),

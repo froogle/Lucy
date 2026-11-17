@@ -74,6 +74,11 @@ impl Thinking for ByKind {
         self.claude.shutdown();
         self.codex.shutdown();
     }
+
+    fn sweep(&self) {
+        self.claude.sweep();
+        self.codex.sweep();
+    }
 }
 
 #[cfg(test)]

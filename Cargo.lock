@@ -1758,6 +1758,7 @@ dependencies = [
 name = "lucy-omarchy"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "rmcp",
  "serde",
  "serde_json",

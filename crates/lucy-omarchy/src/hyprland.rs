@@ -35,6 +35,21 @@ pub struct Window {
     pub floating: bool,
     pub fullscreen: u8,
     pub pinned: bool,
+    pub at: [i32; 2],
+    pub size: [i32; 2],
+    pub monitor: i64,
+}
+
+#[derive(Deserialize)]
+pub struct Monitor {
+    pub id: i64,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub scale: f64,
+    pub transform: u8,
+    pub focused: bool,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +69,10 @@ impl Hyprland {
 
     pub async fn windows(&self) -> Result<Vec<Window>, String> {
         self.query("clients").await
+    }
+
+    pub async fn monitors(&self) -> Result<Vec<Monitor>, String> {
+        self.query("monitors").await
     }
 
     pub async fn active_window(&self) -> Result<Option<Address>, String> {

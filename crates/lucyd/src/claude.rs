@@ -544,6 +544,26 @@ impl Thinking for Claude {
             run.end();
         }
     }
+
+    fn sweep(&self) {
+        let project = self
+            .config_dir()
+            .join("projects")
+            .join(project_dir(&self.work_dir));
+        for entry in std::fs::read_dir(project).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !is_conversation_id(name.strip_suffix(".jsonl").unwrap_or(&name)) {
+                continue;
+            }
+            let path = entry.path();
+            let _ = if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
+        }
+    }
 }
 
 enum Process {
@@ -612,6 +632,18 @@ impl Run {
             let _ = std::fs::remove_dir_all(project.join(&id));
         }
     }
+}
+
+fn is_conversation_id(name: &str) -> bool {
+    const DASHES: [usize; 4] = [8, 13, 18, 23];
+    name.len() == 36
+        && name.char_indices().all(|(i, c)| {
+            if DASHES.contains(&i) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        })
 }
 
 fn project_dir(cwd: &Path) -> String {

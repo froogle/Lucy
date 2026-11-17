@@ -64,6 +64,12 @@ handles = "taking a screenshot of the screen, a region or a window"
 examples = ["take a screenshot", "screenshot a window"]
 
 [[tools]]
+name = "screenshot_for_model"
+handles = "looking at what's on the screen, or in one window, when a request needs it"
+examples = ["what's on my screen?", "what does this error say?", "read me the open email"]
+screen = "look"
+
+[[tools]]
 name = "idle_lock"
 handles = "locking the screen, or keeping the computer awake"
 examples = ["lock the screen", "keep the computer awake"]
@@ -78,7 +84,8 @@ examples = ["lock the screen", "keep the computer awake"]
 # themes and language from ~/.config/omarchy. The lock looks for running apps
 # through /proc. The screenshot and the night light's toggle start through
 # Hyprland's exec, outside this sandbox (ADR 0012), so they're listed in
-# commands but need no access here.
+# commands but need no access here. grim captures the screen for the model
+# over the Wayland socket and writes the image to its stdout.
 write = [
     "$XDG_RUNTIME_DIR/omarchy-theme-set.lock",
     "$XDG_RUNTIME_DIR/omarchy-theme-set-retint.lock",
@@ -88,6 +95,7 @@ write = [
 ]
 read = ["~/.config/omarchy", "/proc"]
 commands = [
+    "grim",
     "omarchy-capture-screenshot",
     "omarchy-hyprland-workspace-layout-current",
     "omarchy-hyprland-workspace-layout-toggle",

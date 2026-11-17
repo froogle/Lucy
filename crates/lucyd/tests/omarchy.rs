@@ -45,6 +45,7 @@ impl Omarchy {
                 "address": "0xb3", "class": "Slack", "title": "general - Slack",
                 "workspace": {"id": 3, "name": "3"},
                 "floating": false, "fullscreen": 0, "pinned": false,
+                "at": [0, 0], "size": [800, 600], "monitor": 0,
             });
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
@@ -193,6 +194,7 @@ fn on_omarchy_the_shipped_plugin_is_approved_at_scan_and_offered_without_asking(
             "omarchy__list_windows",
             "omarchy__night_light",
             "omarchy__screenshot",
+            "omarchy__screenshot_for_model",
             "omarchy__theme",
             "omarchy__window",
             "omarchy__workspace",

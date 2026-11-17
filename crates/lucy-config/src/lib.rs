@@ -32,6 +32,7 @@ pub struct Config {
     pub input: Input,
     pub barge_in: BargeIn,
     pub authoring: Authoring,
+    pub screen: Screen,
 }
 
 impl Default for Config {
@@ -61,6 +62,7 @@ impl Default for Config {
             input: Input::default(),
             barge_in: BargeIn::default(),
             authoring: Authoring::default(),
+            screen: Screen::default(),
         }
     }
 }
@@ -559,6 +561,20 @@ impl Default for Authoring {
             budget_secs: 20.0 * 60.0,
             progress_notifications: true,
         }
+    }
+}
+
+/// `[screen]`: whether Lucy may look at the screen (ADR 0008).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Screen {
+    /// When false, the Plugins' screen tools are left out of the tool list.
+    pub enabled: bool,
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Screen { enabled: true }
     }
 }
 
