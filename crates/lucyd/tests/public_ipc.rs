@@ -27,7 +27,8 @@ fn subscribing_to_state_sends_the_current_state() {
         Event::State(StateEvent {
             state: State::Idle,
             session_id: None,
-            building: false
+            building: false,
+            looking: false,
         })
     );
 }
@@ -46,7 +47,7 @@ fn state_events_are_json_rpc_notifications() {
         serde_json::json!({
             "jsonrpc": "2.0",
             "method": "state",
-            "params": {"state": "idle", "session_id": null, "building": false},
+            "params": {"state": "idle", "session_id": null, "building": false, "looking": false},
         })
     );
 }

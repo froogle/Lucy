@@ -53,6 +53,7 @@ fn the_manifest_lists_exactly_the_tools_it_offers_and_only_kill_window_confirms(
             "list_windows",
             "night_light",
             "screenshot",
+            "screenshot_for_model",
             "theme",
             "window",
             "workspace"
@@ -64,7 +65,19 @@ fn the_manifest_lists_exactly_the_tools_it_offers_and_only_kill_window_confirms(
 
 #[test]
 fn the_manifest_declares_exactly_the_commands_its_tools_run() {
-    let omarchy = desktop();
+    let omarchy = Plugin::with_grim();
+    omarchy.hyprland.windows(
+        &[(FIREFOX, "firefox", "Lucy - Mozilla Firefox", "1")],
+        Some(FIREFOX),
+    );
+    omarchy.hyprland.monitors(&[support::Monitor {
+        name: "DP-1",
+        at: (0, 0),
+        mode: (1920, 1080),
+        scale: 1.0,
+        transform: 0,
+        focused: true,
+    }]);
     let calls = [
         ("layout", json!({"mode": "scrolling"})),
         ("theme", json!({"action": "list"})),
@@ -74,9 +87,11 @@ fn the_manifest_declares_exactly_the_commands_its_tools_run() {
         ("screenshot", json!({"action": "screen"})),
         ("idle_lock", json!({"action": "lock"})),
         ("idle_lock", json!({"action": "stay_awake"})),
+        ("screenshot_for_model", json!({})),
     ];
     for (tool, arguments) in calls {
-        omarchy.call(tool, arguments);
+        let result = omarchy.call_result(tool, arguments);
+        assert_eq!(result.is_error, Some(false), "{}", support::text(&result));
     }
 
     let execs = omarchy.hyprland.dispatched();

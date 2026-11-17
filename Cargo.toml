@@ -21,6 +21,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macro
 clap = { version = "4", features = ["derive"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
 tempfile = "3"
+base64 = "0.23"
 rmcp = { version = "3.10", default-features = false }
 # ort-tract pins ort-sys exactly, so the two move together, and
 # livekit-wakeword (the wake word) needs this pair. The next pair

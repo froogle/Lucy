@@ -236,6 +236,63 @@ fn stopping_lucyd_deletes_the_conversations_still_open() {
     drop(model);
 }
 
+fn copy(from: &Path, to: &Path) {
+    let copied = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(from)
+        .arg(to)
+        .status()
+        .unwrap();
+    assert!(copied.success());
+}
+
+#[test]
+fn a_session_transcript_a_crash_left_behind_is_swept_when_lucyd_starts() {
+    let work = tempfile::tempdir().unwrap();
+    let config = tempfile::tempdir().unwrap();
+    let claude = verified(work.path(), "fake-claude").with_config_dir(config.path().to_owned());
+    let (tx, mut events) = mpsc::unbounded_channel();
+    let mut model = claude.open(&fast(), tx, relay(), String::new());
+    model.send_turn("Remember the word kiwi.".into());
+    read_turn(&mut events, WAIT);
+    let left = kept(config.path(), SESSION_ID);
+    assert_eq!(left.len(), 2, "no transcript to leave behind");
+    let aside = tempfile::tempdir().unwrap();
+    for path in &left {
+        copy(path, aside.path());
+    }
+    drop(model);
+    for path in &left {
+        copy(
+            &aside.path().join(path.file_name().unwrap()),
+            path.parent().unwrap(),
+        );
+    }
+    let theirs = config
+        .path()
+        .join("projects")
+        .join("-home-someone-code")
+        .join(format!("{SESSION_ID}.jsonl"));
+    std::fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+    std::fs::write(&theirs, "{}\n").unwrap();
+    let theirs_in_lucys = the_users_own(config.path(), SESSION_ID);
+    assert_eq!(kept(config.path(), SESSION_ID).len(), 3);
+
+    let _lucyd = harness::Harness::with_thinking(
+        None,
+        std::sync::Arc::new(
+            Claude::new(fixtures().join("fake-claude"), work.path().to_owned())
+                .with_config_dir(config.path().to_owned()),
+        ),
+    );
+
+    assert_eq!(kept(config.path(), SESSION_ID), [theirs]);
+    assert!(
+        theirs_in_lucys.is_file(),
+        "a file that isn't a transcript was deleted"
+    );
+}
+
 #[test]
 fn runs_with_an_isolated_config_naming_only_the_relay() {
     let work = tempfile::tempdir().unwrap();

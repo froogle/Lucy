@@ -139,6 +139,9 @@ pub trait Thinking: Send + Sync {
     /// lucyd is stopping: ends every model process still open.
     /// It also ends what they keep on disk, as dropping each SessionModel would.
     fn shutdown(&self) {}
+
+    /// lucyd is starting: deletes Session transcripts a crash left on disk.
+    fn sweep(&self) {}
 }
 
 /// Where a Delegate works, and the only other places it may touch.

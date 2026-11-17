@@ -120,6 +120,10 @@ pub struct Status {
     /// Indicator adds a "building" mark.
     #[serde(default)]
     pub building: bool,
+    /// A screen tool is capturing the screen for the model. The Indicator
+    /// adds a "looking" mark.
+    #[serde(default)]
+    pub looking: bool,
 }
 
 /// Lucy's Session state.

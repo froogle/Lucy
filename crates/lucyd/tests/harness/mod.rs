@@ -482,13 +482,7 @@ impl Harness {
     }
 
     pub fn assert_nothing_private_on_bus(&self) {
-        let deadline = Instant::now() + WAIT;
-        while !self.bus_is_idle() {
-            assert!(Instant::now() < deadline, "the bus never returned to idle");
-            // sleep-ok: poll loop with a deadline
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let lines = self.bus.lock().unwrap().clone();
+        let lines = self.bus_once_idle();
         let private: Vec<String> = [
             self.stt.heard(),
             self.thinking.streamed(),
@@ -512,6 +506,22 @@ impl Harness {
                 );
             }
         }
+    }
+
+    pub fn assert_not_on_bus(&self, text: &str) {
+        for line in self.bus_once_idle() {
+            assert!(!line.contains(text), "{text:?} appeared on the bus: {line}");
+        }
+    }
+
+    fn bus_once_idle(&self) -> Vec<String> {
+        let deadline = Instant::now() + WAIT;
+        while !self.bus_is_idle() {
+            assert!(Instant::now() < deadline, "the bus never returned to idle");
+            // sleep-ok: poll loop with a deadline
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.bus.lock().unwrap().clone()
     }
 
     pub fn assert_no_level_on_bus(&self) {

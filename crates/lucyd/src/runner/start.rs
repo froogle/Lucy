@@ -61,6 +61,9 @@ impl Runner {
             applications: self.adapters.applications.clone(),
             launcher_command: settings.desktop.launcher.clone(),
         };
+        if !settings.screen.enabled {
+            plugin_tools.turn_screen_off();
+        }
         let mut instructions = persona.text;
         if let Some(report) = plugin_tools.scan_report() {
             instructions = format!("{instructions}\n\n{report}");

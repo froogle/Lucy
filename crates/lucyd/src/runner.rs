@@ -125,6 +125,8 @@ pub struct Runner {
     building: watch::Receiver<Building>,
     authoring: Arc<Authoring>,
     parked: VecDeque<Parked>,
+    looks: Option<watch::Receiver<u64>>,
+    looking: bool,
 }
 
 enum Parked {
@@ -165,6 +167,8 @@ impl Runner {
             building: authoring.building(),
             authoring,
             parked: VecDeque::new(),
+            looks: None,
+            looking: false,
         }
     }
 
@@ -232,7 +236,10 @@ impl Runner {
         self.sessions_started += 1;
         let id = SessionId(self.sessions_started);
         let plugin_tools = self.plugin_host.open_session().await;
+        self.looks = Some(plugin_tools.looks());
         self.session_loop(id, started, plugin_tools.clone()).await;
+        self.looks = None;
+        self.looking = false;
         self.keep_unsaid_for_next_session();
         if let Some(hearing) = &mut self.adapters.hearing {
             hearing.lucy_speaking(false);
@@ -363,6 +370,11 @@ impl Runner {
             } else {
                 tokio::select! {
                 biased;
+                Ok(()) = or_pending(self.looks.as_mut().map(watch::Receiver::changed)) => {
+                    self.looking = true;
+                    self.publish(session.state(), Some(id));
+                    continue;
+                }
                 Some(event) = events.recv() => Input::Thinking(event),
                 Some(event) = speaker_events.recv() => match event {
                     SpeakerEvent::Played => Input::Played,
@@ -527,6 +539,7 @@ impl Runner {
             };
             if matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
                 respawned_since_turn_end = false;
+                self.looking = false;
             }
             if introducing && matches!(input, Input::Thinking(ThinkingEvent::TurnEnd)) {
                 introducing = false;
@@ -658,6 +671,7 @@ impl Runner {
             state,
             session_id: session_id.map(|id| id.to_string()),
             building: *self.building.borrow() == Building::Working,
+            looking: self.looking && session_id.is_some(),
         });
     }
 }

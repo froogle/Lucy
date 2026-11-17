@@ -597,6 +597,11 @@
           "description": "An Authoring build is running, with or without a Session. The\nIndicator adds a \"building\" mark.",
           "type": "boolean"
         },
+        "looking": {
+          "default": false,
+          "description": "A screen tool is capturing the screen for the model. The Indicator\nadds a \"looking\" mark.",
+          "type": "boolean"
+        },
         "session_id": {
           "description": "The current Session, if one is open.",
           "type": [

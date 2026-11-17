@@ -13,6 +13,7 @@ pub(crate) mod sandbox;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
@@ -28,7 +29,7 @@ use rmcp::{RoleClient, RoleServer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{CredentialStore, Notification, NotificationKind};
 use crate::input::{self, Filled, TypedAnswer};
@@ -40,7 +41,7 @@ use crate::status::ChangeBus;
 use crate::sync::{Locked, POISONED};
 pub use environment::Environment;
 pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
-use manifest::{Manifest, ToolEntry};
+use manifest::{Manifest, ScreenUse, ToolEntry};
 
 const MAX_QUESTIONS: usize = 10;
 
@@ -48,6 +49,12 @@ const SYSTEM_ENV: [&str; 3] = ["PATH", "HOME", "LANG"];
 
 const DECLINED: &str = "declined: the user didn't say yes, so nothing was done, and you've \
                         already told them so.";
+
+const LOOK_PROMPT: &str = "I need to look at your screen. Okay?";
+
+const LOOK_DECLINED: &str = "declined: the user hasn't let you look at their screen in this \
+                             Session, so nothing was captured. Don't ask to look again until \
+                             their next Session.";
 
 const CANCELLED: &str = "cancelled: the user cut in, so the call was stopped.";
 
@@ -229,8 +236,11 @@ impl Host {
             awaiting,
             running: tokio::sync::Mutex::default(),
             watchers: Mutex::default(),
-            barge_ins: tokio::sync::watch::Sender::new(0),
+            barge_ins: watch::Sender::new(0),
             finished: Mutex::default(),
+            screen_off: AtomicBool::new(false),
+            first_look: tokio::sync::Mutex::new(FirstLook::Unasked),
+            looks: watch::Sender::new(0),
         });
         *self.session.locked() = Arc::downgrade(&tools);
         tools
@@ -771,13 +781,58 @@ pub struct SessionTools {
     awaiting: Vec<String>,
     running: tokio::sync::Mutex<HashMap<String, RunningService<RoleClient, ()>>>,
     watchers: Mutex<Vec<Peer<RoleServer>>>,
-    barge_ins: tokio::sync::watch::Sender<u64>,
+    barge_ins: watch::Sender<u64>,
     finished: Mutex<Vec<String>>,
+    screen_off: AtomicBool,
+    first_look: tokio::sync::Mutex<FirstLook>,
+    looks: watch::Sender<u64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Declined;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FirstLook {
+    Unasked,
+    Allowed,
+    Declined,
 }
 
 impl SessionTools {
     pub fn barge_in(&self) {
         self.barge_ins.send_modify(|count| *count += 1);
+    }
+
+    pub fn turn_screen_off(&self) {
+        self.screen_off.store(true, Ordering::SeqCst);
+    }
+
+    pub fn looks(&self) -> watch::Receiver<u64> {
+        self.looks.subscribe()
+    }
+
+    fn offers(&self, tool: &ToolEntry) -> bool {
+        tool.screen.is_none() || !self.screen_off.load(Ordering::SeqCst)
+    }
+
+    async fn look(&self) -> Result<(), Declined> {
+        let mut first = self.first_look.lock().await;
+        if *first == FirstLook::Unasked {
+            let question = Question {
+                prompt: LOOK_PROMPT.into(),
+                expects: Expects::Yes,
+            };
+            *first = match runner::ask(&self.host.commands, question, None).await {
+                Some(Answer::Yes) => FirstLook::Allowed,
+                Some(_) => FirstLook::Declined,
+                None => return Err(Declined),
+            };
+        }
+        if *first == FirstLook::Declined {
+            return Err(Declined);
+        }
+        self.looks.send_modify(|looks| *looks += 1);
+        Ok(())
     }
 
     pub fn take_finished(&self) -> Vec<String> {
@@ -851,7 +906,7 @@ impl SessionTools {
     pub fn list(&self) -> Vec<Tool> {
         let mut tools = Vec::new();
         for plugin in self.working() {
-            for tool in &plugin.manifest.tools {
+            for tool in plugin.manifest.tools.iter().filter(|t| self.offers(t)) {
                 let mut description = tool.handles.clone();
                 if !tool.examples.is_empty() {
                     let examples: Vec<String> =
@@ -871,13 +926,20 @@ impl SessionTools {
     pub async fn call(&self, name: &str, arguments: Option<JsonObject>) -> Option<CallToolResult> {
         let (plugin_name, tool) = name.split_once("__")?;
         let plugin = self.working().into_iter().find(|p| p.name == plugin_name)?;
-        let entry = plugin.manifest.tools.iter().find(|t| t.name == tool)?;
+        let entry = plugin
+            .manifest
+            .tools
+            .iter()
+            .find(|t| t.name == tool && self.offers(t))?;
         let mut read_before_confirming = None;
         if !self.running.lock().await.contains_key(plugin_name) {
             match self.host.credentials(&plugin).await {
                 Ok(read) => read_before_confirming = Some(read),
                 Err(unreadable) => return Some(mcp::error(unreadable)),
             }
+        }
+        if entry.screen == Some(ScreenUse::Look) && self.look().await == Err(Declined) {
+            return Some(mcp::text(LOOK_DECLINED));
         }
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
