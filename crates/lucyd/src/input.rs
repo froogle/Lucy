@@ -7,7 +7,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::mcp::{error, tool};
-use crate::runner::{self, Command};
+use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::sync::Locked;
 
@@ -244,6 +244,14 @@ pub async fn ask_typed(
     commands: &mpsc::UnboundedSender<Command>,
     arguments: &JsonObject,
 ) -> CallToolResult {
+    ask_typed_at(commands, arguments, When::Now).await
+}
+
+pub async fn ask_typed_at(
+    commands: &mpsc::UnboundedSender<Command>,
+    arguments: &JsonObject,
+    when: When,
+) -> CallToolResult {
     let question = arguments
         .get("question")
         .and_then(|question| question.as_str())
@@ -265,7 +273,7 @@ pub async fn ask_typed(
     let Ok(kind) = serde_json::from_value::<FieldKind>(field) else {
         return error("A choice needs its choices.");
     };
-    match ask(commands, question, kind).await {
+    match ask_field(commands, what(&kind), question, ANSWER, kind, when).await {
         TypedAnswer::Answer(answer) => CallToolResult::structured(json!({"answer": answer})),
         TypedAnswer::Cancelled => CallToolResult::structured(json!({"result": "cancelled"})),
         TypedAnswer::TimedOut => CallToolResult::structured(json!({"result": "timed_out"})),
@@ -288,12 +296,23 @@ pub async fn ask_for(
     name: &str,
     kind: FieldKind,
 ) -> TypedAnswer {
+    ask_field(commands, what, question, name, kind, When::Now).await
+}
+
+async fn ask_field(
+    commands: &mpsc::UnboundedSender<Command>,
+    what: &str,
+    question: &str,
+    name: &str,
+    kind: FieldKind,
+    when: When,
+) -> TypedAnswer {
     let field = Field {
         name: name.to_owned(),
         description: None,
         kind,
     };
-    match fill_saying(commands, what, question, vec![field]).await {
+    match fill_saying(commands, what, question, vec![field], when).await {
         Filled::Values(mut values) => TypedAnswer::Answer(values.remove(name).unwrap_or_default()),
         Filled::Cancelled => TypedAnswer::Cancelled,
         Filled::TimedOut => TypedAnswer::TimedOut,
@@ -316,7 +335,7 @@ pub async fn fill(
         [field] => what(&field.kind),
         _ => "your answers",
     };
-    fill_saying(commands, what, message, fields).await
+    fill_saying(commands, what, message, fields, When::Now).await
 }
 
 async fn fill_saying(
@@ -324,6 +343,7 @@ async fn fill_saying(
     what: &str,
     message: &str,
     fields: Vec<Field>,
+    when: When,
 ) -> Filled {
     let question = Question {
         prompt: format!("I've put a box on screen for {what}."),
@@ -332,7 +352,7 @@ async fn fill_saying(
             fields,
         }),
     };
-    match runner::ask(commands, question, None).await {
+    match runner::ask_at(commands, question, None, when).await {
         Some(Answer::Typed(values)) => Filled::Values(values),
         Some(Answer::TimedOut) => Filled::TimedOut,
         _ => Filled::Cancelled,

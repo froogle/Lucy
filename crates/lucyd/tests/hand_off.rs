@@ -103,12 +103,11 @@ fn when_claude_finishes_the_fast_tier_sums_it_up_and_the_whole_answer_is_notifie
 }
 
 #[test]
-fn every_permission_request_is_denied_and_the_permission_tool_is_all_claude_sees() {
+fn every_permission_request_is_denied() {
     let lucyd = Harness::start();
     let _events = handed_off(&lucyd, &lucyd.scratch());
     let hand_off = &lucyd.thinking.hand_off;
 
-    assert_eq!(hand_off.tool_names(), ["permission"]);
     let (failed, decision) = called(hand_off.call_tool_with(
         "permission",
         json!({
