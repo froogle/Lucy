@@ -46,6 +46,7 @@ pub struct Harness {
     applications: [PathBuf; 2],
     bus: Arc<Mutex<Vec<String>>>,
     typed: Mutex<Vec<String>>,
+    home_paths: Mutex<Vec<String>>,
     config_path: PathBuf,
     plugin_paths: lucyd::plugins::Paths,
     persona_path: PathBuf,
@@ -189,6 +190,8 @@ impl Harness {
         for dir in &applications {
             std::fs::create_dir(dir).unwrap();
         }
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config_path: config_path.clone(),
@@ -210,6 +213,7 @@ impl Harness {
                 credentials: Arc::new(credentials.clone()),
                 clock: Arc::new(clock.clone()),
                 applications: applications.to_vec(),
+                home,
             },
         })
         .expect("lucyd starts");
@@ -231,6 +235,7 @@ impl Harness {
             applications,
             bus: Arc::default(),
             typed: Mutex::default(),
+            home_paths: Mutex::default(),
             config_path,
             plugin_paths,
             persona_path,
@@ -340,6 +345,31 @@ impl Harness {
             .stdin(Stdio::null())
             .output()
             .unwrap()
+    }
+
+    pub fn home(&self) -> PathBuf {
+        self._dir.path().join("home")
+    }
+
+    pub fn home_file(&self, relative: &str) -> PathBuf {
+        let path = self.home().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+        self.home_paths
+            .lock()
+            .unwrap()
+            .push(path.display().to_string());
+        path
+    }
+
+    pub fn home_folder(&self, relative: &str) -> PathBuf {
+        let path = self.home().join(relative);
+        std::fs::create_dir_all(&path).unwrap();
+        self.home_paths
+            .lock()
+            .unwrap()
+            .push(path.display().to_string());
+        path
     }
 
     pub fn desktop_entry(&self, file_name: &str, keys: &str) -> PathBuf {
@@ -495,6 +525,7 @@ impl Harness {
             self.tts.sentences(),
             self.credentials.values(),
             self.typed.lock().unwrap().clone(),
+            self.home_paths.lock().unwrap().clone(),
         ]
         .concat()
         .into_iter()
@@ -1335,6 +1366,8 @@ impl Drop for NoModelText {
 #[derive(Clone, Default)]
 pub struct FakeLauncher {
     opened: Arc<Mutex<Vec<String>>>,
+    shown: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+    opened_files: Arc<Mutex<Vec<PathBuf>>>,
     launched: Arc<Mutex<Vec<PathBuf>>>,
     launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
     terminals: Arc<Mutex<Vec<Vec<String>>>>,
@@ -1344,6 +1377,14 @@ pub struct FakeLauncher {
 impl FakeLauncher {
     pub fn opened(&self) -> Vec<String> {
         self.opened.lock().unwrap().clone()
+    }
+
+    pub fn shown(&self) -> Vec<Vec<PathBuf>> {
+        self.shown.lock().unwrap().clone()
+    }
+
+    pub fn opened_files(&self) -> Vec<PathBuf> {
+        self.opened_files.lock().unwrap().clone()
     }
 
     pub fn launched(&self) -> Vec<PathBuf> {
@@ -1366,6 +1407,16 @@ impl FakeLauncher {
 impl Launcher for FakeLauncher {
     fn open_url(&self, url: &str) -> std::io::Result<()> {
         self.opened.lock().unwrap().push(url.to_owned());
+        Ok(())
+    }
+
+    fn show_items(&self, paths: &[PathBuf]) -> std::io::Result<()> {
+        self.shown.lock().unwrap().push(paths.to_vec());
+        Ok(())
+    }
+
+    fn open_file(&self, path: &Path) -> std::io::Result<()> {
+        self.opened_files.lock().unwrap().push(path.to_owned());
         Ok(())
     }
 

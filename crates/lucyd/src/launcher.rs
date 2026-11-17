@@ -1,6 +1,8 @@
 use std::io;
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use crate::adapters::Launcher;
 
@@ -8,13 +10,27 @@ pub struct SystemLauncher;
 
 impl Launcher for SystemLauncher {
     fn open_url(&self, url: &str) -> io::Result<()> {
-        let mut command = if uwsm_is_running() {
-            vec!["uwsm", "app", "--", "xdg-open"]
-        } else {
-            vec!["xdg-open"]
-        };
-        command.push(url);
-        spawn_detached(&command)
+        xdg_open(url)
+    }
+
+    fn show_items(&self, paths: &[PathBuf]) -> io::Result<()> {
+        let uris: Vec<String> = paths.iter().map(|path| file_uri(path)).collect();
+        if let Err(e) = show_over_dbus(&uris) {
+            log::debug!("no file manager answered ShowItems: {e}");
+            let folder = paths
+                .first()
+                .and_then(|path| path.parent())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no folder to open"))?;
+            return self.open_file(folder);
+        }
+        Ok(())
+    }
+
+    fn open_file(&self, path: &Path) -> io::Result<()> {
+        xdg_open(
+            path.to_str()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path isn't UTF-8"))?,
+        )
     }
 
     fn launch(&self, entry: &Path, launcher: Option<&[String]>) -> io::Result<()> {
@@ -39,6 +55,55 @@ impl Launcher for SystemLauncher {
         terminal.extend(command.iter().map(String::as_str));
         spawn_detached(&terminal)
     }
+}
+
+const DBUS_WAIT: Duration = Duration::from_secs(5);
+
+fn show_over_dbus(uris: &[String]) -> Result<(), zbus::Error> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let call = async {
+            let bus = zbus::Connection::session().await?;
+            bus.call_method(
+                Some("org.freedesktop.FileManager1"),
+                "/org/freedesktop/FileManager1",
+                Some("org.freedesktop.FileManager1"),
+                "ShowItems",
+                &(uris, ""),
+            )
+            .await
+        };
+        match tokio::time::timeout(DBUS_WAIT, call).await {
+            Ok(answer) => answer.map(drop),
+            Err(_) => Err(zbus::Error::InputOutput(
+                io::Error::from(io::ErrorKind::TimedOut).into(),
+            )),
+        }
+    })
+}
+
+fn file_uri(path: &Path) -> String {
+    let mut uri = String::from("file://");
+    for &byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+            uri.push(char::from(byte));
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri
+}
+
+fn xdg_open(target: &str) -> io::Result<()> {
+    let mut command = if uwsm_is_running() {
+        vec!["uwsm", "app", "--", "xdg-open"]
+    } else {
+        vec!["xdg-open"]
+    };
+    command.push(target);
+    spawn_detached(&command)
 }
 
 fn uwsm_is_running() -> bool {
@@ -104,6 +169,14 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&out).unwrap(),
             "--flag\n/usr/share/applications/firefox.desktop\n"
+        );
+    }
+
+    #[test]
+    fn a_file_uri_escapes_everything_but_unreserved_characters() {
+        assert_eq!(
+            file_uri(Path::new("/home/me/1921 Naval Conference/notes #1 é.txt")),
+            "file:///home/me/1921%20Naval%20Conference/notes%20%231%20%C3%A9.txt"
         );
     }
 

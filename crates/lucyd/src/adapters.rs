@@ -321,6 +321,18 @@ pub trait Launcher: Send + Sync {
     ///
     /// When the opener can't be started.
     fn open_url(&self, url: &str) -> io::Result<()>;
+    /// Opens the file manager with `paths` highlighted.
+    ///
+    /// # Errors
+    ///
+    /// When no file manager can be reached or started.
+    fn show_items(&self, paths: &[PathBuf]) -> io::Result<()>;
+    /// Opens the file at `path` in its default app.
+    ///
+    /// # Errors
+    ///
+    /// When the opener can't be started.
+    fn open_file(&self, path: &Path) -> io::Result<()>;
     /// Starts the app whose desktop entry is at `entry`.
     /// It goes through `launcher` (`[desktop] launcher`, with the entry's path
     /// appended) if it is set.
@@ -362,6 +374,8 @@ pub struct Adapters {
     pub clock: Arc<dyn Clock>,
     /// Where to look for desktop entries, most important first.
     pub applications: Vec<PathBuf>,
+    /// The user's home, which `~` means in `[files] roots`.
+    pub home: PathBuf,
 }
 
 impl Adapters {
@@ -384,6 +398,7 @@ impl Adapters {
             credentials: Arc::new(Inert),
             clock: Arc::new(SystemClock),
             applications: vec![],
+            home: PathBuf::new(),
         }
     }
 }
@@ -482,6 +497,14 @@ impl Notifier for Inert {
 
 impl Launcher for Inert {
     fn open_url(&self, _url: &str) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn show_items(&self, _paths: &[PathBuf]) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn open_file(&self, _path: &Path) -> io::Result<()> {
         Ok(())
     }
 
