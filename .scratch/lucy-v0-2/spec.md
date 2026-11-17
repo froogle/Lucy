@@ -2,7 +2,7 @@
 
 Status: ready-for-agent
 
-Synthesised from a grilling session on build tickets 34, 35, 38 and 41 (2026-11-16), the [v0.1 spec](../lucy-v0-1/spec.md) as amended that day, `GLOSSARY.md` and ADRs 0001–0008 (0007 and 0008 are new). Vocabulary follows the glossary, including the new terms **Hand-off** and **Input dialog**. Building starts once v0.1 acceptance (build ticket 24) passes. Tickets 01–05 are the Hand-off and 06–07 the screen; 04 also needs v0.1's Input dialog (build ticket 34), and 06 needs the Omarchy Plugin (build ticket 35).
+Synthesised from a grilling session on build tickets 34, 35, 38 and 41 (2026-11-16), the [v0.1 spec](../lucy-v0-1/spec.md) as amended that day, `GLOSSARY.md` and ADRs 0001–0008 (0007 and 0008 are new). Vocabulary follows the glossary, including the new terms **Hand-off** and **Input dialog**. Building starts once v0.1 acceptance (build ticket 24) passes. Tickets 01–05 are the Hand-off, 06, 07 and 10 the screen, 08 finding files and 09 a Delegate fix. Slice 1 is 01, 06, 08 and 09 (09 first, as it blocks every Authoring build); 03 reuses 08's walker. Amended by a second grilling session (2026-11-17); 04 also needs v0.1's Input dialog (build ticket 34), and 06 needs the Omarchy Plugin (build ticket 35).
 
 ## Problem Statement
 
@@ -50,6 +50,9 @@ The second is anything that needs her to see the screen. She can open YouTube an
 26. As a user, I want the Hand-off to use my Claude's default model, so that it behaves like Claude does for me.
 27. As a user, I want the risk documented that tools I've already allowed in my Claude settings (an email tool, say) run without asking, so that I know what I'm opting into.
 28. As a user, I want the Hand-off to use my subscription the same way Lucy's own `claude` does, with the subscription guard applied, so that I'm never billed by accident.
+49. As a user, I want to answer Claude's closing offer ("want me to apply the fix?") with "tell Claude yes, go ahead", even at a later Session, and have it carry on the same conversation, so that it keeps its context.
+50. As a user, I want a Hand-off to see the environment my login shell sets up (tokens my MCP servers read), so that my integrations work under Lucy as they do in my terminal.
+51. As a user, I want a permission request Claude makes after the Session ended raised at my next Session, so that the work isn't thrown away.
 
 ### Seeing and acting on the screen
 
@@ -59,7 +62,7 @@ The second is anything that needs her to see the screen. She can open YouTube an
 32. As a user, I want her to look only when my request needs it, so that she isn't watching my screen otherwise.
 33. As a user, I want the first look in each Session to need my spoken yes ("I need to look at your screen. Okay?"), so that I know a screenshot is about to leave my machine.
 34. As a user, I want a "looking" mark on the Indicator whenever she takes another look, so that I always know.
-35. As a user, I want screenshots never logged, saved to disk or sent over the public socket, and gone with the Session transcript, so that what's on my screen doesn't linger.
+35. As a user, I want screenshots never logged, written anywhere but the Session transcript or sent over the public socket, and gone when that transcript is deleted at Session end (or at lucyd's next start after a crash), so that what's on my screen doesn't linger.
 36. As a user, I want a setting that turns screen access off entirely, so that I can opt out.
 37. As a user, I want a click on anything that reads as send, buy, pay, delete, submit, post or confirm to need my spoken yes, so that a misclick or a malicious page can't make her do something risky.
 38. As a user, I want that risky-word list editable in config, so that I can add words that matter to me.
@@ -68,6 +71,9 @@ The second is anything that needs her to see the screen. She can open YouTube an
 41. As a user, I want her to ask through the Input dialog, rather than guess, when the next step needs something typed, so that she doesn't fill in wrong details.
 42. As a user, I want text on the screen treated as untrusted, so that a web page can't steer her.
 43. As a Plugin author, I want the screen tools to live in the desktop Plugin, so that a GNOME or KDE Plugin can provide them its own way.
+52. As a user, I want a key press that reads as risky (Enter to send, say) checked the same way as a click, so that she can't send something by keyboard without my yes.
+53. As a user, I want the text actually under a click checked against the risky words, not only her description of it, and a click on something she can't read asked about first, so that the check doesn't rest on the model.
+54. As a user, when she can't read a page because the browser's accessibility is off, I want her to tell me and offer to open the browser's accessibility settings, so that I can fix it once.
 
 ### Finding files
 
@@ -87,7 +93,8 @@ The second is anything that needs her to see the screen. She can open YouTube an
   - A bare name is searched for under configured roots (`[handoff] roots`, default `~`, three levels deep), git repos first.
   - Several matches mean Lucy asks which one; none means she says so and nothing starts.
   - No folder means `~`.
-- **The process:** the user's real `claude`, using their own settings sources and MCP config. It is not isolated and not under Landlock, and the subscription guard's environment scrub still applies. It runs on the user's default model, in the resolved folder. Lucy's relay is added as an extra MCP server for the Delegate tools and the permission tool. It runs in Claude's default permission mode with `--permission-prompt-tool` pointing at Lucy's permission tool.
+- **The process:** the user's real `claude`, using their own settings sources and MCP config. It is not isolated and not under Landlock, and the subscription guard's environment scrub still applies. It runs on the user's default model, in the resolved folder.
+  - **Environment:** at the start of each Hand-off lucyd runs `$SHELL -lic 'env -0'` and captures the result, so the user's login and interactive shell exports are there. It removes the billing variables from that environment itself and starts `claude` directly with it, so a shell startup file can't undo the guard. If the capture fails or takes over 5 s, lucyd falls back to its own environment and logs that (never the values). Lucy's relay is added as an extra MCP server for the Delegate tools and the permission tool. It runs in Claude's default permission mode with `--permission-prompt-tool` pointing at Lucy's permission tool.
 - **Delegate tools for a Hand-off:**
   - `report_progress {text}`: notifications only, as in Authoring.
   - `ask_user {question}`: spoken when nobody is speaking.
@@ -95,7 +102,8 @@ The second is anything that needs her to see the screen. She can open YouTube an
   - The permission tool.
   - There is no `submit_plugin` and no `cannot`. The Hand-off ends when Claude's turn ends.
 - **Permission tool:** suspends the call while Lucy speaks "Claude wants to {description}. Okay?". The description comes from Claude's request. The full tool name and input go to a notification. The answer goes through the same local yes-phrase match as every Confirmation. Anything else is a deny returned to Claude.
-- **Results:** when Claude's turn ends, the fast tier speaks a one-to-three-sentence summary of the final message, and the full message goes to a notification. With no Session open, the notification goes out and the summary is offered at the next Session start, through the same keep-for-next-Session path Authoring uses for its questions and Approvals. Parked questions work the same way.
+- **Results:** when Claude's turn ends, the fast tier speaks a one-to-three-sentence summary of the final message, and the full message goes to a notification. With no Session open, the notification goes out and the summary is offered at the next Session start, through the same keep-for-next-Session path Authoring uses for its questions and Approvals. Parked questions work the same way, and so do permission requests: one made with no Session open sends a notification at once and is asked at the next Session, while the budget clock keeps running.
+- **Continuing:** `hand_to_claude` takes `continue` (bool). The fast tier sets it when the user is replying to Claude's last result. lucyd keeps the most recent finished Hand-off's conversation id and folder in its state dir, so it survives a restart, and resumes it with `--resume <id>` in that folder, with a fresh budget. With nothing to continue, Lucy says so and nothing starts. While a Hand-off runs, `continue` gets the queue offer like any second request.
 - **Session while running:** Listening with the silence timer paused and a "working" mark on the Indicator. It is a separate mark from Authoring's "building" mark, and both can show.
 - **Limits:**
   - One Hand-off at a time, separate from Authoring's queue. A second request offers to queue, with a queue of one.
@@ -108,20 +116,23 @@ The second is anything that needs her to see the screen. She can open YouTube an
 ### Screen access (ADR 0008)
 
 - **Desktop Plugin tools** (added to the Omarchy Plugin):
-  - `screenshot_for_model {window?}`: the screen or one window as an MCP image result.
+  - `screenshot_for_model {window?}`: the focused monitor or one window as an MCP image result, scaled down by the Plugin to the model's image size limit.
   - `click {x, y, describe, button?}`
   - `type {text}`
-  - `key {combo}`
+  - `key {combo, describe}`: `describe` is required for every key, harmless ones included.
   - `scroll {x, y, direction, amount}`
-- **How they act:** coordinates are in screenshot pixels. Input goes through Wayland's virtual-pointer and virtual-keyboard protocols, never `ydotool`.
+  - `text_at {x, y}`: the probe (ticket 10). It returns the accessible name, text and role under the point through AT-SPI, or nothing. The core calls it; it is never listed to the model.
+- **How they act:** coordinates are in screenshot pixels, and the Plugin maps them back to real pixels, so the core never deals with scaling. Input goes through Wayland's virtual-pointer and virtual-keyboard protocols, never `ydotool`.
 - **The loop:** the Session model looks, acts and looks again through ordinary tool calls. There is no loop in Lucy's core, and no new Provider kind.
-- **Core: image passthrough.** Proxied Plugin tool results may carry MCP image content through to the Thinking Provider. Images never go to logs, state files, notifications or the public socket.
+- **Core: image passthrough.** Proxied Plugin tool results may carry MCP image content through to the Thinking Provider. Images never go to logs, state files, notifications or the public socket. They exist on disk only inside the Session's `claude` transcript, which is deleted at Session end. At start, lucyd sweeps any of its own Session transcripts left behind by a crash.
 - **Core: the first look.** The first screen tool call in a Session needs a Confirmation ("I need to look at your screen. Okay?"). A decline returns `declined` and holds for the rest of the Session. Later calls show a "looking" mark on the Indicator (a `state` flag added within protocol 1).
 - **Core: the switch.** `[screen] enabled` (default true). When false, the screen tools are left out of the tool list.
-- **Core: risky clicks.** Before forwarding `click`, lucyd matches `describe` against `[screen] risky_words` (default send, buy, pay, delete, submit, post, confirm), and against the AT-SPI text at the point once AT-SPI is added. A match needs a Confirmation spoken from `describe`. The match is local and never asked of the model.
-- **Core: password fields.** `type` is refused when the focused element is a password field, by AT-SPI role where available. The refusal tells the model to use `ask_typed` or the Plugin's credential path instead.
-- **How Plugins mark these tools:** screen tools are marked in the Manifest so the core knows which calls count as a look and which `click` gets the risk check. The Manifest shape for that mark is settled when ticket 06 is built: one new hash-covered field, owned by that ticket.
-- AT-SPI for exact targets and the risk check is a later addition. v0.2 starts with screenshots only.
+- **Core: risky clicks and keys.** Before forwarding `click` or `key`, lucyd matches `describe` against `[screen] risky_words` (default send, buy, pay, delete, submit, post, confirm). A `type` whose text ends in a newline counts as a key press and needs the same check. A match needs a Confirmation spoken from `describe`. The match is local and never asked of the model.
+- **Core: the text under a click (ticket 10).** Before forwarding `click`, lucyd also calls the Plugin's probe and matches its text against `risky_words`. If the probe returns nothing (a terminal, a canvas app, a browser with accessibility off), the click needs a Confirmation spoken from `describe`: an unreadable target fails closed. Until ticket 10 lands, the check covers mistakes, not a hostile model, because `describe` is the model's own words.
+- **Browser accessibility (ticket 10).** Lucy doesn't turn accessibility on herself. At the first click in a Session where the probe finds a browser on the AT-SPI bus with an empty page tree, she says "I can't read the page in {browser}, so I'll ask before each click. Want me to open {browser}'s accessibility settings?". On a yes she opens `brave://accessibility` (or `chrome://accessibility`) in a new tab of that browser. She offers at most once per Session.
+- **Plugin: password fields (ticket 10).** The desktop Plugin refuses `type` when the focused element is a password field, by AT-SPI role. The refusal tells the model to use `ask_typed` or the Plugin's credential path. When the focused element can't be found, `type` goes ahead and the Plugin logs that the check couldn't run. The model never holds the user's secrets (they go through the Input dialog), so this stops a mistake, not a leak.
+- **How AT-SPI finds the point:** on Wayland, apps report AT-SPI positions relative to their own window, so the Plugin subtracts the window's origin (from `hyprctl clients -j`) and hit-tests in window coordinates, one level at a time. It follows focus events to know the focused element. Coverage is GTK3, Qt, Electron and Chromium-family browsers with accessibility on; GTK4 is unreliable; terminals, canvas and Xwayland apps return nothing.
+- **How Plugins mark these tools:** one new hash-covered field per tool in the Manifest, `screen = "look" | "click" | "key" | "probe"`, owned by ticket 06. A `look` tool triggers the first-look Confirmation and the "looking" mark. A `click` or `key` tool must carry `describe` and gets the risk check. A `probe` tool is called by the core and never listed to the model.
 
 ### Finding files
 
@@ -147,13 +158,18 @@ The second is anything that needs her to see the screen. She can open YouTube an
   - The queue of one.
   - The "working" flag.
   - Nothing private on the bus.
+  - A parked permission request, asked at the next Session.
+  - `continue` resuming the last Hand-off's id and folder, including after a lucyd restart, and with nothing to continue.
+- **Hand-off environment:** a fake `$SHELL` whose `env -0` output sets a token and `ANTHROPIC_API_KEY`: the token reaches `claude`, the key doesn't; a shell that hangs falls back after 5 s.
 - **Hand-off against the fake `claude`:** with `Harness::with_thinking`, check that the real adapter starts `claude` with the user's settings sources, `--permission-prompt-tool`, the relay as an extra MCP server and the subscription-guard environment, and that it leaves the transcript in place. A live opt-in check against real `claude` is manual, because it spends the subscription.
 - **Screen tools, in the Omarchy Plugin:** a new `Screen` trait inside the Plugin (capture, pointer, keyboard) with a fake in its MCP tests, since Wayland's virtual-input protocols can't be faked from outside. A manual check on real Hyprland covers the protocols.
 - **Screen core, in the lucyd harness:** the fixture Plugin gains an image-returning tool and a click tool. The tests cover:
   - The image reaches the model, and never the logs, state dir or bus.
   - The first-look Confirmation, its decline holding for the Session, and the "looking" flag.
-  - `describe` against the risk list, including a custom list.
+  - `describe` against the risk list for `click`, `key` and a newline-ending `type`, including a custom list.
   - `[screen] enabled = false`.
+  - The probe's text matched against the list; an empty probe asks; the probe is never listed to the model.
+  - A leftover Session transcript swept at start.
 - **Prior art:** `tests/authoring.rs` (scripted Delegate, parked questions, budget, cancel); `tests/confirmation.rs`; `tests/subscription_guard.rs` (real adapter against the fake `claude`); the news Plugin's MCP support harness.
 
 ## Out of Scope
@@ -162,7 +178,8 @@ The second is anything that needs her to see the screen. She can open YouTube an
 - Attaching to a Claude the user already has running (Herdr).
 - An override list that forces a Confirmation on tools the user's Claude settings already allow.
 - Driving the browser over the Chrome DevTools Protocol.
-- AT-SPI targeting (a later addition, see above).
+- AT-SPI targeting: clicking an element by its accessible identity rather than by screenshot pixels. AT-SPI is used in v0.2 only for the risk check and the password check.
+- Turning on a browser's accessibility for the user.
 - A separate vision Provider.
 - Screen tools for GNOME, KDE or other desktops.
 - Undoing a wrong click beyond looking again and reporting it.
@@ -170,5 +187,6 @@ The second is anything that needs her to see the screen. She can open YouTube an
 ## Further Notes
 
 - ADR 0007 partly reopens ADR 0005's rejection of `--permission-prompt-tool`. ADR 0005 still holds for Lucy's own tools. The Hand-off case is argued there.
+- AT-SPI findings behind ticket 10 (2026-11-17): on Wayland, screen-coordinate hit-testing doesn't work, so the Plugin converts to window coordinates; Chromium-family browsers expose an empty tree until accessibility is on (`org.a11y.Status IsEnabled` is false on this machine); Rust support is the `atspi` crate on zbus.
 - Screenshots go to the Thinking Provider's vendor. The first-look Confirmation says so in plain words.
 - Moved from v0.1 build tickets 38 and 41, which now point here.

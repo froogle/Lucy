@@ -6,9 +6,12 @@ Privacy. The first look in each Session needs a spoken Confirmation ("I need to 
 
 Clicks. The runtime can't know what a button does, and screen content is untrusted input that can carry a prompt injection. So `click` takes a required `describe` ("the Play button on the third video"). The runtime asks for a Confirmation when that text, or the text under the point read through AT-SPI where it is available, matches a fixed, configurable list of risky words (send, buy, pay, delete, submit, post, confirm). The match is made locally. The model never decides whether a click is risky. Typing into a password field is refused: secrets go through the Input dialog to the tool that needs them, never through the screen.
 
+_Amended 2026-11-17._ `describe` is the model's own words, so on its own the check catches mistakes, not a hostile model. The text under the point is therefore checked too, through a probe tool in the desktop Plugin that the core calls before every click and never lists to the model. When the probe can't read the target (a terminal, a canvas app, a browser with accessibility off) the click needs a Confirmation: an unreadable target fails closed. `key` carries a `describe` and gets the same word check, because Enter can send as surely as a click. The password check lives in the desktop Plugin, which can see the focused element, and lets typing through when it can't tell, because the model never holds the user's secrets: the check prevents a mistake, not a leak. Lucy never turns a browser's accessibility on herself; when it is off she says so and offers to open the browser's own setting. Screenshots exist on disk only inside the Session's `claude` transcript, which is deleted at Session end and swept at lucyd's next start after a crash.
+
 ## Considered Options
 
-- Accessibility tree (AT-SPI) only: exact targets, but Chromium and Electron need accessibility turned on and many apps expose little. Kept as a later addition for exact targets and for the risk check.
+- Accessibility tree (AT-SPI) only: exact targets, but Chromium and Electron need accessibility turned on and many apps expose little. Kept as a later addition for exact targets; used from v0.2 for the risk check and the password check.
+- A `describe`-only risk check, with AT-SPI left for later: simpler, but the model would decide which clicks are risky in all but name.
 - Chrome DevTools Protocol: exact for the browser, but the browser must run with a debugging port that any local program can drive.
 - A separate vision Provider: not needed while the Thinking Provider reads images.
 - No Confirmation for screen actions, or a Confirmation for every click: the first trusts the model with risk, the second makes the feature unusable.
