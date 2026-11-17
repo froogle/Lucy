@@ -19,7 +19,7 @@ Spec: [v0.2](../spec.md), Finding files. Stories 44–48.
 
 **Seams:** owns the `find_files`, `show_files` and `open_file` Built-in tools, the `[files]` config section, and `show_items` and `open_file` on the `Launcher` adapter (`FakeLauncher` records them). Ticket 03's Hand-off folder search also walks `~`. Whichever of 03 and 08 is built second reuses the other's walker rather than writing a second one.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -37,3 +37,5 @@ Spec: [v0.2](../spec.md), Finding files. Stories 44–48.
 - [ ] Once, by hand on Omarchy: "show me my naval conference files in Documents" opens Nautilus on `1921 Naval Conference`, highlighted
 
 ## Comments
+
+2026-11-17: built in slice 1 (`lucy-v0-2-slice-1`). `~` comes from a new `Adapters.home`. `.gitignore` files aren't honoured; hidden files are skipped along with hidden folders. `open_file` follows symlinks before the roots check and accepts folders. The walker takes a depth limit (`Search::depth`) for 03. Hand check left: on Omarchy, "show me my naval conference files in Documents" opens Nautilus on `1921 Naval Conference`, highlighted.

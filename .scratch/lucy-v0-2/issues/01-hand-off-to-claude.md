@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Hand-off. ADR 0007. Stories 1–3, 6–8, 12, 16, 17, 
 
 **Seams:** owns the `hand_to_claude` Built-in tool, the Hand-off Delegate kind, the permission tool (02 makes it ask), the `[handoff]` config section, the login-shell environment capture and the rule that Lucy's transcript deletion skips a Hand-off. Uses the Delegate relay and tokens, and the subscription guard.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -29,3 +29,5 @@ Spec: [v0.2](../spec.md), Hand-off. ADR 0007. Stories 1–3, 6–8, 12, 16, 17, 
 - [ ] Once, by hand with real `claude`: "tell Claude to list my Linear tickets" (or another integration the user has)
 
 ## Comments
+
+2026-11-17: built in slice 1 (`lucy-v0-2-slice-1`). The Hand-off always runs `claude` with the subscription guard, ignoring `[tiers]` and the `program` override. There's no `[handoff]` section yet, since nothing in 01 needs a setting. A second request is refused until 11. A dead Hand-off notifies its exit status and last stderr line. Hand check left: "tell Claude to list my Linear tickets" with real `claude`.
