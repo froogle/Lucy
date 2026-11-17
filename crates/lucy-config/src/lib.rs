@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub session: Session,
     pub desktop: Desktop,
+    pub files: Files,
     /// `[providers.<name>]`: the Thinking Providers the tiers can name.
     pub providers: BTreeMap<String, Provider>,
     pub tiers: Tiers,
@@ -43,6 +44,7 @@ impl Default for Config {
         Config {
             session: Session::default(),
             desktop: Desktop::default(),
+            files: Files::default(),
             providers: BTreeMap::from([
                 ("claude-fast".to_owned(), claude(Tier::Fast)),
                 ("claude-advanced".to_owned(), claude(Tier::Advanced)),
@@ -564,6 +566,34 @@ pub struct Desktop {
     /// appended. Unset, Lucy uses `uwsm app --` when uwsm is running and
     /// `gio launch` otherwise.
     pub launcher: Option<Vec<String>>,
+}
+
+/// `[files]`: where `find_files` looks.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Files {
+    /// The folders searched; `~` is the user's home.
+    pub roots: Vec<PathBuf>,
+    /// Folder and file names left out, besides hidden ones.
+    pub skip: Vec<String>,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Files {
+            roots: vec![PathBuf::from("~")],
+            skip: [
+                "node_modules",
+                "target",
+                ".cache",
+                ".git",
+                "venv",
+                "__pycache__",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        }
+    }
 }
 
 /// `$XDG_CONFIG_HOME/lucy/config.toml`, falling back to `~/.config`.
