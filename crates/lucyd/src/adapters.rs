@@ -53,7 +53,18 @@ pub enum ThinkingEvent {
     Unavailable(String),
     /// The model process ended while the SessionModel was still open. Lucy
     /// opens a new one once and resends the Turn in progress.
-    Died,
+    Died(Exit),
+    /// The model ended the Turn with an error; the text is its message.
+    Failed(String),
+}
+
+/// How a model process ended, as far as lucyd could see.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Exit {
+    /// `None` when it couldn't be waited for.
+    pub status: Option<std::process::ExitStatus>,
+    /// The last lines it wrote to stderr, oldest first; empty when they aren't kept.
+    pub stderr: Vec<String>,
 }
 
 /// A `rate_limit_event` from `claude`.
@@ -117,6 +128,12 @@ pub trait Thinking: Send + Sync {
     ///
     /// A reason ready to speak, with the fix.
     fn check(&self, provider: &Provider) -> Result<(), String>;
+
+    /// The executable a Delegate of `provider` runs, past any mise shim, if found.
+    /// Blocking.
+    fn executable(&self, _provider: &Provider) -> Option<std::path::PathBuf> {
+        None
+    }
 
     /// Starts a Delegate's model process, as `open` starts a Session's.
     /// It has the CLI's own file and shell tools, works in `workspace.dir`,

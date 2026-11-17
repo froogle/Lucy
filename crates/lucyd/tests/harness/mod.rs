@@ -596,6 +596,21 @@ fn write_desktop_entry(dir: &Path, file_name: &str, keys: &str) -> PathBuf {
     path
 }
 
+/// Writes an executable script from a child, so no fd of ours leaks into it.
+pub fn write_script(path: &Path, script: &str) {
+    let written = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
+            "sh",
+        ])
+        .arg(script)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(written.success());
+}
+
 pub fn wait_until<T>(what: &str, mut found: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + WAIT;
     loop {
@@ -815,7 +830,7 @@ impl FakeThinking {
     }
 
     pub fn dies(&self) {
-        self.send(ThinkingEvent::Died);
+        self.send(ThinkingEvent::Died(lucyd::adapters::Exit::default()));
     }
 
     pub fn rate_limit(&self, limit: RateLimit) {
@@ -967,6 +982,9 @@ impl Thinking for FakeThinking {
     ) -> Box<dyn SessionModel> {
         let delegate = &self.delegate;
         delegate.opened.lock().unwrap().push(provider.clone());
+        if let Some(real) = delegate.real.lock().unwrap().clone() {
+            return real.open_delegate(provider, events, relay, instructions, workspace);
+        }
         *delegate.events.lock().unwrap() = Some(events);
         *delegate.relay.lock().unwrap() = Some(relay);
         *delegate.instructions.lock().unwrap() = Some(instructions);
@@ -987,6 +1005,7 @@ pub struct FakeDelegate {
     instructions: Arc<Mutex<Option<String>>>,
     workspace: Arc<Mutex<Option<Workspace>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
+    real: Arc<Mutex<Option<Arc<dyn Thinking>>>>,
 }
 
 impl FakeDelegate {
@@ -1000,7 +1019,13 @@ impl FakeDelegate {
             instructions: Arc::default(),
             workspace: Arc::default(),
             opened: Arc::default(),
+            real: Arc::default(),
         }
+    }
+
+    /// Opens later Delegates on `real`, a real adapter, while the Session stays scripted.
+    pub fn open_on(&self, real: Arc<dyn Thinking>) {
+        *self.real.lock().unwrap() = Some(real);
     }
 
     pub fn opened(&self) -> Vec<Provider> {

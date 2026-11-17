@@ -7,12 +7,14 @@
 mod harness;
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
-use harness::{next_state, stage_plugin, wait_until, Harness};
+use harness::{next_state, stage_plugin, wait_until, write_script, Harness};
 use lucy_config::{Config, Tier};
 use lucy_ipc::{error_code, Client, State};
-use lucyd::adapters::NotificationKind;
+use lucyd::adapters::{Notification, NotificationKind};
+use lucyd::claude::Claude;
 use rmcp::model::CallToolResult;
 use serde_json::json;
 
@@ -886,4 +888,98 @@ fn the_submitted_build_and_tests_run_sandboxed_away_from_the_users_files() {
     let said = text(&result);
     assert!(!said.contains("my diary"), "{said}");
     assert!(said.contains("Permission denied"), "{said}");
+}
+
+const SUBSCRIPTION_UNCHECKED: &str = "\
+[providers.claude-fast]\nkind = \"claude\"\nallow_api_key = true\n\
+[providers.claude-advanced]\nkind = \"claude\"\nallow_api_key = true\n";
+
+const STDERR_TEST: &str = "a_delegate_that_dies_gives_up_with_its_stderr_tail_in_the_notification";
+
+fn delegate_on_fake_claude(lucyd: &Harness, bin: &Path, turn: &str) {
+    let fake = bin.join("claude");
+    write_script(
+        &fake,
+        &format!(
+            "#!/bin/sh\n\
+             case \"$1\" in --version) echo '2.1.323 (Claude Code)'; exit 0;; esac\n\
+             until [ -e go ]; do sleep 0.01; done\n\
+             {turn}\n"
+        ),
+    );
+    let work = bin.join("work");
+    lucyd
+        .thinking
+        .delegate
+        .open_on(Arc::new(Claude::new(fake, work)));
+}
+
+fn build_gives_up(turn: &str) -> Notification {
+    let lucyd = Harness::with_config(SUBSCRIPTION_UNCHECKED);
+    let bin = tempfile::tempdir().unwrap();
+    delegate_on_fake_claude(&lucyd, bin.path(), turn);
+    let _events = request_photos(&lucyd);
+    end_mid_build(&lucyd);
+
+    std::fs::write(lucyd.plugins_dir().join(".build/photos/go"), "").unwrap();
+
+    let shown = lucyd.notifier.next_notification_of(NotificationKind::Build);
+    assert_eq!(shown.summary, "Lucy couldn't build the photos Plugin");
+    lucyd.assert_nothing_private_on_bus();
+    shown
+}
+
+#[test]
+fn a_delegate_that_dies_gives_up_with_its_stderr_tail_in_the_notification() {
+    let shown = build_gives_up(
+        "echo 'mise starting' >&2\n\
+         echo 'mise ERROR Permission denied (os error 13)' >&2\n\
+         exit 1",
+    );
+
+    assert!(
+        shown
+            .body
+            .contains("mise ERROR Permission denied (os error 13)"),
+        "{}",
+        shown.body
+    );
+    assert!(shown.body.contains("exit status: 1"), "{}", shown.body);
+}
+
+#[test]
+fn a_dead_delegates_stderr_tail_and_exit_status_reach_lucyds_log_but_not_the_request() {
+    let run = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([STDERR_TEST, "--exact", "--nocapture"])
+        .output()
+        .unwrap();
+
+    let log =
+        String::from_utf8_lossy(&run.stderr).into_owned() + &String::from_utf8_lossy(&run.stdout);
+    assert!(run.status.success(), "{log}");
+    assert!(log.contains("1 passed"), "{log}");
+    assert!(
+        log.contains("mise starting\nmise ERROR Permission denied"),
+        "{log}"
+    );
+    assert!(log.contains("exit status: 1"), "{log}");
+    assert!(!log.contains(REQUEST), "{log}");
+    assert!(!log.contains("find the user's photos"), "{log}");
+}
+
+#[test]
+fn an_error_result_gives_up_with_its_message_not_stopped_unexpectedly() {
+    let shown = build_gives_up(
+        "read -r line\n\
+         echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\
+         \"result\":\"API Error: 401 invalid credentials\",\"session_id\":\"s1\"}'\n\
+         while read -r line; do :; done",
+    );
+
+    assert!(
+        shown.body.contains("API Error: 401 invalid credentials"),
+        "{}",
+        shown.body
+    );
+    assert!(!shown.body.contains("unexpectedly"), "{}", shown.body);
 }

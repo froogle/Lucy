@@ -42,6 +42,10 @@ impl Thinking for ByKind {
         self.adapter(provider).check(provider)
     }
 
+    fn executable(&self, provider: &Provider) -> Option<std::path::PathBuf> {
+        self.adapter(provider).executable(provider)
+    }
+
     fn open_delegate(
         &self,
         provider: &Provider,
@@ -93,6 +97,7 @@ mod tests {
             kind,
             model: None,
             allow_api_key: false,
+            program: None,
         }
     }
 
