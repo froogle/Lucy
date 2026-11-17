@@ -15,8 +15,8 @@ use lucy_config::credentials::CredentialStore;
 use lucy_config::{Config, Provider};
 use lucy_ipc::{Client, Event, StateEvent, Topic};
 use lucyd::adapters::{
-    Adapters, Clock, Launcher, Notification, NotificationAction, Notifier, RateLimit, Relay,
-    SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
+    Adapters, Clock, HandOff, Launcher, Notification, NotificationAction, Notifier, RateLimit,
+    Relay, SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
     ThinkingEvent, Timer, Tts, Workspace,
 };
 use lucyd::plugins::Environment;
@@ -545,6 +545,15 @@ impl Harness {
         }
     }
 
+    pub fn assert_not_on_bus(&self, texts: &[&str]) {
+        let lines = self.bus.lock().unwrap().clone();
+        for line in &lines {
+            for text in texts {
+                assert!(!line.contains(text), "{text:?} appeared on the bus: {line}");
+            }
+        }
+    }
+
     pub fn assert_no_level_on_bus(&self) {
         let bus = self.bus.lock().unwrap();
         let level = bus.iter().find(|line| line.contains(r#""method":"level""#));
@@ -769,6 +778,7 @@ pub struct FakeThinking {
     unhealthy: Arc<Mutex<HashMap<String, String>>>,
     failing_checks: Arc<Mutex<HashMap<String, String>>>,
     pub delegate: FakeDelegate,
+    pub hand_off: FakeDelegate,
 }
 
 impl FakeThinking {
@@ -776,6 +786,7 @@ impl FakeThinking {
         let (turns_tx, turns) = std_mpsc::channel();
         FakeThinking {
             delegate: FakeDelegate::new(),
+            hand_off: FakeDelegate::new(),
             turns_tx,
             turns: Arc::new(Mutex::new(turns)),
             events: Arc::default(),
@@ -994,6 +1005,29 @@ impl Thinking for FakeThinking {
             interrupts: Arc::default(),
         })
     }
+
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        let delegate = &self.hand_off;
+        delegate.opened.lock().unwrap().push(provider.clone());
+        if let Some(real) = delegate.real.lock().unwrap().clone() {
+            return real.open_hand_off(provider, events, relay, instructions, hand_off);
+        }
+        *delegate.events.lock().unwrap() = Some(events);
+        *delegate.relay.lock().unwrap() = Some(relay);
+        *delegate.instructions.lock().unwrap() = Some(instructions);
+        *delegate.hand_off.lock().unwrap() = Some(hand_off);
+        Box::new(FakeSessionModel {
+            turns: delegate.turns_tx.clone(),
+            interrupts: Arc::default(),
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -1004,6 +1038,7 @@ pub struct FakeDelegate {
     relay: Arc<Mutex<Option<Relay>>>,
     instructions: Arc<Mutex<Option<String>>>,
     workspace: Arc<Mutex<Option<Workspace>>>,
+    hand_off: Arc<Mutex<Option<HandOff>>>,
     opened: Arc<Mutex<Vec<Provider>>>,
     real: Arc<Mutex<Option<Arc<dyn Thinking>>>>,
 }
@@ -1018,6 +1053,7 @@ impl FakeDelegate {
             relay: Arc::default(),
             instructions: Arc::default(),
             workspace: Arc::default(),
+            hand_off: Arc::default(),
             opened: Arc::default(),
             real: Arc::default(),
         }
@@ -1073,12 +1109,29 @@ impl FakeDelegate {
         .unwrap()
     }
 
+    pub fn hand_off(&self) -> HandOff {
+        let opened = || self.hand_off.lock().unwrap().clone();
+        wait_until("a Hand-off to open", opened)
+    }
+
     pub fn turn_end(&self) {
+        self.send(ThinkingEvent::TurnEnd);
+    }
+
+    pub fn conversation(&self, conversation: &str) {
+        self.send(ThinkingEvent::Conversation(conversation.to_owned()));
+    }
+
+    pub fn answer(&self, conversation: &str, answer: &str) {
+        self.conversation(conversation);
+        self.send(ThinkingEvent::Final(answer.to_owned()));
+        self.send(ThinkingEvent::TurnEnd);
+    }
+
+    fn send(&self, event: ThinkingEvent) {
         let events = self.events.lock().unwrap();
         let events = events.as_ref().expect("a Delegate is open");
-        events
-            .send(ThinkingEvent::TurnEnd)
-            .expect("lucyd is reading the Delegate");
+        events.send(event).expect("lucyd is reading the Delegate");
     }
 
     fn relay(&self) -> Relay {

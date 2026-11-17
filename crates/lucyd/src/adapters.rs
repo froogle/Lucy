@@ -5,6 +5,7 @@
 //! An adapter keeps the sender it was handed alive for as long as the handle
 //! it returned (`SessionModel`, `Speaker`).
 
+use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,11 @@ pub enum ThinkingEvent {
     SentenceEnd,
     /// The model has finished the Turn.
     TurnEnd,
+    /// The model's final message for the Turn, sent just before `TurnEnd`.
+    Final(String),
+    /// The id the CLI keeps this conversation under, for `--resume`. Sent
+    /// once, when the CLI first names it.
+    Conversation(String),
     /// Where the subscription stands against its usage limits.
     RateLimit(RateLimit),
     /// The Provider can't be used. The text says why and how to fix it,
@@ -153,6 +159,25 @@ pub trait Thinking: Send + Sync {
         Box::new(InertSessionModel::new(events))
     }
 
+    /// Starts a Hand-off: the user's own CLI, with their own settings and
+    /// MCP servers plus `relay`, working in `hand_off.folder` with
+    /// `hand_off.env`. It is not sandboxed. Whatever its settings don't
+    /// allow goes to `relay`'s `PERMISSION_TOOL`. Its conversation is kept.
+    /// A Provider that can't take a Hand-off sends `Unavailable`.
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        let _ = (provider, relay, instructions, hand_off);
+        let reason = "This Provider can't take a Hand-off.".to_owned();
+        let _ = events.send(ThinkingEvent::Unavailable(reason));
+        Box::new(InertSessionModel::new(events))
+    }
+
     /// lucyd is stopping: ends every model process still open.
     /// It also ends what they keep on disk, as dropping each SessionModel would.
     fn shutdown(&self) {}
@@ -172,10 +197,29 @@ pub struct Workspace {
     pub readable: Vec<PathBuf>,
 }
 
+/// Where a Hand-off works and the environment it starts with.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HandOff {
+    pub folder: PathBuf,
+    /// The whole environment, before the subscription guard removes the
+    /// billing variables.
+    pub env: Vec<(OsString, OsString)>,
+}
+
+/// The tool on a Hand-off's relay that its CLI asks before doing anything
+/// the user's settings don't allow.
+pub const PERMISSION_TOOL: &str = "permission";
+
 pub(crate) struct Role {
     pub relay: Relay,
     pub instructions: String,
-    pub workspace: Option<Workspace>,
+    pub place: Place,
+}
+
+pub(crate) enum Place {
+    WorkDir,
+    Workspace(Workspace),
+    HandOff(HandOff),
 }
 
 /// The model process of one Session.
@@ -254,6 +298,7 @@ pub enum NotificationKind {
     Problem,
     Details,
     Build,
+    HandOff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

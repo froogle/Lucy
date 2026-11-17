@@ -10,6 +10,7 @@ pub mod codex;
 mod desktop;
 pub mod desktop_entries;
 mod files;
+mod hand_off;
 mod input;
 mod ipc;
 pub mod launcher;
@@ -113,6 +114,12 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         notifications::fallback(&buses.status, adapters.notifier.clone(), sessions.clone());
     runtime.spawn(fallback);
     let plugins_dir = plugin_paths.user.clone();
+    let hand_offs = hand_off::HandOffs::new(
+        &adapters,
+        relays.clone(),
+        plugin_env.clone(),
+        sessions.clone(),
+    );
     let plugin_host = plugins::Host::new(
         plugin_paths,
         sessions.clone(),
@@ -144,7 +151,10 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
                 persona: persona.clone(),
                 config_path,
             },
-            authoring.clone(),
+            runner::Delegates {
+                authoring: authoring.clone(),
+                hand_offs: hand_offs.clone(),
+            },
         )
         .run(),
     );
@@ -154,6 +164,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         persona,
         sessions.clone(),
         authoring,
+        hand_offs,
     ));
     runtime.spawn(ipc::serve(
         listener,

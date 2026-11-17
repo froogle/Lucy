@@ -69,7 +69,11 @@ fn read_turn(events: &mut mpsc::UnboundedReceiver<ThinkingEvent>, wait: Duration
             Ok(ThinkingEvent::Delta(delta)) => text.push_str(&delta),
             Ok(ThinkingEvent::SentenceEnd) => text.push('|'),
             Ok(ThinkingEvent::TurnEnd) => return text,
-            Ok(ThinkingEvent::RateLimit(_)) => {}
+            Ok(
+                ThinkingEvent::RateLimit(_)
+                | ThinkingEvent::Final(_)
+                | ThinkingEvent::Conversation(_),
+            ) => {}
             Ok(ThinkingEvent::Unavailable(reason)) => panic!("Provider unavailable: {reason}"),
             Ok(ThinkingEvent::Died(_)) => panic!("codex died: {text:?}"),
             Ok(ThinkingEvent::Failed(message)) => panic!("the Turn failed: {message}"),

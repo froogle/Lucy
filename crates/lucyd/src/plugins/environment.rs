@@ -23,8 +23,12 @@ impl Environment {
         )
     }
 
-    pub(super) fn var(&self, name: &str) -> Option<&OsStr> {
+    pub(crate) fn var(&self, name: &str) -> Option<&OsStr> {
         self.0.get(OsStr::new(name)).map(OsString::as_os_str)
+    }
+
+    pub(crate) fn vars(&self) -> Vec<(OsString, OsString)> {
+        self.0.clone().into_iter().collect()
     }
 
     pub(super) fn meets(&self, requires: &Requires) -> bool {

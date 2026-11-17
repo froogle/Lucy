@@ -61,6 +61,7 @@ fn read_turn(
             Ok(ThinkingEvent::SentenceEnd) => text.push('|'),
             Ok(ThinkingEvent::TurnEnd) => return (text, rate_limits),
             Ok(event @ ThinkingEvent::RateLimit(_)) => rate_limits.push(event),
+            Ok(ThinkingEvent::Final(_) | ThinkingEvent::Conversation(_)) => {}
             Ok(ThinkingEvent::Unavailable(reason)) => panic!("Provider unavailable: {reason}"),
             Ok(ThinkingEvent::Died(_)) => panic!("claude died: {text:?}"),
             Ok(ThinkingEvent::Failed(message)) => panic!("the Turn failed: {message}"),
@@ -320,7 +321,7 @@ fn start_unfinished_turn(
         while let Ok(event) = events.try_recv() {
             match event {
                 ThinkingEvent::Delta(delta) => text.push_str(&delta),
-                ThinkingEvent::RateLimit(_) => {}
+                ThinkingEvent::RateLimit(_) | ThinkingEvent::Conversation(_) => {}
                 other => panic!("unexpected {other:?}"),
             }
         }

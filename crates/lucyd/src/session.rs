@@ -4,6 +4,7 @@ use lucy_ipc::State;
 
 use crate::adapters::ThinkingEvent;
 use crate::authoring::Building;
+use crate::hand_off::Working;
 use crate::input::Dialog;
 use crate::model_text::INTERRUPTED;
 
@@ -23,6 +24,7 @@ pub enum Input {
     Withdrawn,
     Say(String),
     Building(Building),
+    Working(Working),
     Typed(Answer),
     Unshown(String),
 }
@@ -93,6 +95,7 @@ pub struct Session {
     yes_phrases: Vec<String>,
     cancel_phrases: Vec<String>,
     building: Building,
+    working: Working,
 }
 
 impl Session {
@@ -130,7 +133,10 @@ impl Session {
     }
 
     pub fn silence_timer_runs(&self) -> bool {
-        self.state() == State::Listening && !self.speaking && self.building != Building::Working
+        self.state() == State::Listening
+            && !self.speaking
+            && self.building != Building::Working
+            && self.working == Working::No
     }
 
     pub fn quiet(&self) -> bool {
@@ -256,7 +262,11 @@ impl Session {
                 outputs.extend(self.turn_finished());
                 outputs
             }
-            Input::Thinking(ThinkingEvent::RateLimit(_)) => vec![],
+            Input::Thinking(
+                ThinkingEvent::RateLimit(_)
+                | ThinkingEvent::Final(_)
+                | ThinkingEvent::Conversation(_),
+            ) => vec![],
             Input::Thinking(ThinkingEvent::Died(_) | ThinkingEvent::Failed(_)) => vec![],
             Input::Thinking(ThinkingEvent::Unavailable(reason)) => {
                 self.sentence = reason;
@@ -315,6 +325,10 @@ impl Session {
             }
             Input::Building(building) => {
                 self.building = building;
+                vec![]
+            }
+            Input::Working(working) => {
+                self.working = working;
                 vec![]
             }
             Input::Typed(answer) if self.state() == State::Typing => self.answered(answer),

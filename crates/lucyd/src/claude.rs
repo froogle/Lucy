@@ -14,12 +14,17 @@ use lucy_config::Provider;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::adapters::{Exit, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace};
+use crate::adapters::{
+    Exit, HandOff, Place, Relay, Role, SessionModel, Thinking, ThinkingEvent, Workspace,
+    PERMISSION_TOOL,
+};
 use crate::plugins::sandbox;
 use crate::sentences::Sentences;
 use crate::sync::Locked;
 
 const DELEGATE_TOOLS: &[&str] = &["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
+
+const HAND_OFF_SETTINGS: &str = "user,project,local";
 
 const INTERRUPT_ACK_WAIT: Duration = Duration::from_secs(1);
 
@@ -78,6 +83,11 @@ impl Claude {
     fn base_command(&self, program: &Path, provider: &Provider) -> Command {
         let mut command = Command::new(program);
         command.current_dir(&self.work_dir).stderr(Stdio::null());
+        self.guard_env(&mut command, provider);
+        command
+    }
+
+    fn guard_env(&self, command: &mut Command, provider: &Provider) {
         if let Some(config_dir) = &self.config_dir {
             command.env("CLAUDE_CONFIG_DIR", config_dir);
         }
@@ -86,6 +96,44 @@ impl Claude {
                 command.env_remove(name);
             }
         }
+    }
+
+    fn hand_off_command(
+        &self,
+        provider: &Provider,
+        relay: &Relay,
+        instructions: &str,
+        hand_off: &HandOff,
+        resume: Option<&str>,
+    ) -> Command {
+        let mcp_config = serde_json::json!({"mcpServers": {"lucy": {
+            "command": relay.program,
+            "args": relay.args,
+        }}});
+        let mut command = Command::new(self.program(provider));
+        command
+            .current_dir(&hand_off.folder)
+            .stderr(Stdio::null())
+            .env_clear()
+            .envs(hand_off.env.iter().map(|(name, value)| (name, value)));
+        self.guard_env(&mut command, provider);
+        command
+            .args(["-p", "--verbose"])
+            .args(["--input-format", "stream-json"])
+            .args(["--output-format", "stream-json"])
+            .arg("--include-partial-messages")
+            .arg("--mcp-config")
+            .arg(mcp_config.to_string())
+            .args(["--setting-sources", HAND_OFF_SETTINGS])
+            .arg("--permission-prompt-tool")
+            .arg(format!("mcp__lucy__{PERMISSION_TOOL}"))
+            .args(["--allowedTools", "mcp__lucy__*"])
+            .arg("--append-system-prompt")
+            .arg(instructions);
+        if let Some(session) = resume {
+            command.args(["--resume", session]);
+        }
+        command.stdin(Stdio::piped()).stdout(Stdio::piped());
         command
     }
 
@@ -239,10 +287,10 @@ impl Claude {
         let Role {
             relay,
             instructions,
-            workspace,
+            place,
         } = role;
-        let command = match workspace {
-            None => Ok(self.command(
+        let command = match place {
+            Place::WorkDir => Ok(self.command(
                 self.program(provider),
                 provider,
                 Some(relay),
@@ -250,8 +298,11 @@ impl Claude {
                 &[],
                 resume,
             )),
-            Some(workspace) => {
+            Place::Workspace(workspace) => {
                 self.delegate_command(provider, relay, instructions, workspace, resume)
+            }
+            Place::HandOff(hand_off) => {
+                Ok(self.hand_off_command(provider, relay, instructions, hand_off, resume))
             }
         };
         let mut child = match command.and_then(|mut command| command.spawn()) {
@@ -290,7 +341,9 @@ impl Claude {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 let value: Value = serde_json::from_str(&line).unwrap_or_default();
                 if let Some(id) = value["session_id"].as_str() {
-                    reader_run.kept(id);
+                    if reader_run.kept(id) {
+                        let _ = reader_events.send(ThinkingEvent::Conversation(id.to_owned()));
+                    }
                 }
                 if value["type"] == "control_response" {
                     let _ = acks_tx.send(value["response"]["subtype"] == "success");
@@ -393,10 +446,15 @@ impl Claude {
         role: Role,
     ) -> Box<dyn SessionModel> {
         let (inputs, inputs_rx) = std_mpsc::channel();
-        let cwd = role.workspace.as_ref().map_or(&self.work_dir, |w| &w.dir);
+        let (cwd, transcripts) = match &role.place {
+            Place::WorkDir => (&self.work_dir, Transcripts::Deleted),
+            Place::Workspace(workspace) => (&workspace.dir, Transcripts::Deleted),
+            Place::HandOff(hand_off) => (&hand_off.folder, Transcripts::Kept),
+        };
         let run = Arc::new(Run {
             process: Mutex::new(Process::Starting),
             conversations: Mutex::default(),
+            transcripts,
             config_dir: self.config_dir(),
             cwd: cwd.clone(),
         });
@@ -431,7 +489,7 @@ impl Thinking for Claude {
         let role = Role {
             relay,
             instructions,
-            workspace: None,
+            place: Place::WorkDir,
         };
         self.open_as(provider, events, role)
     }
@@ -447,7 +505,23 @@ impl Thinking for Claude {
         let role = Role {
             relay,
             instructions,
-            workspace: Some(workspace),
+            place: Place::Workspace(workspace),
+        };
+        self.open_as(provider, events, role)
+    }
+
+    fn open_hand_off(
+        &self,
+        provider: &Provider,
+        events: mpsc::UnboundedSender<ThinkingEvent>,
+        relay: Relay,
+        instructions: String,
+        hand_off: HandOff,
+    ) -> Box<dyn SessionModel> {
+        let role = Role {
+            relay,
+            instructions,
+            place: Place::HandOff(hand_off),
         };
         self.open_as(provider, events, role)
     }
@@ -481,16 +555,25 @@ enum Process {
 struct Run {
     process: Mutex<Process>,
     conversations: Mutex<Vec<String>>,
+    transcripts: Transcripts,
     config_dir: PathBuf,
     cwd: PathBuf,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Transcripts {
+    Deleted,
+    Kept,
+}
+
 impl Run {
-    fn kept(&self, id: &str) {
+    fn kept(&self, id: &str) -> bool {
         let mut conversations = self.conversations.locked();
-        if !conversations.iter().any(|kept| kept == id) {
+        let new = !conversations.iter().any(|kept| kept == id);
+        if new {
             conversations.push(id.to_owned());
         }
+        new
     }
 
     fn exit_status(&self) -> Option<ExitStatus> {
@@ -516,6 +599,9 @@ impl Run {
         if let Process::Running(mut child) = process {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        if self.transcripts == Transcripts::Kept {
+            return;
         }
         let project = self
             .config_dir
@@ -589,7 +675,15 @@ impl Stream {
                 .collect(),
             Some("result") => {
                 let mut events: Vec<_> = self.sentences.finish().into_iter().collect();
-                events.push(failure(&value).map_or(ThinkingEvent::TurnEnd, ThinkingEvent::Failed));
+                match failure(&value) {
+                    Some(message) => events.push(ThinkingEvent::Failed(message)),
+                    None => {
+                        if let Some(answer) = value["result"].as_str() {
+                            events.push(ThinkingEvent::Final(answer.to_owned()));
+                        }
+                        events.push(ThinkingEvent::TurnEnd);
+                    }
+                }
                 events
             }
             _ => vec![],
