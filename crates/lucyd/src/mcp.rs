@@ -326,7 +326,7 @@ impl ServerHandler for Tools {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let arguments = request.arguments.clone().unwrap_or_default();
         let (plugins, desktop, folders) = match self.grant()? {
@@ -342,7 +342,10 @@ impl ServerHandler for Tools {
             }
             Caller::HandOff(job) => {
                 let job = job.upgrade().ok_or_else(revoked)?;
-                let result = job.call(&request.name, &arguments).await;
+                let result = tokio::select! {
+                    result = job.call(&request.name, &arguments) => result,
+                    () = context.ct.cancelled() => Some(error("The call was cancelled.")),
+                };
                 return result.map(Into::into).ok_or_else(|| no_tool(&request.name));
             }
         };

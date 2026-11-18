@@ -733,3 +733,99 @@ fn a_hand_off_and_a_build_run_together_and_cancel_it_asks_which_one() {
     assert!(lucyd.client().status().unwrap().building);
     lucyd.thinking.assert_no_turn();
 }
+
+const QUESTION: &str = "Which team, LUC or OPS?";
+
+fn asked_while_away(
+    lucyd: &Harness,
+    tool: &'static str,
+    arguments: serde_json::Value,
+    kept: &str,
+) -> (Client, JoinHandle<Result<CallToolResult, String>>) {
+    let mut events = handed_off(lucyd, &lucyd.scratch());
+    let hand_off = lucyd.thinking.hand_off.clone();
+    hand_off.next_turn();
+    hand_off.conversation(CONVERSATION);
+    lucyd.client().end_session().unwrap();
+    until_state(&mut events, State::Idle);
+    let call = std::thread::spawn(move || hand_off.call_tool_with(tool, arguments));
+    while lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff)
+        .summary
+        != kept
+    {}
+    (events, call)
+}
+
+fn ask_user() -> serde_json::Value {
+    json!({"question": QUESTION})
+}
+
+fn dropped(call: &JoinHandle<Result<CallToolResult, String>>) {
+    wait_until("the stopped Hand-off's call to end", || {
+        call.is_finished().then_some(())
+    });
+}
+
+fn cancelled_with_its_ask_waiting(tool: &'static str, arguments: serde_json::Value, kept: &str) {
+    let lucyd = Harness::start();
+    let (mut events, call) = asked_while_away(&lucyd, tool, arguments, kept);
+    lucyd.start_speaking();
+    lucyd.client().start_session().unwrap();
+    until_state(&mut events, State::Listening);
+
+    lucyd.say("cancel it");
+
+    assert_eq!(lucyd.tts.next_sentence(), HAND_OFF_STOPPED);
+    dropped(&call);
+    lucyd.tts.finish_playing();
+    lucyd.barrier();
+    assert_eq!(lucyd.tts.sentences(), [HAND_OFF_STOPPED]);
+}
+
+#[test]
+fn cancel_it_drops_claudes_waiting_question() {
+    cancelled_with_its_ask_waiting("ask_user", ask_user(), "Claude has a question");
+}
+
+#[test]
+fn cancel_it_drops_claudes_waiting_permission_request() {
+    cancelled_with_its_ask_waiting(
+        "permission",
+        run_the_tests(),
+        "Claude is waiting for your permission",
+    );
+}
+
+fn out_of_time_with_its_ask_kept(tool: &'static str, arguments: serde_json::Value, kept: &str) {
+    let lucyd = Harness::with_config("[handoff]\nbudget_mins = 30\n");
+    let (_events, call) = asked_while_away(&lucyd, tool, arguments, kept);
+
+    lucyd.clock.advance(Duration::from_secs(30 * 60));
+
+    dropped(&call);
+    lucyd.client().start_session().unwrap();
+    let report = lucyd.thinking.next_turn();
+    assert!(report.contains("ran out of time"), "{report}");
+    lucyd.barrier();
+    assert!(
+        lucyd.tts.sentences().is_empty(),
+        "{:?}",
+        lucyd.tts.sentences()
+    );
+}
+
+#[test]
+fn a_hand_off_out_of_time_drops_its_question_kept_for_the_next_session() {
+    out_of_time_with_its_ask_kept("ask_user", ask_user(), "Claude has a question");
+}
+
+#[test]
+fn a_hand_off_out_of_time_drops_its_permission_request_kept_for_the_next_session() {
+    out_of_time_with_its_ask_kept(
+        "permission",
+        run_the_tests(),
+        "Claude is waiting for your permission",
+    );
+}

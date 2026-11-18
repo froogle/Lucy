@@ -165,6 +165,7 @@ impl HandOffs {
             hand_offs: Arc::downgrade(self),
             state: Mutex::default(),
             cancelled: Notify::new(),
+            ended: watch::Sender::new(false),
         });
         tokio::spawn(job.clone().run());
         job
@@ -383,6 +384,7 @@ pub struct Job {
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
     cancelled: Notify,
+    ended: watch::Sender<bool>,
 }
 
 #[derive(Default)]
@@ -453,6 +455,14 @@ impl Job {
     }
 
     pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
+        let mut ended = self.ended.subscribe();
+        tokio::select! {
+            result = self.answer(name, arguments) => result,
+            _ = ended.wait_for(|ended| *ended) => Some(error("Lucy has stopped this Hand-off.")),
+        }
+    }
+
+    async fn answer(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
         Some(match name {
             "report_progress" => {
                 self.show("Claude is working", string(arguments, "text"));
@@ -677,6 +687,7 @@ impl Job {
             (state.model.take(), state.token.take())
         };
         drop((model, token));
+        self.ended.send_replace(true);
         if let Some(hand_offs) = self.hand_offs.upgrade() {
             hand_offs.finished(self);
         }
