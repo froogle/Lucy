@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::future::Future;
 use std::pin::pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use atspi::events::object::StateChangedEvent;
@@ -10,6 +10,7 @@ use atspi::proxy::proxy_ext::ProxyExt;
 use atspi::zbus;
 use atspi::{AccessibilityConnection, CoordType, ObjectRefOwned, Role, State};
 use futures_lite::StreamExt;
+use tokio::task::JoinHandle;
 
 use crate::screen::{Element, FocusedWindow, InWindow, Page, Pid, WindowPoint};
 
@@ -27,34 +28,48 @@ const MOST_SEARCHED: usize = 4000;
 
 const POPUPS: [Role; 4] = [Role::Menu, Role::PopupMenu, Role::Window, Role::ToolTip];
 
+const FOCUS_POISONED: &str = "no thread panics while holding the focus";
+
 type Reading<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
-/// The element that last took the keyboard focus, as AT-SPI's focus events
-/// tell it once [`FocusEvents::follow`] has started following them.
 #[derive(Default)]
 pub struct FocusEvents {
     last: Arc<Mutex<Option<ObjectRefOwned>>>,
-    following: OnceLock<()>,
+    following: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl FocusEvents {
-    /// Starts following focus events for as long as the Plugin runs, the first time only.
     pub fn follow(&self) {
-        self.following.get_or_init(|| {
-            let last = self.last.clone();
-            tokio::spawn(async move {
-                if let Err(e) = follow(&last).await {
-                    eprintln!("omarchy: AT-SPI's focus events can't be followed: {e}");
-                }
-            });
+        self.keep_following(|last| async move {
+            if let Err(e) = follow(&last).await {
+                eprintln!("omarchy: AT-SPI's focus events can't be followed: {e}");
+            }
         });
     }
 
-    fn last(&self) -> Option<ObjectRefOwned> {
-        self.last
+    fn keep_following<F, H>(&self, listen: F)
+    where
+        F: FnOnce(Arc<Mutex<Option<ObjectRefOwned>>>) -> H,
+        H: Future<Output = ()> + Send + 'static,
+    {
+        let mut following = self.following.lock().expect(FOCUS_POISONED);
+        if following.as_ref().is_some_and(|task| !task.is_finished()) {
+            return;
+        }
+        *following = Some(tokio::spawn(listen(self.last.clone())));
+    }
+
+    #[cfg(test)]
+    fn stopped(&self) -> bool {
+        self.following
             .lock()
-            .expect("the focus lock is never poisoned")
-            .clone()
+            .expect(FOCUS_POISONED)
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
+    }
+
+    fn last(&self) -> Option<ObjectRefOwned> {
+        self.last.lock().expect(FOCUS_POISONED).clone()
     }
 }
 
@@ -67,7 +82,7 @@ async fn follow(last: &Mutex<Option<ObjectRefOwned>>) -> Reading<()> {
             continue;
         };
         if changed.state == State::Focused && changed.enabled {
-            *last.lock().expect("the focus lock is never poisoned") = Some(changed.item);
+            *last.lock().expect(FOCUS_POISONED) = Some(changed.item);
         }
     }
     Ok(())
@@ -432,6 +447,50 @@ mod tests {
         ];
 
         assert_eq!(frame(&tops, "Inbox"), Some(&tops[0].node));
+    }
+
+    fn started(events: &FocusEvents, starts: &Arc<Mutex<u32>>, ends: bool) {
+        let starts = starts.clone();
+        events.keep_following(move |_| async move {
+            *starts.lock().expect("the count lock holds") += 1;
+            if !ends {
+                std::future::pending::<()>().await;
+            }
+        });
+    }
+
+    async fn ended(events: &FocusEvents) {
+        while !events.stopped() {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[test]
+    fn following_starts_once_while_it_runs() {
+        let starts = Arc::new(Mutex::new(0));
+        reading(async {
+            let events = FocusEvents::default();
+            started(&events, &starts, false);
+            tokio::task::yield_now().await;
+            started(&events, &starts, false);
+            tokio::task::yield_now().await;
+        });
+
+        assert_eq!(*starts.lock().expect("the count lock holds"), 1);
+    }
+
+    #[test]
+    fn following_starts_again_after_it_stops() {
+        let starts = Arc::new(Mutex::new(0));
+        reading(async {
+            let events = FocusEvents::default();
+            started(&events, &starts, true);
+            ended(&events).await;
+            started(&events, &starts, true);
+            ended(&events).await;
+        });
+
+        assert_eq!(*starts.lock().expect("the count lock holds"), 2);
     }
 
     fn descended(answers: &[(&str, Option<&str>)]) -> (String, Vec<String>) {
