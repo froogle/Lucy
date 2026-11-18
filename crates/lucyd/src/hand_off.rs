@@ -62,8 +62,9 @@ struct Jobs {
 }
 
 struct Request {
-    request: String,
+    task: String,
     folder: PathBuf,
+    budget: Duration,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -103,15 +104,29 @@ impl HandOffs {
         arguments: &JsonObject,
         folders: &Search,
     ) -> CallToolResult {
-        let request = string(arguments, "request");
-        if request.trim().is_empty() {
+        let task = string(arguments, "request");
+        if task.trim().is_empty() {
             return error("request must be what the user wants Claude to do, in their words.");
         }
         let folder = match self.folder(&string(arguments, "folder"), folders).await {
             Ok(folder) => folder,
             Err(refused) => return error(refused),
         };
-        let request = Request { request, folder };
+        let budget = match lucy_config::load(&self.config_path) {
+            Ok(config) => config.handoff.budget_mins.to_duration(),
+            Err(e) => {
+                return error(format!(
+                    "Nothing has started: Lucy {}. Tell the user, and that they can fix the file \
+                     and ask again.",
+                    e.to_string().lines().next().unwrap_or_default()
+                ))
+            }
+        };
+        let request = Request {
+            task,
+            folder,
+            budget,
+        };
         let mut jobs = self.jobs.locked();
         if let Some(running) = &jobs.current {
             let running = running.request.clone();
@@ -136,7 +151,7 @@ impl HandOffs {
             return error(format!(
                 "Claude is still working on \"{running}\", and \"{}\" is queued after it. Tell \
                  the user Lucy can't take another until those are done.",
-                queued.request
+                queued.task
             ));
         }
         if arguments.get("queue").and_then(serde_json::Value::as_bool) != Some(true) {
@@ -155,13 +170,10 @@ impl HandOffs {
     }
 
     fn start(self: &Arc<Self>, request: Request) -> Arc<Job> {
-        let budget = lucy_config::load(&self.config_path)
-            .map(|config| config.handoff)
-            .unwrap_or_default();
         let job = Arc::new(Job {
-            request: request.request,
+            request: request.task,
             folder: request.folder,
-            budget: Duration::from_secs_f64(budget.budget_mins * 60.0),
+            budget: request.budget,
             hand_offs: Arc::downgrade(self),
             state: Mutex::default(),
             cancelled: Notify::new(),

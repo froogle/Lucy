@@ -347,6 +347,40 @@ fn a_folder_that_isnt_there_is_refused() {
     assert!(lucyd.thinking.hand_off.opened().is_empty());
 }
 
+fn hand_off_with_config(config: &str) -> (bool, String) {
+    let lucyd = Harness::start();
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    lucyd.say(&format!("tell Claude to {REQUEST}"));
+    lucyd.thinking.next_turn();
+    until_state(&mut events, State::Thinking);
+    std::fs::write(lucyd.config_path(), config).unwrap();
+
+    let called = hand_to_claude(&lucyd, json!({"request": REQUEST}));
+
+    assert!(lucyd.thinking.hand_off.opened().is_empty());
+    called
+}
+
+#[test]
+fn a_budget_that_isnt_a_positive_number_of_minutes_is_refused_and_nothing_starts() {
+    for budget in ["-5", "nan", "0"] {
+        let (failed, said) = hand_off_with_config(&format!("[handoff]\nbudget_mins = {budget}\n"));
+
+        assert!(failed, "{budget}: {said}");
+        assert!(said.contains("config.toml"), "{budget}: {said}");
+    }
+}
+
+#[test]
+fn a_config_that_cant_be_read_is_said_and_nothing_starts() {
+    let (failed, said) = hand_off_with_config("[handoff\n");
+
+    assert!(failed, "{said}");
+    assert!(said.contains("config.toml"), "{said}");
+}
+
 #[test]
 fn the_session_stays_open_in_listening_while_claude_works() {
     let lucyd = Harness::with_config("[session]\nsilence_timeout_secs = 30\n");
