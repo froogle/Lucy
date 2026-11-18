@@ -7,12 +7,10 @@ mod harness;
 
 use std::thread::JoinHandle;
 
-use harness::{next_state, Harness};
+use harness::{next_state, Harness, SCREEN_QUESTION};
 use lucy_ipc::{Client, State};
 use rmcp::model::CallToolResult;
 use serde_json::{json, Value};
-
-const ASKED: &str = "I need to look at and use your screen. That lasts until Lucy restarts. Okay?";
 
 const HANDS: &str = "name = \"hands\"\n\
      version = \"0.1.0\"\n\
@@ -40,7 +38,7 @@ const HANDS: &str = "name = \"hands\"\n\
      handles = \"scrolling\"\n\
      screen = \"scroll\"\n";
 
-const SEND: &str = r#"{"x": 610, "y": 410}"#;
+const POINT: &str = r#"{"x": 610, "y": 410}"#;
 
 type Call = JoinHandle<Result<CallToolResult, String>>;
 
@@ -83,17 +81,10 @@ fn forwarded(result: &CallToolResult, tool: &str) -> Value {
     serde_json::from_str(arguments).unwrap()
 }
 
-fn asked(lucyd: &Harness, events: &mut Client) -> String {
-    while next_state(events).state != State::Confirming {}
-    let prompt = lucyd.tts.next_sentence();
-    lucyd.tts.finish_playing();
-    prompt
-}
-
 fn screen_allowed(lucyd: &Harness, events: &mut Client) {
     let scroll = json!({"x": 1, "y": 1, "direction": "down", "amount": 3});
     let call = model_calls(lucyd, "scroll", scroll.clone());
-    assert_eq!(asked(lucyd, events), ASKED);
+    assert_eq!(lucyd.asked(events), SCREEN_QUESTION);
     lucyd.say("yes");
     assert_eq!(forwarded(&call.join().unwrap().unwrap(), "scroll"), scroll);
 }
@@ -117,10 +108,10 @@ fn unasked(lucyd: &Harness, tool: &str, arguments: Value) -> Value {
 fn a_click_with_no_look_before_it_asks_the_one_question() {
     let lucyd = with_hands("");
     let mut events = session(&lucyd);
-    let click: Value = serde_json::from_str(SEND).unwrap();
+    let click: Value = serde_json::from_str(POINT).unwrap();
     let call = model_calls(&lucyd, "click", click.clone());
 
-    assert_eq!(asked(&lucyd, &mut events), ASKED);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
     lucyd.say("yes");
 
     assert_eq!(forwarded(&call.join().unwrap().unwrap(), "click"), click);
@@ -131,7 +122,7 @@ fn a_no_reaches_nothing_and_the_next_call_asks_again() {
     let lucyd = with_hands("");
     let mut events = session(&lucyd);
     let call = model_calls(&lucyd, "key", json!({"combo": "Return"}));
-    assert_eq!(asked(&lucyd, &mut events), ASKED);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
     lucyd.say("no");
     let declined = call.join().unwrap().unwrap();
     assert!(text(&declined).starts_with("declined"), "{declined:?}");
@@ -140,7 +131,7 @@ fn a_no_reaches_nothing_and_the_next_call_asks_again() {
 
     let again = model_calls(&lucyd, "key", json!({"combo": "Return"}));
 
-    assert_eq!(asked(&lucyd, &mut events), ASKED);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
     lucyd.say("yes");
     assert_eq!(
         forwarded(&again.join().unwrap().unwrap(), "key"),
@@ -158,7 +149,7 @@ fn after_a_yes_clicking_send_typing_and_keys_run_unasked() {
     assert_eq!(unasked(&lucyd, "type", typed.clone()), typed);
     let enter = json!({"combo": "Return"});
     assert_eq!(unasked(&lucyd, "key", enter.clone()), enter);
-    let send: Value = serde_json::from_str(SEND).unwrap();
+    let send: Value = serde_json::from_str(POINT).unwrap();
     assert_eq!(unasked(&lucyd, "click", send.clone()), send);
 }
 
@@ -168,7 +159,7 @@ fn a_config_still_naming_risky_words_loads_and_asks_nothing_more() {
     let mut events = session(&lucyd);
     screen_allowed(&lucyd, &mut events);
 
-    let send: Value = serde_json::from_str(SEND).unwrap();
+    let send: Value = serde_json::from_str(POINT).unwrap();
 
     assert_eq!(unasked(&lucyd, "click", send.clone()), send);
 }
@@ -198,12 +189,40 @@ fn a_screen_tool_that_always_confirms_still_asks_after_the_screen_yes() {
     lucyd.approve("hands");
     let mut events = session(&lucyd);
     screen_allowed(&lucyd, &mut events);
-    let click: Value = serde_json::from_str(SEND).unwrap();
+    let click: Value = serde_json::from_str(POINT).unwrap();
 
     let call = model_calls(&lucyd, "click", click.clone());
 
-    assert_eq!(asked(&lucyd, &mut events), "Shall I click there?");
+    assert_eq!(lucyd.asked(&mut events), "Shall I click there?");
     lucyd.say("yes");
     assert_eq!(forwarded(&call.join().unwrap().unwrap(), "click"), click);
-    assert_eq!(lucyd.tts.sentences(), [ASKED, "Shall I click there?"]);
+    assert_eq!(
+        lucyd.tts.sentences(),
+        [SCREEN_QUESTION, "Shall I click there?"]
+    );
+}
+
+#[test]
+fn a_later_session_that_only_clicks_shows_the_looking_mark() {
+    let lucyd = with_hands("");
+    let mut events = session(&lucyd);
+    screen_allowed(&lucyd, &mut events);
+    lucyd.thinking.turn_end();
+    events.end_session().unwrap();
+    while next_state(&mut events).state != State::Idle {}
+    let mut events = session(&lucyd);
+
+    let click: Value = serde_json::from_str(POINT).unwrap();
+    assert_eq!(unasked(&lucyd, "click", click.clone()), click);
+
+    lucyd.thinking.turn_end();
+    let mut marked = false;
+    loop {
+        let state = next_state(&mut events);
+        marked |= state.looking && state.state == State::Thinking;
+        if state.state == State::Listening {
+            break;
+        }
+    }
+    assert!(marked, "the click never showed the looking mark");
 }

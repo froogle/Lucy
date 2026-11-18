@@ -10,14 +10,14 @@ use std::path::Path;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use harness::{next_state, Harness};
+use harness::{next_state, Harness, SCREEN_QUESTION};
 use lucy_ipc::{Client, State, StateEvent};
 use rmcp::model::CallToolResult;
 use serde_json::json;
 
 const SCREEN: &str = "iVBORw0KGgpMdWN5U2NyZWVuU2VjcmV0";
 const SCREEN_TEXT: &str = "LucyScreenSecret";
-const ASKED: &str = "I need to look at and use your screen. That lasts until Lucy restarts. Okay?";
+const ANSWER_WAIT_SECS: u64 = 3;
 
 const EYES: &str = "name = \"eyes\"\n\
      version = \"0.1.0\"\n\
@@ -75,16 +75,10 @@ fn text(result: &CallToolResult) -> String {
         .collect()
 }
 
-fn asked_and_answered(lucyd: &Harness, events: &mut Client, answer: &str) {
-    while next_state(events).state != State::Confirming {}
-    assert_eq!(lucyd.tts.next_sentence(), ASKED);
-    lucyd.tts.finish_playing();
-    lucyd.say(answer);
-}
-
-fn first_look_allowed(lucyd: &Harness, events: &mut Client) {
+fn screen_allowed(lucyd: &Harness, events: &mut Client) {
     let call = model_looks(lucyd);
-    asked_and_answered(lucyd, events, "yes");
+    assert_eq!(lucyd.asked(events), SCREEN_QUESTION);
+    lucyd.say("yes");
     let result = call.join().unwrap().unwrap();
     assert_eq!(images(&result), [SCREEN], "{result:?}");
 }
@@ -105,7 +99,7 @@ fn times_asked(lucyd: &Harness) -> usize {
         .tts
         .sentences()
         .iter()
-        .filter(|said| *said == ASKED)
+        .filter(|said| *said == SCREEN_QUESTION)
         .count()
 }
 
@@ -128,7 +122,8 @@ fn after_a_yes_the_plugins_image_reaches_the_model() {
     let mut events = session(&lucyd);
     let call = model_looks(&lucyd);
 
-    asked_and_answered(&lucyd, &mut events, "yes");
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
 
     let result = call.join().unwrap().unwrap();
     assert_eq!(result.is_error, Some(false), "{}", text(&result));
@@ -145,7 +140,7 @@ fn the_image_reaches_nothing_but_the_model() {
     }
     let lucyd = with_eyes("");
     let mut events = session(&lucyd);
-    first_look_allowed(&lucyd, &mut events);
+    screen_allowed(&lucyd, &mut events);
     let again = lucyd.thinking.call_tool("eyes__look").unwrap();
     assert_eq!(images(&again), [SCREEN]);
     lucyd.thinking.delta("You've got a terminal open.");
@@ -202,31 +197,80 @@ fn a_no_lasts_only_until_the_next_screen_call() {
     let lucyd = with_eyes("");
     let mut events = session(&lucyd);
     let call = model_looks(&lucyd);
-    asked_and_answered(&lucyd, &mut events, "no");
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("no");
     declined_then_heard(&lucyd, call);
 
     let again = model_looks(&lucyd);
 
-    asked_and_answered(&lucyd, &mut events, "yes");
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
     assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
     assert_eq!(times_asked(&lucyd), 2);
 }
 
 #[test]
 fn no_answer_counts_as_a_no_and_is_not_remembered() {
-    let lucyd = with_eyes("");
+    let lucyd = with_eyes(&format!(
+        "[confirmation]\ntimeout_secs = {ANSWER_WAIT_SECS}\n"
+    ));
     let mut events = session(&lucyd);
     let call = model_looks(&lucyd);
-    assert_eq!(next_state(&mut events).state, State::Confirming);
-    assert_eq!(lucyd.tts.next_sentence(), ASKED);
-    lucyd.tts.finish_playing();
-    lucyd.clock.advance_once_set(Duration::from_secs(8));
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd
+        .clock
+        .advance_once_set(Duration::from_secs(ANSWER_WAIT_SECS));
     declined_then_heard(&lucyd, call);
 
     let again = model_looks(&lucyd);
 
-    asked_and_answered(&lucyd, &mut events, "yes");
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
     assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
+}
+
+#[test]
+fn cutting_in_on_the_question_counts_as_a_no_and_is_not_remembered() {
+    let lucyd = with_eyes("");
+    let mut events = session(&lucyd);
+    let call = model_looks(&lucyd);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    assert_eq!(lucyd.tts.next_sentence(), SCREEN_QUESTION);
+
+    lucyd.start_speaking();
+    lucyd.say("hang on, why?");
+    lucyd.stop_speaking();
+    lucyd.tts.finish_playing();
+
+    declined_then_heard(&lucyd, call);
+    let again = model_looks(&lucyd);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
+    assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
+    assert_eq!(times_asked(&lucyd), 2);
+}
+
+#[test]
+fn ending_the_session_on_the_question_counts_as_a_no_and_is_not_remembered() {
+    let lucyd = with_eyes("");
+    let mut events = session(&lucyd);
+    let call = model_looks(&lucyd);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+
+    events.end_session().unwrap();
+
+    assert_eq!(next_state(&mut events).state, State::Idle);
+    let unless_the_relay_was_cut_off = call.join().unwrap();
+    if let Ok(result) = unless_the_relay_was_cut_off {
+        assert!(text(&result).starts_with("declined"), "{result:?}");
+        assert!(images(&result).is_empty());
+    }
+    let mut events = session(&lucyd);
+    let again = model_looks(&lucyd);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
+    assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
+    assert_eq!(times_asked(&lucyd), 2);
 }
 
 fn end(lucyd: &Harness, mut events: Client) {
@@ -239,7 +283,7 @@ fn end(lucyd: &Harness, mut events: Client) {
 fn a_yes_carries_into_the_next_session_unasked() {
     let lucyd = with_eyes("");
     let mut events = session(&lucyd);
-    first_look_allowed(&lucyd, &mut events);
+    screen_allowed(&lucyd, &mut events);
     end(&lucyd, events);
 
     let _events = session(&lucyd);
@@ -253,14 +297,15 @@ fn a_yes_carries_into_the_next_session_unasked() {
 fn a_restart_of_lucyd_asks_again() {
     let lucyd = with_eyes("");
     let mut events = session(&lucyd);
-    first_look_allowed(&lucyd, &mut events);
+    screen_allowed(&lucyd, &mut events);
     end(&lucyd, events);
     let lucyd = lucyd.restart();
 
     let mut events = session(&lucyd);
     let call = model_looks(&lucyd);
 
-    asked_and_answered(&lucyd, &mut events, "yes");
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
     assert_eq!(images(&call.join().unwrap().unwrap()), [SCREEN]);
 }
 
@@ -268,7 +313,7 @@ fn a_restart_of_lucyd_asks_again() {
 fn a_later_look_is_unasked_and_shows_the_looking_mark() {
     let lucyd = with_eyes("");
     let mut events = session(&lucyd);
-    first_look_allowed(&lucyd, &mut events);
+    screen_allowed(&lucyd, &mut events);
     lucyd.thinking.turn_end();
     states_until_listening(&mut events);
     lucyd.say("and what about now?");

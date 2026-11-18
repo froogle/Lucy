@@ -40,7 +40,7 @@ use crate::status::ChangeBus;
 use crate::sync::{Locked, POISONED};
 pub use environment::Environment;
 pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
-use manifest::{Manifest, ScreenUse, ToolEntry};
+use manifest::{Manifest, ToolEntry};
 
 const MAX_QUESTIONS: usize = 10;
 
@@ -241,10 +241,22 @@ impl Host {
             barge_ins: watch::Sender::new(0),
             finished: Mutex::default(),
             screen,
-            looks: watch::Sender::new(0),
+            screen_uses: watch::Sender::new(0),
         });
         *self.session.locked() = Arc::downgrade(&tools);
         tools
+    }
+
+    async fn ask_for_screen(&self) -> bool {
+        let mut allowed = self.screen_allowed.lock().await;
+        if !*allowed {
+            let question = Question {
+                prompt: SCREEN_PROMPT.into(),
+                expects: Expects::Yes,
+            };
+            *allowed = runner::ask(&self.commands, question, None).await == Some(Answer::Yes);
+        }
+        *allowed
     }
 
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
@@ -785,7 +797,7 @@ pub struct SessionTools {
     barge_ins: watch::Sender<u64>,
     finished: Mutex<Vec<String>>,
     screen: lucy_config::Screen,
-    looks: watch::Sender<u64>,
+    screen_uses: watch::Sender<u64>,
 }
 
 impl SessionTools {
@@ -793,8 +805,8 @@ impl SessionTools {
         self.barge_ins.send_modify(|count| *count += 1);
     }
 
-    pub fn looks(&self) -> watch::Receiver<u64> {
-        self.looks.subscribe()
+    pub fn screen_uses(&self) -> watch::Receiver<u64> {
+        self.screen_uses.subscribe()
     }
 
     fn offers(&self, tool: &ToolEntry) -> bool {
@@ -802,18 +814,6 @@ impl SessionTools {
             None => true,
             Some(_) => self.screen.enabled,
         }
-    }
-
-    async fn screen_allowed(&self) -> bool {
-        let mut allowed = self.host.screen_allowed.lock().await;
-        if !*allowed {
-            let question = Question {
-                prompt: SCREEN_PROMPT.into(),
-                expects: Expects::Yes,
-            };
-            *allowed = runner::ask(&self.host.commands, question, None).await == Some(Answer::Yes);
-        }
-        *allowed
     }
 
     pub fn take_finished(&self) -> Vec<String> {
@@ -919,13 +919,11 @@ impl SessionTools {
                 Err(unreadable) => return Some(mcp::error(unreadable)),
             }
         }
-        if let Some(screen) = entry.screen {
-            if !self.screen_allowed().await {
+        if entry.screen.is_some() {
+            if !self.host.ask_for_screen().await {
                 return Some(mcp::text(SCREEN_DECLINED));
             }
-            if screen == ScreenUse::Look {
-                self.looks.send_modify(|looks| *looks += 1);
-            }
+            self.screen_uses.send_modify(|uses| *uses += 1);
         }
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));

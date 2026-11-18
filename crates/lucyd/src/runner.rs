@@ -134,7 +134,7 @@ pub struct Runner {
     working: watch::Receiver<Working>,
     hand_offs: Arc<HandOffs>,
     parked: VecDeque<Parked>,
-    looks: Option<watch::Receiver<u64>>,
+    screen_uses: Option<watch::Receiver<u64>>,
     looking: bool,
 }
 
@@ -182,7 +182,7 @@ impl Runner {
             working: hand_offs.working(),
             hand_offs,
             parked: VecDeque::new(),
-            looks: None,
+            screen_uses: None,
             looking: false,
         }
     }
@@ -255,10 +255,10 @@ impl Runner {
         let config = lucy_config::load(&self.files.config_path);
         let screen = config.as_ref().cloned().unwrap_or_default().screen;
         let plugin_tools = self.plugin_host.open_session(screen).await;
-        self.looks = Some(plugin_tools.looks());
+        self.screen_uses = Some(plugin_tools.screen_uses());
         self.session_loop(id, started, config, plugin_tools.clone())
             .await;
-        self.looks = None;
+        self.screen_uses = None;
         self.looking = false;
         self.hand_offs.show_still_working();
         self.keep_unsaid_for_next_session();
@@ -393,7 +393,7 @@ impl Runner {
             } else {
                 tokio::select! {
                 biased;
-                Ok(()) = or_pending(self.looks.as_mut().map(watch::Receiver::changed)) => {
+                Ok(()) = or_pending(self.screen_uses.as_mut().map(watch::Receiver::changed)) => {
                     self.looking = true;
                     self.publish(session.state(), Some(id));
                     continue;
