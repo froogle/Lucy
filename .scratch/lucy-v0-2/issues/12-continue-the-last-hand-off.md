@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Hand-off (Continuing). Story 49.
 
 **Seams:** owns the `continue` field on `hand_to_claude` and the last-Hand-off record in the state dir. Uses the Hand-off queue (owned by 11).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -24,3 +24,5 @@ Spec: [v0.2](../spec.md), Hand-off (Continuing). Story 49.
 - [ ] Nothing about the id or folder reaches the bus (`assert_nothing_private_on_bus`)
 
 ## Comments
+
+2026-11-18: built in slice 3 (`lucy-v0-2-slice-3`). The record is `hand-off.toml` in lucyd's state dir, written at every ending that has a conversation id (finished, failed, cancelled, over budget) and deleted when the latest Hand-off ended without one. An unreadable record is logged without its contents, and the user is told Lucy couldn't read it. The queue offer tells the model to call again with the same arguments plus `queue: true`, so `continue` survives; a queued `continue` reads the record when it starts, and shows "Claude didn't start" if there's nothing to continue. `Harness::restart` is new.
