@@ -212,6 +212,7 @@ fn spawn_detached(command: &[&str]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -237,15 +238,19 @@ mod tests {
             )
             .unwrap();
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !out.exists() {
-            assert!(Instant::now() < deadline, "the launcher never ran");
-            std::thread::sleep(Duration::from_millis(10));
-        }
         assert_eq!(
-            std::fs::read_to_string(&out).unwrap(),
+            read_once_written(&out),
             "--flag\n/usr/share/applications/firefox.desktop\n"
         );
+    }
+
+    fn read_once_written(out: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !out.exists() {
+            assert!(Instant::now() < deadline, "the command never ran");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::read_to_string(out).unwrap()
     }
 
     #[test]
@@ -346,9 +351,26 @@ mod tests {
 
     #[test]
     fn a_named_browser_opens_its_page_in_a_new_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("args");
+        let browser = dir.path().join("browser");
+        std::fs::write(
+            &browser,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}.tmp && mv {0}.tmp {0}\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        SystemLauncher
+            .open_in_browser(browser.to_str().unwrap(), "brave://settings/accessibility")
+            .unwrap();
+
         assert_eq!(
-            page_command("brave", "brave://settings/accessibility"),
-            ["brave", "--new-window", "brave://settings/accessibility"]
+            read_once_written(&out),
+            "--new-window\nbrave://settings/accessibility\n"
         );
     }
 
