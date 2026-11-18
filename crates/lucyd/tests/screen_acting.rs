@@ -292,3 +292,25 @@ fn screen_access_turned_off_drops_every_acting_tool() {
         "{names:?}"
     );
 }
+
+#[test]
+fn a_risky_click_on_a_tool_that_always_confirms_asks_once() {
+    let lucyd = Harness::start();
+    let confirming = HANDS.replacen(
+        "screen = \"click\"\n",
+        "screen = \"click\"\nconfirm = true\n",
+        1,
+    );
+    lucyd.install_plugin("hands", &confirming);
+    lucyd.approve("hands");
+    let mut events = session(&lucyd);
+    let click = json!({"x": 10, "y": 20, "describe": "the Send button"});
+    let call = model_calls(&lucyd, "click", click.clone());
+
+    assert_eq!(asked(&lucyd, &mut events), "Shall I click the Send button?");
+    lucyd.say("yes");
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(forwarded(&result, "click"), click);
+    assert_eq!(lucyd.tts.sentences(), ["Shall I click the Send button?"]);
+}
