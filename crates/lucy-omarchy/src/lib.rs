@@ -36,8 +36,8 @@ use serde_json::{json, Value};
 
 use hyprland::{lua_string, Address, Hyprland, Window};
 pub use screen::{
-    Acted, Button, Captured, Combo, Direction, Element, Image, InWindow, Modifier, Pid, Point,
-    Probed, Region, Screen, Wayland, WindowPoint,
+    Acted, Button, Captured, Combo, Direction, Element, Focus, FocusedWindow, Image, InWindow,
+    Modifier, Pid, Point, Probed, Region, Screen, Wayland, WindowPoint,
 };
 use settings::Named;
 
@@ -88,6 +88,13 @@ struct Look {
 const MOST_NOTCHES: u64 = 25;
 
 const MOST_TYPED: usize = 4000;
+
+const PASSWORD_ROLE: &str = "password text";
+
+const INTO_A_PASSWORD: &str = "The focused field is a password field, and I never type into \
+     one. Never put a password or other secret on the screen: a Plugin that needs one asks \
+     for it as its credential, and anything else the user types themselves through \
+     ask_typed.";
 
 const LOOK_FIRST: &str = "x and y are pixels in your last screenshot_for_model image, and      there isn't one yet: look first.";
 
@@ -241,8 +248,44 @@ impl Omarchy {
                 "{c:?} can't be typed; for keys like Escape or arrows use the key tool"
             ));
         }
+        if self.focused_role().await.as_deref() == Ok(PASSWORD_ROLE) {
+            return Err(INTO_A_PASSWORD.into());
+        }
         self.screen.type_text(text.to_owned()).await?;
         Ok(json!({"done": "typed"}))
+    }
+
+    /// The focused element's role, or why it can't be found, which is logged.
+    async fn focused_role(&self) -> Result<String, String> {
+        let found = match self.focused_window().await {
+            Ok(window) => self.screen.focused_role(window).await,
+            Err(e) => Err(e),
+        };
+        if let Err(why) = &found {
+            eprintln!("omarchy: the password check couldn't run, so typing anyway: {why}");
+        }
+        found
+    }
+
+    async fn focused_window(&self) -> Result<FocusedWindow, String> {
+        let active = self
+            .hyprland
+            .active_window()
+            .await?
+            .ok_or("no window has the focus")?;
+        let windows = self.hyprland.windows().await?;
+        let window = windows
+            .into_iter()
+            .find(|window| window.address == active)
+            .ok_or("the focused window isn't listed")?;
+        if window.xwayland {
+            return Err("the focused window is an Xwayland one, outside AT-SPI's reach".into());
+        }
+        let pid = u32::try_from(window.pid).map_err(|_| "the focused window has no PID")?;
+        Ok(FocusedWindow {
+            pid: Pid(pid),
+            title: window.title,
+        })
     }
 
     async fn text_at(&self, args: &JsonObject) -> Result<Value, String> {
