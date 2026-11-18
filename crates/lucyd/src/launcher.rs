@@ -5,12 +5,16 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::adapters::Launcher;
+use crate::desktop_entries;
 
 pub struct SystemLauncher;
 
 impl Launcher for SystemLauncher {
     fn open_url(&self, url: &str) -> io::Result<()> {
-        xdg_open(url)
+        let dirs = desktop_entries::xdg_dirs();
+        let default = default_browser(&dirs);
+        let command = browser_command(url, default.as_deref(), &dirs);
+        spawn_app(command.iter().map(String::as_str))
     }
 
     fn show_items(&self, paths: &[PathBuf]) -> io::Result<()> {
@@ -57,13 +61,7 @@ impl Launcher for SystemLauncher {
     }
 
     fn open_in_browser(&self, browser: &str, page: &str) -> io::Result<()> {
-        let mut command = if uwsm_is_running() {
-            vec!["uwsm", "app", "--"]
-        } else {
-            vec![]
-        };
-        command.extend([browser, page]);
-        spawn_detached(&command)
+        spawn_app(page_command(browser, page))
     }
 }
 
@@ -107,13 +105,81 @@ fn file_uri(path: &Path) -> String {
 }
 
 fn xdg_open(target: &str) -> io::Result<()> {
-    let mut command = if uwsm_is_running() {
-        vec!["uwsm", "app", "--", "xdg-open"]
+    spawn_app(["xdg-open", target])
+}
+
+fn spawn_app<'a>(command: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
+    let mut app = if uwsm_is_running() {
+        vec!["uwsm", "app", "--"]
     } else {
-        vec!["xdg-open"]
+        vec![]
     };
-    command.push(target);
-    spawn_detached(&command)
+    app.extend(command);
+    spawn_detached(&app)
+}
+
+const OMARCHY_WRAPPER: &str = "omarchy-launch-browser";
+
+fn browser_command(url: &str, default: Option<&str>, dirs: &[PathBuf]) -> Vec<String> {
+    let browser = default
+        .and_then(|entry| program(entry, dirs))
+        .filter(|program| program != OMARCHY_WRAPPER);
+    match browser {
+        Some(browser) => page_command(&browser, url).map(str::to_owned).to_vec(),
+        None => {
+            log::debug!("no program found for the default browser {default:?}");
+            vec!["xdg-open".to_owned(), url.to_owned()]
+        }
+    }
+}
+
+fn page_command<'a>(browser: &'a str, page: &'a str) -> [&'a str; 3] {
+    [browser, "--new-window", page]
+}
+
+fn default_browser(dirs: &[PathBuf]) -> Option<String> {
+    let default = answer("xdg-settings", &["get", "default-web-browser"])?;
+    if program(&default, dirs).as_deref() == Some(OMARCHY_WRAPPER) {
+        return answer("omarchy-cmd-default-browser", &[]);
+    }
+    Some(default)
+}
+
+fn answer(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let answer = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            (!answer.is_empty()).then_some(answer)
+        }
+        Ok(output) => {
+            log::debug!("{program} found no default browser: {}", output.status);
+            None
+        }
+        Err(e) => {
+            log::debug!("{program} didn't run: {e}");
+            None
+        }
+    }
+}
+
+fn program(entry: &str, dirs: &[PathBuf]) -> Option<String> {
+    let text = dirs
+        .iter()
+        .find_map(|dir| std::fs::read_to_string(dir.join(entry)).ok())?;
+    let mut in_entry = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+        } else if let Some(exec) = line.strip_prefix("Exec=").filter(|_| in_entry) {
+            return exec.split_whitespace().next().map(str::to_owned);
+        }
+    }
+    None
 }
 
 fn uwsm_is_running() -> bool {
@@ -187,6 +253,102 @@ mod tests {
         assert_eq!(
             file_uri(Path::new("/home/me/1921 Naval Conference/notes #1 é.txt")),
             "file:///home/me/1921%20Naval%20Conference/notes%20%231%20%C3%A9.txt"
+        );
+    }
+
+    fn applications(entries: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, text) in entries {
+            std::fs::write(dir.path().join(name), text).unwrap();
+        }
+        dir
+    }
+
+    const PAGE: &str = "https://www.youtube.com/results?search_query=otters";
+
+    #[test]
+    fn the_default_browser_opens_the_page_in_a_new_window() {
+        let apps = applications(&[(
+            "brave-browser.desktop",
+            "[Desktop Entry]\nType=Application\nName=Brave\nExec=brave %U\n\n\
+             [Desktop Action new-private-window]\nExec=brave --incognito\n",
+        )]);
+
+        assert_eq!(
+            browser_command(
+                PAGE,
+                Some("brave-browser.desktop"),
+                &[apps.path().to_owned()]
+            ),
+            ["brave", "--new-window", PAGE]
+        );
+    }
+
+    #[test]
+    fn omarchys_wrapper_is_never_run() {
+        let apps = applications(&[
+            (
+                "omarchy-browser.desktop",
+                "[Desktop Entry]\nExec=omarchy-launch-browser %U\n",
+            ),
+            ("brave-browser.desktop", "[Desktop Entry]\nExec=brave %U\n"),
+        ]);
+        let dirs = [apps.path().to_owned()];
+
+        assert_eq!(
+            browser_command(PAGE, Some("brave-browser.desktop"), &dirs),
+            ["brave", "--new-window", PAGE]
+        );
+        assert_eq!(
+            browser_command(PAGE, Some("omarchy-browser.desktop"), &dirs),
+            ["xdg-open", PAGE]
+        );
+    }
+
+    #[test]
+    fn the_earliest_data_dir_holding_the_entry_wins() {
+        let home = applications(&[(
+            "brave-browser.desktop",
+            "[Desktop Entry]\nExec=/home/me/bin/brave %U\n",
+        )]);
+        let system = applications(&[
+            ("brave-browser.desktop", "[Desktop Entry]\nExec=brave %U\n"),
+            ("firefox.desktop", "[Desktop Entry]\nExec=firefox %u\n"),
+        ]);
+        let dirs = [home.path().to_owned(), system.path().to_owned()];
+
+        assert_eq!(
+            browser_command(PAGE, Some("brave-browser.desktop"), &dirs),
+            ["/home/me/bin/brave", "--new-window", PAGE]
+        );
+        assert_eq!(
+            browser_command(PAGE, Some("firefox.desktop"), &dirs),
+            ["firefox", "--new-window", PAGE]
+        );
+    }
+
+    #[test]
+    fn a_browser_that_cant_be_worked_out_falls_back_to_xdg_open() {
+        let apps = applications(&[(
+            "broken.desktop",
+            "[Desktop Entry]\nType=Application\nName=Broken\n",
+        )]);
+        let dirs = [apps.path().to_owned()];
+
+        for default in [None, Some("missing.desktop"), Some("broken.desktop")] {
+            assert_eq!(
+                browser_command(PAGE, default, &dirs),
+                ["xdg-open", PAGE],
+                "{default:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_named_browser_opens_its_page_in_a_new_window() {
+        assert_eq!(
+            page_command("brave", "brave://settings/accessibility"),
+            ["brave", "--new-window", "brave://settings/accessibility"]
         );
     }
 
