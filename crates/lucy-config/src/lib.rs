@@ -33,6 +33,7 @@ pub struct Config {
     pub barge_in: BargeIn,
     pub authoring: Authoring,
     pub screen: Screen,
+    pub handoff: HandOff,
 }
 
 impl Default for Config {
@@ -63,6 +64,7 @@ impl Default for Config {
             barge_in: BargeIn::default(),
             authoring: Authoring::default(),
             screen: Screen::default(),
+            handoff: HandOff::default(),
         }
     }
 }
@@ -612,6 +614,22 @@ impl Default for Files {
             ]
             .map(str::to_owned)
             .to_vec(),
+        }
+    }
+}
+
+/// `[handoff]`: where a Hand-off's folder named by name is searched for.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct HandOff {
+    /// The folders searched, three levels deep; `~` is the user's home.
+    pub roots: Vec<PathBuf>,
+}
+
+impl Default for HandOff {
+    fn default() -> Self {
+        HandOff {
+            roots: vec![PathBuf::from("~")],
         }
     }
 }

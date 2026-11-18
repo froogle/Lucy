@@ -150,16 +150,80 @@ fn a_tilde_path_is_taken_from_the_home_folder() {
     assert_eq!(folder, home.path().join("lucy"));
 }
 
-#[test]
-fn a_bare_folder_name_is_refused_with_say_the_full_path() {
-    let lucyd = Harness::start();
+fn hand_off_to(lucyd: &Harness, folder: &str) -> (bool, String) {
+    let (_events, called) = hand_off(lucyd, json!({"request": REQUEST, "folder": folder}));
+    called
+}
 
-    let arguments = json!({"request": REQUEST, "folder": "lucy"});
-    let (_events, (failed, said)) = hand_off(&lucyd, arguments);
+fn git_repo(lucyd: &Harness, relative: &str) -> std::path::PathBuf {
+    lucyd.home_folder(&format!("{relative}/.git"));
+    lucyd.home().join(relative)
+}
+
+#[test]
+fn a_folder_named_once_under_the_home_folder_is_where_claude_runs() {
+    let lucyd = Harness::start();
+    let lucy = lucyd.home_folder("develops/lucy");
+    lucyd.home_folder("develops/lucy-prototype");
+    lucyd.home_folder("develops/other");
+
+    let (failed, said) = hand_off_to(&lucyd, "Lucy");
+
+    assert!(!failed, "{said}");
+    assert_eq!(lucyd.thinking.hand_off.hand_off().folder, lucy);
+}
+
+#[test]
+fn several_folders_with_the_name_are_asked_about_git_repos_first_and_nothing_starts() {
+    let lucyd = Harness::start();
+    let plain = lucyd.home_folder("archive/lucy");
+    let repo = git_repo(&lucyd, "work/src/lucy");
+
+    let (failed, said) = hand_off_to(&lucyd, "lucy");
 
     assert!(failed);
-    assert!(said.contains("full path"), "{said}");
+    assert!(said.contains("Ask the user which"), "{said}");
+    let repo_at = said.find(repo.to_str().unwrap()).expect(&said);
+    let plain_at = said.find(plain.to_str().unwrap()).expect(&said);
+    assert!(repo_at < plain_at, "{said}");
     assert!(lucyd.thinking.hand_off.opened().is_empty());
+}
+
+#[test]
+fn a_name_with_no_folder_is_said_plainly_and_nothing_starts() {
+    let lucyd = Harness::start();
+    lucyd.home_file("notes/lucy");
+    lucyd.home_folder("a/b/c/lucy");
+
+    let (failed, said) = hand_off_to(&lucyd, "lucy");
+
+    assert!(failed);
+    assert!(said.contains("No folder called \"lucy\""), "{said}");
+    assert!(lucyd.thinking.hand_off.opened().is_empty());
+}
+
+#[test]
+fn the_folder_search_stops_three_levels_down() {
+    let lucyd = Harness::start();
+    let found = lucyd.home_folder("a/b/lucy");
+    lucyd.home_folder("a/b/c/lucy");
+
+    let (failed, said) = hand_off_to(&lucyd, "lucy");
+
+    assert!(!failed, "{said}");
+    assert_eq!(lucyd.thinking.hand_off.hand_off().folder, found);
+}
+
+#[test]
+fn the_folder_search_looks_under_the_configured_roots() {
+    let lucyd = Harness::with_config("[handoff]\nroots = [\"~/work\"]\n");
+    lucyd.home_folder("archive/lucy");
+    let lucy = lucyd.home_folder("work/lucy");
+
+    let (failed, said) = hand_off_to(&lucyd, "lucy");
+
+    assert!(!failed, "{said}");
+    assert_eq!(lucyd.thinking.hand_off.hand_off().folder, lucy);
 }
 
 #[test]

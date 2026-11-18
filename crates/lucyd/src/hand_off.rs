@@ -12,6 +12,7 @@ use crate::adapters::{
     Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
     Thinking, ThinkingEvent, PERMISSION_TOOL,
 };
+use crate::files::{self, Search, Words};
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
@@ -24,6 +25,8 @@ const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice
                      message that says plainly what you did or found.";
 
 const CAPTURE_WAIT: Duration = Duration::from_secs(5);
+
+const FOLDER_DEPTH: usize = 3;
 
 const DENIED: &str = "The user's Claude settings don't allow this, and Lucy can't ask them about \
                       it, so it's denied. Carry on without it, and say in your final message \
@@ -70,12 +73,16 @@ impl HandOffs {
         self.working.subscribe()
     }
 
-    pub fn request(self: &Arc<Self>, arguments: &JsonObject) -> CallToolResult {
+    pub async fn request(
+        self: &Arc<Self>,
+        arguments: &JsonObject,
+        folders: &Search,
+    ) -> CallToolResult {
         let request = string(arguments, "request");
         if request.trim().is_empty() {
             return error("request must be what the user wants Claude to do, in their words.");
         }
-        let folder = match self.folder(&string(arguments, "folder")) {
+        let folder = match self.folder(&string(arguments, "folder"), folders).await {
             Ok(folder) => folder,
             Err(refused) => return error(refused),
         };
@@ -103,7 +110,7 @@ impl HandOffs {
         )
     }
 
-    fn folder(&self, said: &str) -> Result<PathBuf, String> {
+    async fn folder(&self, said: &str, folders: &Search) -> Result<PathBuf, String> {
         let said = said.trim();
         let home = || self.env.var("HOME").map(PathBuf::from).unwrap_or_default();
         let folder = if said.is_empty() || said == "~" {
@@ -113,10 +120,7 @@ impl HandOffs {
         } else if Path::new(said).is_absolute() {
             PathBuf::from(said)
         } else {
-            return Err(format!(
-                "\"{said}\" isn't a full path, and Lucy can't find folders by name yet. Ask \
-                 the user to say the full path, such as ~/projects/{said}."
-            ));
+            return by_name(said, folders).await;
         };
         if !folder.is_dir() {
             return Err(format!(
@@ -158,6 +162,53 @@ impl HandOffs {
     }
 }
 
+async fn by_name(name: &str, folders: &Search) -> Result<PathBuf, String> {
+    let words = Words::new([name]).expect("a name that isn't blank has a word");
+    let wanted = name.to_lowercase();
+    let folders = folders.clone().depth(FOLDER_DEPTH);
+    let found = tokio::task::spawn_blocking(move || named(&folders, &words, &wanted))
+        .await
+        .map_err(|e| format!("Couldn't search for the folder: {e}"))?;
+    match found.as_slice() {
+        [] => Err(format!(
+            "No folder called \"{name}\" was found, so nothing has started. Tell the user \
+             plainly, and that they can say the full path instead."
+        )),
+        [one] => Ok(one.clone()),
+        several => {
+            let listed: Vec<String> = several.iter().map(|p| p.display().to_string()).collect();
+            Err(format!(
+                "Several folders are called \"{name}\", so nothing has started: {}. Ask the \
+                 user which one they mean, naming each by where it is, then call \
+                 hand_to_claude again with that one's full path.",
+                listed.join("; ")
+            ))
+        }
+    }
+}
+
+fn named(folders: &Search, words: &Words, wanted: &str) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = folders
+        .find(words)
+        .into_iter()
+        .filter(|found| found.kind == files::Kind::Folder)
+        .map(|found| found.path)
+        .collect();
+    let exact: Vec<PathBuf> = found
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().to_lowercase() == wanted)
+        })
+        .cloned()
+        .collect();
+    if !exact.is_empty() {
+        found = exact;
+    }
+    found.sort_by_key(|path| !path.join(".git").exists());
+    found
+}
+
 pub fn hand_to_claude_tool() -> Tool {
     tool(
         "hand_to_claude",
@@ -168,7 +219,7 @@ pub fn hand_to_claude_tool() -> Tool {
             "type": "object",
             "properties": {
                 "request": {"type": "string", "description": "What the user wants Claude to do, in their words"},
-                "folder": {"type": "string", "description": "The folder as the user said it: an absolute path or one starting with ~. Leave it out when they named none."},
+                "folder": {"type": "string", "description": "The folder as the user said it: a name (\"lucy\"), an absolute path or one starting with ~. Leave it out when they named none."},
             },
             "required": ["request"],
         }),
