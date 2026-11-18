@@ -29,31 +29,103 @@ pub struct Image {
     pub mime_type: String,
 }
 
+/// A point on the desktop in layout coordinates, with the whole desktop's bounds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+    /// The smallest region holding every monitor.
+    pub desktop: Region,
+}
+
+/// A mouse button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Button {
+    Left,
+    Right,
+    Middle,
+}
+
+/// Which way a scroll turns the wheel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// A modifier held down through a key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Modifier {
+    Shift,
+    Ctrl,
+    Alt,
+    Super,
+}
+
+/// A key press: modifiers held around one key, named by its XKB keysym.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Combo {
+    pub modifiers: Vec<Modifier>,
+    pub keysym: String,
+}
+
 /// What a [`Screen`] call returns once it has finished.
 pub type Captured<'a> = Pin<Box<dyn Future<Output = Result<Image, String>> + Send + 'a>>;
 
+/// What a [`Screen`] action returns once it is done.
+pub type Acted<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+
 /// The Plugin's way to the screen itself, which tests replace with a fake.
+///
+/// Each method's error says why it couldn't, ready for the model.
 pub trait Screen: Send + Sync {
     /// Captures `region` at `scale` image pixels per logical pixel.
-    ///
-    /// # Errors
-    ///
-    /// Why the screen couldn't be captured, ready for the model.
     fn capture(&self, region: Region, scale: f64) -> Captured<'_>;
+
+    /// Moves the pointer to `at` and clicks `button` there.
+    fn click(&self, at: Point, button: Button) -> Acted<'_>;
+
+    /// Moves the pointer to `at` and turns the wheel `notches` clicks `direction`.
+    fn scroll(&self, at: Point, direction: Direction, notches: u32) -> Acted<'_>;
+
+    /// Presses and releases `combo`.
+    fn key(&self, combo: Combo) -> Acted<'_>;
+
+    /// Types `text` as though on a keyboard, a newline as Enter.
+    fn type_text(&self, text: String) -> Acted<'_>;
 }
 
-/// The real [`Screen`]: captures through `grim`, found on `path`.
-pub struct Grim {
+/// The real [`Screen`]: captures through `grim`, found on `path`, and acts
+/// through Wayland's virtual pointer and keyboard.
+pub struct Wayland {
     path: OsString,
 }
 
-impl Grim {
-    pub fn new(path: OsString) -> Grim {
-        Grim { path }
+impl Wayland {
+    pub fn new(path: OsString) -> Wayland {
+        Wayland { path }
     }
 }
 
-impl Screen for Grim {
+impl Screen for Wayland {
+    fn click(&self, at: Point, button: Button) -> Acted<'_> {
+        crate::wayland::act(move |input| input.click(at, button))
+    }
+
+    fn scroll(&self, at: Point, direction: Direction, notches: u32) -> Acted<'_> {
+        crate::wayland::act(move |input| input.scroll(at, direction, notches))
+    }
+
+    fn key(&self, combo: Combo) -> Acted<'_> {
+        crate::wayland::act(move |input| input.key(&combo))
+    }
+
+    fn type_text(&self, text: String) -> Acted<'_> {
+        crate::wayland::act(move |input| input.type_text(&text))
+    }
+
     fn capture(&self, region: Region, scale: f64) -> Captured<'_> {
         Box::pin(async move {
             let geometry = format!(
@@ -104,6 +176,20 @@ pub(crate) fn monitor(monitor: &Monitor) -> Region {
         width,
         height,
     }
+}
+
+pub(crate) fn desktop(monitors: &[Monitor]) -> Option<Region> {
+    let regions: Vec<Region> = monitors.iter().map(monitor).collect();
+    let left = regions.iter().map(|r| r.x).min()?;
+    let top = regions.iter().map(|r| r.y).min()?;
+    let right = regions.iter().map(|r| r.x + r.width as i32).max()?;
+    let bottom = regions.iter().map(|r| r.y + r.height as i32).max()?;
+    Some(Region {
+        x: left,
+        y: top,
+        width: (right - left).unsigned_abs(),
+        height: (bottom - top).unsigned_abs(),
+    })
 }
 
 pub(crate) fn window(window: &Window) -> Region {
