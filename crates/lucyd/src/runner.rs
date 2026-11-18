@@ -40,6 +40,7 @@ pub enum Command {
     Ask(Ask),
     Say(String),
     TurnOrNextSession(String, Notification),
+    ShownTurnOrNextSession(String, Notification),
     VoicePreview(VoicePreview),
     SetupTest(SetupTest),
 }
@@ -204,7 +205,8 @@ impl Runner {
                 ignored_speech = self.adapters.speech.recv(), if self.speech_open => {
                     self.speech_open = ignored_speech.is_some();
                 }
-                Ok(()) = self.building.changed() => self.show_building_mark(),
+                Ok(()) = self.building.changed() => self.show_marks(),
+                Ok(()) = self.working.changed() => self.show_marks(),
                 () = mic_lost_for(&mut self.adapters.hearing, REOPEN_MIC_EVERY) => self.reopen_mic(),
             }
         }
@@ -222,6 +224,7 @@ impl Runner {
             Command::TurnOrNextSession(text, kept) => {
                 self.keep(Parked::Turn(text, When::QuietOrNextSession(kept)));
             }
+            Command::ShownTurnOrNextSession(text, _) => self.keep(Parked::Turn(text, When::Kept)),
             Command::Say(_) => {}
             command => return Some(command),
         }
@@ -257,7 +260,7 @@ impl Runner {
             .await;
         self.looks = None;
         self.looking = false;
-        self.hand_offs.stop();
+        self.hand_offs.show_still_working();
         self.keep_unsaid_for_next_session();
         if let Some(hearing) = &mut self.adapters.hearing {
             hearing.lucy_speaking(false);
@@ -273,7 +276,7 @@ impl Runner {
         }
     }
 
-    fn show_building_mark(&self) {
+    fn show_marks(&self) {
         self.publish(State::Idle, None);
     }
 
@@ -444,7 +447,10 @@ impl Runner {
                         continue;
                     }
                     Some(Command::Say(text)) => Input::Say(text),
-                    Some(Command::TurnOrNextSession(text, kept)) => {
+                    Some(
+                        Command::TurnOrNextSession(text, kept)
+                        | Command::ShownTurnOrNextSession(text, kept),
+                    ) => {
                         let when = When::QuietOrNextSession(kept);
                         self.parked.push_back(Parked::Turn(text, when));
                         continue;
@@ -611,6 +617,10 @@ impl Runner {
                         speaker.stop();
                     }
                     Output::CancelBuild => self.authoring.cancel(),
+                    Output::CancelHandOff => self.hand_offs.cancel(),
+                    Output::AskWhichToCancel => {
+                        self.hand_offs.ask_which_to_cancel(self.authoring.clone());
+                    }
                     Output::Interrupt => {
                         model.interrupt();
                         plugin_tools.barge_in();
@@ -698,6 +708,7 @@ impl Runner {
             session_id: session_id.map(|id| id.to_string()),
             building: *self.building.borrow() == Building::Working,
             looking: self.looking && session_id.is_some(),
+            working: *self.working.borrow() != Working::No,
         });
     }
 }

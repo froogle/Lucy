@@ -46,6 +46,7 @@ fn main() -> ExitCode {
                 state: status.state,
                 building: status.building,
                 looking: status.looking,
+                working: status.working,
             },
             Ok(Event::Level(level)) => Update::Level(level.rms),
             Ok(Event::PluginsChanged(_) | Event::InputOpen(_) | Event::InputClose(_)) => continue,

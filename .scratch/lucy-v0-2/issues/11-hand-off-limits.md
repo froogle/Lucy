@@ -12,7 +12,7 @@ Spec: [v0.2](../spec.md), Hand-off (Limits). Stories 22–25.
 
 **Seams:** owns `[handoff] budget_mins` and the Hand-off queue. Uses the "cancel it" match (Authoring).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -25,3 +25,5 @@ Spec: [v0.2](../spec.md), Hand-off (Limits). Stories 22–25.
 - [ ] "Cancel it" stops it; with a build also running, Lucy asks which
 
 ## Comments
+
+2026-11-18: built in slice 2 (`lucy-v0-2-slice-2`). The model words the queue offer and calls `hand_to_claude` again with `queue: true` on a yes. `budget_mins` is a checked `Minutes` (bad values refuse at config load). "Cancel it" also drops the queued request and says so; with a build running, Lucy asks which and matches build, Claude or both locally; an unclear answer leaves both running, and the answer only cancels the Hand-off it asked about.

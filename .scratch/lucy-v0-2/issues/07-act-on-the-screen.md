@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Screen access. ADR 0008. Stories 29–31, 37–39, 41,
 
 **Seams:** owns `[screen] risky_words`. Uses the Manifest `screen` field (owned by 06): `click` and `key` tools must carry `describe`. Extends the `Screen` trait (owned by 06) with pointer and keyboard.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -23,3 +23,5 @@ Spec: [v0.2](../spec.md), Screen access. ADR 0008. Stories 29–31, 37–39, 41,
 - [ ] Once, by hand on Omarchy: open YouTube, search, "play the third video" plays it; a click described as "Send" asks first
 
 ## Comments
+
+2026-11-18: built in slice 2 (`lucy-v0-2-slice-2`). The Plugin's real `Screen` is `Wayland` (virtual pointer and keyboard; the keymap was checked with `xkbcli`, not yet on real input). Manifest marks `type` and `scroll` were added and `type` takes `describe`, required when its text holds a newline anywhere (spec amended). A risky word matches from the start of any word, any case ("payment" asks, "replay" doesn't); a custom list replaces the default. A click or scroll before any screenshot is refused. A risky click on a `confirm = true` tool asks once. Hand check left: on Omarchy, YouTube search then "play the third video"; a click described as "Send" asks first.

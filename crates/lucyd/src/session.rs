@@ -68,6 +68,8 @@ pub enum Output {
     StopSpeaking,
     Interrupt,
     CancelBuild,
+    CancelHandOff,
+    AskWhichToCancel,
 }
 
 const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
@@ -75,6 +77,10 @@ const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
 const CANCEL_IT: &str = "cancel it";
 
 pub const BUILD_STOPPED: &str = "Okay, I've stopped the build.";
+
+pub const HAND_OFF_STOPPED: &str = "Okay, I've stopped Claude.";
+
+pub const QUEUED_DROPPED: &str = "I've dropped the request queued after it, too.";
 
 pub const KEEP_WORKING: &str = "I'll keep working on the Plugin, and let you know when it's ready.";
 
@@ -215,11 +221,10 @@ impl Session {
                 if nothing_recognised {
                     return vec![];
                 }
-                if self.building != Building::No && is_phrase(text, CANCEL_IT) {
-                    self.sentence = BUILD_STOPPED.to_owned();
-                    let mut outputs = vec![Output::CancelBuild];
-                    outputs.extend(self.speak_sentence());
-                    return outputs;
+                if is_phrase(text, CANCEL_IT) {
+                    if let Some(outputs) = self.cancel() {
+                        return outputs;
+                    }
                 }
                 self.turn_in_progress = true;
                 self.heard.clear();
@@ -344,6 +349,25 @@ impl Session {
         }
     }
 
+    fn cancel(&mut self) -> Option<Vec<Output>> {
+        let (cancel, stopped) = match (self.building != Building::No, self.working) {
+            (true, Working::Yes | Working::YesAndQueued) => {
+                return Some(vec![Output::AskWhichToCancel])
+            }
+            (true, Working::No) => (Output::CancelBuild, BUILD_STOPPED.to_owned()),
+            (false, Working::Yes) => (Output::CancelHandOff, HAND_OFF_STOPPED.to_owned()),
+            (false, Working::YesAndQueued) => (
+                Output::CancelHandOff,
+                format!("{HAND_OFF_STOPPED} {QUEUED_DROPPED}"),
+            ),
+            (false, Working::No) => return None,
+        };
+        self.sentence = stopped;
+        let mut outputs = vec![cancel];
+        outputs.extend(self.speak_sentence());
+        Some(outputs)
+    }
+
     fn barge_in(&mut self) -> Vec<Output> {
         let mut outputs = vec![];
         if let Some(playing) = self.queued.front() {
@@ -408,17 +432,18 @@ fn push_sentence(heard: &mut String, sentence: &str) {
     heard.push_str(sentence);
 }
 
+pub fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 fn is_one_of(reply: &str, phrases: &[String]) -> bool {
     phrases.iter().any(|phrase| is_phrase(reply, phrase))
 }
 
 fn is_phrase(utterance: &str, phrase: &str) -> bool {
-    let words = |text: &str| -> Vec<String> {
-        text.split(|c: char| !c.is_alphanumeric() && c != '\'')
-            .filter(|word| !word.is_empty())
-            .map(str::to_lowercase)
-            .collect()
-    };
     let utterance = words(utterance);
     !utterance.is_empty() && words(phrase) == utterance
 }

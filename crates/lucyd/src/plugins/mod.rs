@@ -8,6 +8,7 @@ mod environment;
 mod manage;
 mod manifest;
 mod questions;
+mod risk;
 pub(crate) mod sandbox;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -41,6 +42,7 @@ use crate::sync::{Locked, POISONED};
 pub use environment::Environment;
 pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
 use manifest::{Manifest, ScreenUse, ToolEntry};
+use risk::Risk;
 
 const MAX_QUESTIONS: usize = 10;
 
@@ -936,7 +938,25 @@ impl SessionTools {
         if entry.screen == Some(ScreenUse::Look) && self.look().await == Err(Declined) {
             return Some(mcp::text(LOOK_DECLINED));
         }
-        if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
+        let risky = match risk::check(entry.screen, arguments.as_ref(), &self.screen.risky_words) {
+            Risk::Plain => false,
+            Risk::Undescribed(refusal) => return Some(mcp::error(refusal)),
+            Risk::Risky { prompt } => {
+                if !self
+                    .confirmed(plugin_name, entry, arguments.as_ref(), Some(prompt))
+                    .await
+                {
+                    return Some(mcp::text(DECLINED));
+                }
+                true
+            }
+        };
+        if entry.confirm
+            && !risky
+            && !self
+                .confirmed(plugin_name, entry, arguments.as_ref(), None)
+                .await
+        {
             return Some(mcp::text(DECLINED));
         }
         let mut entered = match read_before_confirming {
@@ -996,7 +1016,7 @@ impl SessionTools {
                 "it asked more than {MAX_QUESTIONS} questions in one call"
             ))
         };
-        let outcome = if entry.confirm {
+        let outcome = if entry.confirm || risky {
             let outcome = outcome.await;
             if barge_ins.has_changed().unwrap_or(false) {
                 if let Ok(result) = &outcome {
@@ -1097,12 +1117,14 @@ impl SessionTools {
         plugin: &str,
         tool: &ToolEntry,
         arguments: Option<&JsonObject>,
+        prompt: Option<String>,
     ) -> bool {
         let empty = JsonObject::new();
         let arguments = arguments.unwrap_or(&empty);
-        let prompt = match &tool.confirm_prompt {
-            Some(prompt) => fill(prompt, arguments),
-            None => format!("Shall I use the {plugin} Plugin to {}?", tool.handles),
+        let prompt = match (prompt, &tool.confirm_prompt) {
+            (Some(prompt), _) => prompt,
+            (None, Some(prompt)) => fill(prompt, arguments),
+            (None, None) => format!("Shall I use the {plugin} Plugin to {}?", tool.handles),
         };
         let mut body = format!("{plugin}__{}", tool.name);
         for (name, value) in arguments {

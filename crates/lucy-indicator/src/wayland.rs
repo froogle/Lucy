@@ -38,6 +38,7 @@ pub enum Update {
         state: State,
         building: bool,
         looking: bool,
+        working: bool,
     },
     Level(f32),
     Lost(String),
@@ -134,9 +135,11 @@ impl Display {
                     state,
                     building,
                     looking,
+                    working,
                 }) => {
                     app.indicator.on_building(building);
                     app.indicator.on_looking(looking);
+                    app.indicator.on_working(working);
                     app.on_state(state);
                 }
                 channel::Event::Msg(Update::Level(rms)) => app.indicator.on_level(rms),

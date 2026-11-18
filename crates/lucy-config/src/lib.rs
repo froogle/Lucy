@@ -9,6 +9,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,7 @@ pub struct Config {
     pub barge_in: BargeIn,
     pub authoring: Authoring,
     pub screen: Screen,
+    pub handoff: HandOff,
 }
 
 impl Default for Config {
@@ -63,6 +65,7 @@ impl Default for Config {
             barge_in: BargeIn::default(),
             authoring: Authoring::default(),
             screen: Screen::default(),
+            handoff: HandOff::default(),
         }
     }
 }
@@ -564,17 +567,22 @@ impl Default for Authoring {
     }
 }
 
-/// `[screen]`: whether Lucy may look at the screen (ADR 0008).
+/// `[screen]`: screen access, and which screen actions need a Confirmation (ADR 0008).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Screen {
     /// When false, the Plugins' screen tools are left out of the tool list.
     pub enabled: bool,
+    pub risky_words: Vec<String>,
 }
 
 impl Default for Screen {
     fn default() -> Self {
-        Screen { enabled: true }
+        let risky = ["send", "buy", "pay", "delete", "submit", "post", "confirm"];
+        Screen {
+            enabled: true,
+            risky_words: risky.map(String::from).to_vec(),
+        }
     }
 }
 
@@ -613,6 +621,47 @@ impl Default for Files {
             .map(str::to_owned)
             .to_vec(),
         }
+    }
+}
+
+/// `[handoff]`: how a Hand-off to the user's own Claude runs.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct HandOff {
+    pub roots: Vec<PathBuf>,
+    pub budget_mins: Minutes,
+}
+
+impl Default for HandOff {
+    fn default() -> Self {
+        HandOff {
+            roots: vec![PathBuf::from("~")],
+            budget_mins: Minutes(Duration::from_secs(60 * 60)),
+        }
+    }
+}
+
+/// A positive, finite number of minutes, checked when the config loads.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(try_from = "f64")]
+pub struct Minutes(Duration);
+
+impl Minutes {
+    /// How long these minutes last.
+    pub fn to_duration(self) -> Duration {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for Minutes {
+    type Error = String;
+
+    fn try_from(minutes: f64) -> Result<Self, Self::Error> {
+        Duration::try_from_secs_f64(minutes * 60.0)
+            .ok()
+            .filter(|duration| !duration.is_zero())
+            .map(Minutes)
+            .ok_or_else(|| format!("{minutes} isn't a positive number of minutes"))
     }
 }
 
@@ -863,6 +912,32 @@ mod tests {
 
         assert_eq!(config.authoring.budget_secs, 60.0);
         assert!(!config.authoring.progress_notifications);
+    }
+
+    #[test]
+    fn a_hand_off_has_an_hour_unless_config_says_otherwise() {
+        assert_eq!(
+            Config::default().handoff.budget_mins.to_duration(),
+            std::time::Duration::from_secs(60 * 60)
+        );
+
+        let config = parse("[handoff]\nbudget_mins = 90\n");
+
+        assert_eq!(
+            config.handoff.budget_mins.to_duration(),
+            std::time::Duration::from_secs(90 * 60)
+        );
+    }
+
+    #[test]
+    fn a_hand_off_budget_must_be_a_positive_number_of_minutes() {
+        for budget in ["-5", "nan", "inf", "0", "\"soon\""] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, format!("[handoff]\nbudget_mins = {budget}\n")).unwrap();
+
+            assert!(load(&path).is_err(), "{budget}");
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Hand-off (Results, Session while running). Stories 13,
 
 **Seams:** owns the "working" `state` flag. Uses the keep-for-next-Session path (Authoring) and the permission tool (owned by 01).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -22,3 +22,5 @@ Spec: [v0.2](../spec.md), Hand-off (Results, Session while running). Stories 13,
 - [ ] The "working" flag is in `state` while it runs (schema regenerated)
 
 ## Comments
+
+2026-11-18: built in slice 2 (`lucy-v0-2-slice-2`). At Session end a "Claude is still working" notification goes out. Permission requests go through the keep-for-next-Session path too. The "working" mark stays on while Claude waits for an answer. Each outcome with no Session open sends one notification (review fix). Hand checks left: with real `claude`, end the Session mid-Hand-off and check the notifications and the summary at the next Session; check whether Claude's permission call survives a long wait for that Session.

@@ -1,5 +1,7 @@
 use std::ffi::OsString;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -12,10 +14,16 @@ use crate::adapters::{
     Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
     Thinking, ThinkingEvent, PERMISSION_TOOL,
 };
+use crate::authoring::{spoken_duration, Authoring};
+use crate::files::{self, Search, Words};
+use crate::input;
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
-use crate::runner::Command;
+use crate::runner::{self, Command, When};
+use crate::session::{
+    self, Answer, Expects, Question, BUILD_STOPPED, HAND_OFF_STOPPED, QUEUED_DROPPED,
+};
 use crate::sync::Locked;
 
 const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice assistant, and \
@@ -25,9 +33,14 @@ const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice
 
 const CAPTURE_WAIT: Duration = Duration::from_secs(5);
 
-const DENIED: &str = "The user's Claude settings don't allow this, and Lucy can't ask them about \
-                      it, so it's denied. Carry on without it, and say in your final message \
-                      what you'd need.";
+const FOLDER_DEPTH: usize = 3;
+
+const UNASKED: &str = "The user's Claude settings don't allow this, and Lucy couldn't ask them \
+                       about it, so it's denied. Carry on without it, and say in your final \
+                       message what you'd need.";
+
+const REFUSED: &str = "The user didn't allow this when Lucy asked them. Carry on without it, and \
+                       say in your final message what you'd need.";
 
 pub struct HandOffs {
     thinking: Arc<dyn Thinking>,
@@ -37,7 +50,20 @@ pub struct HandOffs {
     notifier: Arc<dyn Notifier>,
     clock: Arc<dyn Clock>,
     working: watch::Sender<Working>,
-    current: Mutex<Option<Arc<Job>>>,
+    config_path: PathBuf,
+    jobs: Mutex<Jobs>,
+}
+
+#[derive(Default)]
+struct Jobs {
+    current: Option<Arc<Job>>,
+    queued: Option<Request>,
+}
+
+struct Request {
+    task: String,
+    folder: PathBuf,
+    budget: Duration,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +71,52 @@ pub enum Working {
     #[default]
     No,
     Yes,
+    YesAndQueued,
+}
+
+const BOTH_STOPPED: &str = "Okay, I've stopped them both.";
+
+const BOTH_RUNNING: &str = "Okay, I'll leave them both running.";
+
+const WHICH_TO_CANCEL: &str = "Do you mean the Plugin build, or Claude?";
+
+const ALREADY_FINISHED: &str = "Claude had already finished.";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Cancel {
+    Build,
+    HandOff,
+    Both,
+    Unclear,
+}
+
+fn which_to_cancel(said: &str) -> Cancel {
+    let said = session::words(said);
+    let named = |names: &[&str]| said.iter().any(|word| names.contains(&word.as_str()));
+    let both = named(&["both", "all"]);
+    let build = both || named(&["build", "plugin"]);
+    let hand_off = both || named(&["claude", "hand", "handoff"]);
+    match (build, hand_off) {
+        (true, true) => Cancel::Both,
+        (true, false) => Cancel::Build,
+        (false, true) => Cancel::HandOff,
+        (false, false) => Cancel::Unclear,
+    }
+}
+
+enum Stopped {
+    Ended,
+    Alone,
+    AndQueued,
+}
+
+impl Stopped {
+    fn said(&self, stopped: &str) -> String {
+        match self {
+            Stopped::AndQueued => format!("{stopped} {QUEUED_DROPPED}"),
+            _ => stopped.to_owned(),
+        }
+    }
 }
 
 impl HandOffs {
@@ -52,6 +124,7 @@ impl HandOffs {
         adapters: &Adapters,
         relays: Relays,
         env: Environment,
+        config_path: PathBuf,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Arc<HandOffs> {
         Arc::new(HandOffs {
@@ -62,7 +135,8 @@ impl HandOffs {
             notifier: adapters.notifier.clone(),
             clock: adapters.clock.clone(),
             working: watch::Sender::new(Working::No),
-            current: Mutex::default(),
+            config_path,
+            jobs: Mutex::default(),
         })
     }
 
@@ -70,40 +144,93 @@ impl HandOffs {
         self.working.subscribe()
     }
 
-    pub fn request(self: &Arc<Self>, arguments: &JsonObject) -> CallToolResult {
-        let request = string(arguments, "request");
-        if request.trim().is_empty() {
+    pub async fn request(
+        self: &Arc<Self>,
+        arguments: &JsonObject,
+        folders: &Search,
+    ) -> CallToolResult {
+        let task = string(arguments, "request");
+        if task.trim().is_empty() {
             return error("request must be what the user wants Claude to do, in their words.");
         }
-        let folder = match self.folder(&string(arguments, "folder")) {
+        let folder = match self.folder(&string(arguments, "folder"), folders).await {
             Ok(folder) => folder,
             Err(refused) => return error(refused),
         };
-        let mut current = self.current.locked();
-        if current.is_some() {
-            return error(
-                "Claude is still working on the last thing the user handed it. Tell them, and \
-                 that they can ask again once it's done.",
-            );
-        }
-        let job = Arc::new(Job {
-            request,
+        let budget = match lucy_config::load(&self.config_path) {
+            Ok(config) => config.handoff.budget_mins.to_duration(),
+            Err(e) => {
+                return error(format!(
+                    "Nothing has started: Lucy {}. Tell the user, and that they can fix the file \
+                     and ask again.",
+                    e.to_string().lines().next().unwrap_or_default()
+                ))
+            }
+        };
+        let request = Request {
+            task,
             folder,
-            hand_offs: Arc::downgrade(self),
-            state: Mutex::default(),
-            stopping: Notify::new(),
-        });
-        *current = Some(job.clone());
-        drop(current);
+            budget,
+        };
+        let mut jobs = self.jobs.locked();
+        if let Some(running) = &jobs.current {
+            let running = running.request.clone();
+            return self.queue(&mut jobs, &running, request, arguments);
+        }
+        jobs.current = Some(self.start(request));
+        drop(jobs);
         self.working.send_replace(Working::Yes);
-        tokio::spawn(job.run());
         text(
             "Claude has started on it. Tell the user so in a few words, and carry on with \
              anything else they ask. Lucy will tell you when Claude has finished.",
         )
     }
 
-    fn folder(&self, said: &str) -> Result<PathBuf, String> {
+    fn queue(
+        &self,
+        jobs: &mut Jobs,
+        running: &str,
+        request: Request,
+        arguments: &JsonObject,
+    ) -> CallToolResult {
+        if let Some(queued) = &jobs.queued {
+            return error(format!(
+                "Claude is still working on \"{running}\", and \"{}\" is queued after it. Tell \
+                 the user Lucy can't take another until those are done.",
+                queued.task
+            ));
+        }
+        if arguments.get("queue").and_then(serde_json::Value::as_bool) != Some(true) {
+            return error(format!(
+                "Nothing has started: Claude is still working on \"{running}\". Ask the user \
+                 whether to queue this, naming that one in a few words, such as \"Claude's \
+                 still on the lucy test; want me to queue this?\" If they say yes, call \
+                 hand_to_claude again with the same request and folder, and queue set to true."
+            ));
+        }
+        jobs.queued = Some(request);
+        self.working.send_replace(Working::YesAndQueued);
+        text(
+            "It's queued: Claude starts on it once it has finished the one it's on. Tell the \
+             user so in a few words.",
+        )
+    }
+
+    fn start(self: &Arc<Self>, request: Request) -> Arc<Job> {
+        let job = Arc::new(Job {
+            request: request.task,
+            folder: request.folder,
+            budget: request.budget,
+            hand_offs: Arc::downgrade(self),
+            state: Mutex::default(),
+            cancelled: Notify::new(),
+            ended: watch::Sender::new(false),
+        });
+        tokio::spawn(job.clone().run());
+        job
+    }
+
+    async fn folder(&self, said: &str, folders: &Search) -> Result<PathBuf, String> {
         let said = said.trim();
         let home = || self.env.var("HOME").map(PathBuf::from).unwrap_or_default();
         let folder = if said.is_empty() || said == "~" {
@@ -113,10 +240,7 @@ impl HandOffs {
         } else if Path::new(said).is_absolute() {
             PathBuf::from(said)
         } else {
-            return Err(format!(
-                "\"{said}\" isn't a full path, and Lucy can't find folders by name yet. Ask \
-                 the user to say the full path, such as ~/projects/{said}."
-            ));
+            return by_name(said, folders).await;
         };
         if !folder.is_dir() {
             return Err(format!(
@@ -127,11 +251,74 @@ impl HandOffs {
         Ok(folder)
     }
 
-    pub fn stop(&self) {
-        let current = self.current.locked().clone();
-        if let Some(job) = current {
-            job.stop();
+    pub fn show_still_working(&self) {
+        if self.jobs.locked().current.is_some() {
+            self.show(Notification {
+                summary: "Claude is still working".to_owned(),
+                body: "Lucy will let you know when it's done.".to_owned(),
+                action: None,
+                kind: NotificationKind::HandOff,
+            });
         }
+    }
+
+    pub fn cancel(&self) {
+        let current = self.jobs.locked().current.clone();
+        if let Some(job) = current {
+            self.stop(&job);
+        }
+    }
+
+    fn stop(&self, job: &Arc<Job>) -> Stopped {
+        let mut jobs = self.jobs.locked();
+        if !jobs.current.as_ref().is_some_and(|c| Arc::ptr_eq(c, job)) {
+            return Stopped::Ended;
+        }
+        job.cancelled.notify_one();
+        if jobs.queued.take().is_none() {
+            return Stopped::Alone;
+        }
+        self.working.send_replace(Working::Yes);
+        Stopped::AndQueued
+    }
+
+    pub fn ask_which_to_cancel(self: &Arc<Self>, authoring: Arc<Authoring>) {
+        let hand_offs = self.clone();
+        let asked_about = self.jobs.locked().current.clone();
+        tokio::spawn(async move {
+            let question = Question {
+                prompt: WHICH_TO_CANCEL.to_owned(),
+                expects: Expects::Words,
+            };
+            let answer = runner::ask(&hand_offs.commands, question, None).await;
+            let choice = match answer {
+                Some(Answer::Said(said)) => which_to_cancel(&said),
+                _ => Cancel::Unclear,
+            };
+            let stop = || match &asked_about {
+                Some(job) => hand_offs.stop(job),
+                None => Stopped::Ended,
+            };
+            let said = match choice {
+                Cancel::Build => {
+                    authoring.cancel();
+                    BUILD_STOPPED.to_owned()
+                }
+                Cancel::HandOff => match stop() {
+                    Stopped::Ended => ALREADY_FINISHED.to_owned(),
+                    stopped => stopped.said(HAND_OFF_STOPPED),
+                },
+                Cancel::Both => {
+                    authoring.cancel();
+                    match stop() {
+                        Stopped::Ended => format!("{BUILD_STOPPED} {ALREADY_FINISHED}"),
+                        stopped => stopped.said(BOTH_STOPPED),
+                    }
+                }
+                Cancel::Unclear => BOTH_RUNNING.to_owned(),
+            };
+            let _ = hand_offs.commands.send(Command::Say(said));
+        });
     }
 
     fn show(&self, notification: Notification) {
@@ -139,12 +326,21 @@ impl HandOffs {
             .notify(notification, mpsc::unbounded_channel().0);
     }
 
-    fn finished(&self, job: &Job) {
-        let mut current = self.current.locked();
-        if current.as_deref().is_some_and(|c| std::ptr::eq(c, job)) {
-            *current = None;
-            self.working.send_replace(Working::No);
+    fn finished(self: &Arc<Self>, job: &Job) {
+        let mut jobs = self.jobs.locked();
+        if !jobs
+            .current
+            .as_deref()
+            .is_some_and(|c| std::ptr::eq(c, job))
+        {
+            return;
         }
+        jobs.current = jobs.queued.take().map(|next| self.start(next));
+        let working = match jobs.current {
+            Some(_) => Working::Yes,
+            None => Working::No,
+        };
+        self.working.send_replace(working);
     }
 
     async fn environment(&self) -> Vec<(OsString, OsString)> {
@@ -158,6 +354,53 @@ impl HandOffs {
     }
 }
 
+async fn by_name(name: &str, folders: &Search) -> Result<PathBuf, String> {
+    let words = Words::new([name]).expect("a name that isn't blank has a word");
+    let wanted = name.to_lowercase();
+    let folders = folders.clone().depth(FOLDER_DEPTH);
+    let found = tokio::task::spawn_blocking(move || named(&folders, &words, &wanted))
+        .await
+        .map_err(|e| format!("Couldn't search for the folder: {e}"))?;
+    match found.as_slice() {
+        [] => Err(format!(
+            "No folder called \"{name}\" was found, so nothing has started. Tell the user \
+             plainly, and that they can say the full path instead."
+        )),
+        [one] => Ok(one.clone()),
+        several => {
+            let listed: Vec<String> = several.iter().map(|p| p.display().to_string()).collect();
+            Err(format!(
+                "Several folders are called \"{name}\", so nothing has started: {}. Ask the \
+                 user which one they mean, naming each by where it is, then call \
+                 hand_to_claude again with that one's full path.",
+                listed.join("; ")
+            ))
+        }
+    }
+}
+
+fn named(folders: &Search, words: &Words, wanted: &str) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = folders
+        .find(words)
+        .into_iter()
+        .filter(|found| found.kind == files::Kind::Folder)
+        .map(|found| found.path)
+        .collect();
+    let exact: Vec<PathBuf> = found
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().to_lowercase() == wanted)
+        })
+        .cloned()
+        .collect();
+    if !exact.is_empty() {
+        found = exact;
+    }
+    found.sort_by_key(|path| !path.join(".git").exists());
+    found
+}
+
 pub fn hand_to_claude_tool() -> Tool {
     tool(
         "hand_to_claude",
@@ -168,7 +411,8 @@ pub fn hand_to_claude_tool() -> Tool {
             "type": "object",
             "properties": {
                 "request": {"type": "string", "description": "What the user wants Claude to do, in their words"},
-                "folder": {"type": "string", "description": "The folder as the user said it: an absolute path or one starting with ~. Leave it out when they named none."},
+                "folder": {"type": "string", "description": "The folder as the user said it: a name (\"lucy\"), an absolute path or one starting with ~. Leave it out when they named none."},
+                "queue": {"type": "boolean", "description": "True once the user has said yes to queueing this behind the Hand-off running"},
             },
             "required": ["request"],
         }),
@@ -192,20 +436,36 @@ fn permission_tool() -> Tool {
 }
 
 pub fn hand_off_tools() -> Vec<Tool> {
-    vec![permission_tool()]
+    let string = |description: &str| json!({"type": "string", "description": description});
+    vec![
+        tool(
+            "report_progress",
+            "Report what you're doing, in a short line. It is shown to the user, never spoken.",
+            json!({"type": "object", "properties": {"text": string("What you're doing")}, "required": ["text"]}),
+        ),
+        tool(
+            "ask_user",
+            "Ask the user something only they can answer. Lucy asks it aloud once nobody is \
+             speaking and returns their answer.",
+            json!({"type": "object", "properties": {"question": string("One short spoken question")}, "required": ["question"]}),
+        ),
+        input::ask_typed_tool(),
+        permission_tool(),
+    ]
 }
 
 pub struct Job {
     request: String,
     folder: PathBuf,
+    budget: Duration,
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
-    stopping: Notify,
+    cancelled: Notify,
+    ended: watch::Sender<bool>,
 }
 
 #[derive(Default)]
 struct JobState {
-    over: bool,
     model: Option<Box<dyn SessionModel>>,
     token: Option<Token>,
     conversation: Option<String>,
@@ -217,6 +477,8 @@ impl Job {
         let Some(hand_offs) = self.hand_offs.upgrade() else {
             return;
         };
+        let mut budget = hand_offs.clock.timer();
+        budget.set(Some(hand_offs.clock.now() + self.budget));
         let env = hand_offs.environment().await;
         let (relay, token) = hand_offs
             .relays
@@ -228,9 +490,6 @@ impl Job {
         };
         {
             let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
             let mut model = hand_offs.thinking.open_hand_off(
                 &claude(),
                 events_tx,
@@ -243,10 +502,14 @@ impl Job {
             state.token = Some(token);
         }
         drop(hand_offs);
-        self.follow(events).await;
+        self.follow(events, budget.fired()).await;
     }
 
-    async fn follow(&self, mut events: mpsc::UnboundedReceiver<ThinkingEvent>) {
+    async fn follow(
+        &self,
+        mut events: mpsc::UnboundedReceiver<ThinkingEvent>,
+        mut budget_spent: Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) {
         loop {
             tokio::select! {
                 biased;
@@ -262,14 +525,99 @@ impl Job {
                     None => return self.failed("Claude stopped unexpectedly."),
                     Some(_) => {}
                 },
-                () = self.stopping.notified() => return self.stopped(),
+                () = &mut budget_spent => return self.out_of_time(),
+                () = self.cancelled.notified() => return self.stopped(),
             }
         }
     }
 
-    pub async fn call(&self, name: &str, _arguments: &JsonObject) -> Option<CallToolResult> {
-        (name == PERMISSION_TOOL)
-            .then(|| text(json!({"behavior": "deny", "message": DENIED}).to_string()))
+    pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
+        let mut ended = self.ended.subscribe();
+        tokio::select! {
+            result = self.answer(name, arguments) => result,
+            _ = ended.wait_for(|ended| *ended) => Some(error("Lucy has stopped this Hand-off.")),
+        }
+    }
+
+    async fn answer(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
+        Some(match name {
+            "report_progress" => {
+                self.show("Claude is working", string(arguments, "text"));
+                text("Noted.")
+            }
+            "ask_user" => self.ask_user(string(arguments, "question")).await,
+            "ask_typed" => {
+                let Some(hand_offs) = self.hand_offs.upgrade() else {
+                    return Some(error("Lucy is stopping."));
+                };
+                let commands = hand_offs.commands.clone();
+                drop(hand_offs);
+                let kept = question_kept("Claude wants you to type something");
+                input::ask_typed_at(&commands, arguments, kept).await
+            }
+            PERMISSION_TOOL => text(self.permission(arguments).await.to_string()),
+            _ => return None,
+        })
+    }
+
+    async fn ask_user(&self, question: String) -> CallToolResult {
+        if question.trim().is_empty() {
+            return error("question must be what to ask the user.");
+        }
+        let Some(hand_offs) = self.hand_offs.upgrade() else {
+            return error("Lucy is stopping.");
+        };
+        let question = Question {
+            prompt: format!("Claude asks: {question}"),
+            expects: Expects::Words,
+        };
+        let kept = question_kept("Claude has a question");
+        let answer = runner::ask_at(&hand_offs.commands, question, None, kept);
+        drop(hand_offs);
+        match answer.await {
+            Some(Answer::Said(said)) => text(format!("The user answered: \"{said}\"")),
+            Some(_) => text(
+                "The user didn't answer. Carry on with your best judgement, and say in your \
+                 final message what you assumed.",
+            ),
+            None => text(
+                "The user couldn't be asked. Carry on with your best judgement, and say in \
+                 your final message what you assumed.",
+            ),
+        }
+    }
+
+    async fn permission(&self, arguments: &JsonObject) -> serde_json::Value {
+        let tool_name = string(arguments, "tool_name");
+        let empty = serde_json::Value::Object(JsonObject::new());
+        let input = arguments.get("input").unwrap_or(&empty);
+        let question = Question {
+            prompt: format!("Claude wants to {}. Okay?", description(&tool_name, input)),
+            expects: Expects::Yes,
+        };
+        let details = format!("{tool_name}\n{input:#}");
+        let kept = When::QuietOrNextSession(Notification {
+            summary: "Claude is waiting for your permission".into(),
+            body: format!("{details}\n\nLucy will ask at your next Session."),
+            action: None,
+            kind: NotificationKind::HandOff,
+        });
+        let shown = Notification {
+            summary: "Claude needs your yes".into(),
+            body: details,
+            action: None,
+            kind: NotificationKind::Details,
+        };
+        let Some(hand_offs) = self.hand_offs.upgrade() else {
+            return json!({"behavior": "deny", "message": UNASKED});
+        };
+        let commands = hand_offs.commands.clone();
+        drop(hand_offs);
+        match runner::ask_at(&commands, question, Some(shown), kept).await {
+            Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
+            Some(_) => json!({"behavior": "deny", "message": REFUSED}),
+            None => json!({"behavior": "deny", "message": UNASKED}),
+        }
     }
 
     fn answered(&self) {
@@ -340,30 +688,37 @@ impl Job {
         self.failed(&exit.stopped("Claude"));
     }
 
-    fn stop(&self) {
-        let started = {
-            let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
-            state.over = state.model.is_none();
-            state.model.is_some()
-        };
-        if started {
-            self.stopping.notify_one();
-        } else {
-            self.stopped();
-        }
-    }
-
     fn stopped(&self) {
         let conversation = self.state.locked().conversation.clone();
         self.show(
             "Lucy stopped Claude",
             format!(
-                "The Session ended before Claude had finished.{}",
+                "You asked Lucy to cancel it.{}",
                 self.resume(conversation.as_deref())
             ),
+        );
+        self.finish();
+    }
+
+    fn out_of_time(&self) {
+        let conversation = self.state.locked().conversation.clone();
+        let budget = spoken_duration(self.budget);
+        self.show(
+            "Claude ran out of time",
+            format!(
+                "Claude wasn't done after {budget}, so Lucy stopped it.{}",
+                self.resume(conversation.as_deref())
+            ),
+        );
+        self.tell(
+            format!(
+                "{HAND_OFF} Claude ran out of time on what the user handed it: \"{}\". It \
+                 wasn't done after {budget}, so Lucy stopped it. Tell the user plainly, in a \
+                 sentence, and that the notification says how to carry on at their keyboard.",
+                self.request
+            ),
+            "Claude ran out of time",
+            "Lucy will tell you more at your next Session.",
         );
         self.finish();
     }
@@ -399,20 +754,54 @@ impl Job {
             };
             let _ = hand_offs
                 .commands
-                .send(Command::TurnOrNextSession(text, kept));
+                .send(Command::ShownTurnOrNextSession(text, kept));
         }
     }
 
     fn finish(&self) {
         let (model, token) = {
             let mut state = self.state.locked();
-            state.over = true;
             (state.model.take(), state.token.take())
         };
         drop((model, token));
+        self.ended.send_replace(true);
         if let Some(hand_offs) = self.hand_offs.upgrade() {
             hand_offs.finished(self);
         }
+    }
+}
+
+fn question_kept(summary: &str) -> When {
+    When::QuietOrNextSession(Notification {
+        summary: summary.to_owned(),
+        body: "Lucy will ask at your next Session.".to_owned(),
+        action: None,
+        kind: NotificationKind::HandOff,
+    })
+}
+
+fn description(tool_name: &str, input: &serde_json::Value) -> String {
+    let said = input
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .map(|said| said.trim().trim_end_matches('.').trim())
+        .filter(|said| !said.is_empty());
+    let Some(said) = said else {
+        let tool = tool_name.strip_prefix("mcp__").unwrap_or(tool_name);
+        return format!(
+            "use {}",
+            tool.replace('_', " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    };
+    let mut chars = said.chars();
+    match (chars.next(), chars.next()) {
+        (Some(first), Some(second)) if first.is_uppercase() && !second.is_uppercase() => {
+            format!("{}{}", first.to_lowercase(), &said[first.len_utf8()..])
+        }
+        _ => said.to_owned(),
     }
 }
 
@@ -469,4 +858,18 @@ fn parse_env(printed: &[u8]) -> Vec<(OsString, OsString)> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_answer_to_which_one_names_the_build_claude_or_both() {
+        assert_eq!(which_to_cancel("The Plugin build."), Cancel::Build);
+        assert_eq!(which_to_cancel("claude"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("the hand-off"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("both of them"), Cancel::Both);
+        assert_eq!(which_to_cancel("neither"), Cancel::Unclear);
+    }
 }
