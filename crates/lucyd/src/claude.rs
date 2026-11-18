@@ -403,14 +403,16 @@ impl Claude {
         role: Role,
     ) -> Box<dyn SessionModel> {
         let (inputs, inputs_rx) = std_mpsc::channel();
-        let (cwd, transcripts) = match &role.place {
-            Place::WorkDir => (&self.work_dir, Transcripts::Deleted),
-            Place::Workspace(workspace) => (&workspace.dir, Transcripts::Deleted),
-            Place::HandOff(hand_off) => (&hand_off.folder, Transcripts::Kept),
+        let (cwd, transcripts, resumed) = match &role.place {
+            Place::WorkDir => (&self.work_dir, Transcripts::Deleted, None),
+            Place::Workspace(workspace) => (&workspace.dir, Transcripts::Deleted, None),
+            Place::HandOff(hand_off) => {
+                (&hand_off.folder, Transcripts::Kept, hand_off.resume.clone())
+            }
         };
         let run = Arc::new(Run {
             process: Mutex::new(Process::Starting),
-            conversations: Mutex::default(),
+            conversations: Mutex::new(resumed.into_iter().collect()),
             transcripts,
             config_dir: self.config_dir(),
             cwd: cwd.clone(),
