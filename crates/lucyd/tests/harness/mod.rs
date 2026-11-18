@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use lucy_config::credentials::CredentialStore;
 use lucy_config::{Config, Provider};
-use lucy_ipc::{Client, Event, StateEvent, Topic};
+use lucy_ipc::{Client, Event, State, StateEvent, Topic};
 use lucyd::adapters::{
     Adapters, Clock, HandOff, Launcher, Notification, NotificationAction, Notifier, RateLimit,
     Relay, SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
@@ -663,6 +663,25 @@ pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {
         Event::State(state) => state,
         other => panic!("expected a state event, got {other:?}"),
+    }
+}
+
+pub const SCREEN_QUESTION: &str =
+    "I need to look at and use your screen. That lasts until Lucy restarts. Okay?";
+
+impl Harness {
+    pub fn asked(&self, events: &mut Client) -> String {
+        loop {
+            let state = next_state(events);
+            match state.state {
+                State::Confirming => break,
+                State::Speaking | State::Thinking => {}
+                _ => panic!("expected Lucy to ask, got {state:?}"),
+            }
+        }
+        let prompt = self.tts.next_sentence();
+        self.tts.finish_playing();
+        prompt
     }
 }
 
