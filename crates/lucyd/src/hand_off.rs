@@ -22,8 +22,7 @@ use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
 use crate::runner::{self, Command, When};
 use crate::session::{
-    which_to_cancel, Answer, Cancel, Expects, Question, BOTH_RUNNING, BOTH_STOPPED, BUILD_STOPPED,
-    HAND_OFF_STOPPED, WHICH_TO_CANCEL,
+    self, Answer, Expects, Question, BUILD_STOPPED, HAND_OFF_STOPPED, QUEUED_DROPPED,
 };
 use crate::sync::Locked;
 
@@ -62,8 +61,9 @@ struct Jobs {
 }
 
 struct Request {
-    request: String,
+    task: String,
     folder: PathBuf,
+    budget: Duration,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +71,52 @@ pub enum Working {
     #[default]
     No,
     Yes,
+    YesAndQueued,
+}
+
+const BOTH_STOPPED: &str = "Okay, I've stopped them both.";
+
+const BOTH_RUNNING: &str = "Okay, I'll leave them both running.";
+
+const WHICH_TO_CANCEL: &str = "Do you mean the Plugin build, or Claude?";
+
+const ALREADY_FINISHED: &str = "Claude had already finished.";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Cancel {
+    Build,
+    HandOff,
+    Both,
+    Unclear,
+}
+
+fn which_to_cancel(said: &str) -> Cancel {
+    let said = session::words(said);
+    let named = |names: &[&str]| said.iter().any(|word| names.contains(&word.as_str()));
+    let both = named(&["both", "all"]);
+    let build = both || named(&["build", "plugin"]);
+    let hand_off = both || named(&["claude", "hand", "handoff"]);
+    match (build, hand_off) {
+        (true, true) => Cancel::Both,
+        (true, false) => Cancel::Build,
+        (false, true) => Cancel::HandOff,
+        (false, false) => Cancel::Unclear,
+    }
+}
+
+enum Stopped {
+    Ended,
+    Alone,
+    AndQueued,
+}
+
+impl Stopped {
+    fn said(&self, stopped: &str) -> String {
+        match self {
+            Stopped::AndQueued => format!("{stopped} {QUEUED_DROPPED}"),
+            _ => stopped.to_owned(),
+        }
+    }
 }
 
 impl HandOffs {
@@ -103,19 +149,33 @@ impl HandOffs {
         arguments: &JsonObject,
         folders: &Search,
     ) -> CallToolResult {
-        let request = string(arguments, "request");
-        if request.trim().is_empty() {
+        let task = string(arguments, "request");
+        if task.trim().is_empty() {
             return error("request must be what the user wants Claude to do, in their words.");
         }
         let folder = match self.folder(&string(arguments, "folder"), folders).await {
             Ok(folder) => folder,
             Err(refused) => return error(refused),
         };
-        let request = Request { request, folder };
+        let budget = match lucy_config::load(&self.config_path) {
+            Ok(config) => config.handoff.budget_mins.to_duration(),
+            Err(e) => {
+                return error(format!(
+                    "Nothing has started: Lucy {}. Tell the user, and that they can fix the file \
+                     and ask again.",
+                    e.to_string().lines().next().unwrap_or_default()
+                ))
+            }
+        };
+        let request = Request {
+            task,
+            folder,
+            budget,
+        };
         let mut jobs = self.jobs.locked();
         if let Some(running) = &jobs.current {
             let running = running.request.clone();
-            return Self::queue(&mut jobs, &running, request, arguments);
+            return self.queue(&mut jobs, &running, request, arguments);
         }
         jobs.current = Some(self.start(request));
         drop(jobs);
@@ -127,6 +187,7 @@ impl HandOffs {
     }
 
     fn queue(
+        &self,
         jobs: &mut Jobs,
         running: &str,
         request: Request,
@@ -136,7 +197,7 @@ impl HandOffs {
             return error(format!(
                 "Claude is still working on \"{running}\", and \"{}\" is queued after it. Tell \
                  the user Lucy can't take another until those are done.",
-                queued.request
+                queued.task
             ));
         }
         if arguments.get("queue").and_then(serde_json::Value::as_bool) != Some(true) {
@@ -148,6 +209,7 @@ impl HandOffs {
             ));
         }
         jobs.queued = Some(request);
+        self.working.send_replace(Working::YesAndQueued);
         text(
             "It's queued: Claude starts on it once it has finished the one it's on. Tell the \
              user so in a few words.",
@@ -155,16 +217,14 @@ impl HandOffs {
     }
 
     fn start(self: &Arc<Self>, request: Request) -> Arc<Job> {
-        let budget = lucy_config::load(&self.config_path)
-            .map(|config| config.handoff)
-            .unwrap_or_default();
         let job = Arc::new(Job {
-            request: request.request,
+            request: request.task,
             folder: request.folder,
-            budget: Duration::from_secs_f64(budget.budget_mins * 60.0),
+            budget: request.budget,
             hand_offs: Arc::downgrade(self),
             state: Mutex::default(),
             cancelled: Notify::new(),
+            ended: watch::Sender::new(false),
         });
         tokio::spawn(job.clone().run());
         job
@@ -203,18 +263,28 @@ impl HandOffs {
     }
 
     pub fn cancel(&self) {
-        let current = {
-            let mut jobs = self.jobs.locked();
-            jobs.queued = None;
-            jobs.current.clone()
-        };
+        let current = self.jobs.locked().current.clone();
         if let Some(job) = current {
-            job.cancelled.notify_one();
+            self.stop(&job);
         }
+    }
+
+    fn stop(&self, job: &Arc<Job>) -> Stopped {
+        let mut jobs = self.jobs.locked();
+        if !jobs.current.as_ref().is_some_and(|c| Arc::ptr_eq(c, job)) {
+            return Stopped::Ended;
+        }
+        job.cancelled.notify_one();
+        if jobs.queued.take().is_none() {
+            return Stopped::Alone;
+        }
+        self.working.send_replace(Working::Yes);
+        Stopped::AndQueued
     }
 
     pub fn ask_which_to_cancel(self: &Arc<Self>, authoring: Arc<Authoring>) {
         let hand_offs = self.clone();
+        let asked_about = self.jobs.locked().current.clone();
         tokio::spawn(async move {
             let question = Question {
                 prompt: WHICH_TO_CANCEL.to_owned(),
@@ -223,25 +293,31 @@ impl HandOffs {
             let answer = runner::ask(&hand_offs.commands, question, None).await;
             let choice = match answer {
                 Some(Answer::Said(said)) => which_to_cancel(&said),
-                _ => Cancel::Neither,
+                _ => Cancel::Unclear,
+            };
+            let stop = || match &asked_about {
+                Some(job) => hand_offs.stop(job),
+                None => Stopped::Ended,
             };
             let said = match choice {
                 Cancel::Build => {
                     authoring.cancel();
-                    BUILD_STOPPED
+                    BUILD_STOPPED.to_owned()
                 }
-                Cancel::HandOff => {
-                    hand_offs.cancel();
-                    HAND_OFF_STOPPED
-                }
+                Cancel::HandOff => match stop() {
+                    Stopped::Ended => ALREADY_FINISHED.to_owned(),
+                    stopped => stopped.said(HAND_OFF_STOPPED),
+                },
                 Cancel::Both => {
                     authoring.cancel();
-                    hand_offs.cancel();
-                    BOTH_STOPPED
+                    match stop() {
+                        Stopped::Ended => format!("{BUILD_STOPPED} {ALREADY_FINISHED}"),
+                        stopped => stopped.said(BOTH_STOPPED),
+                    }
                 }
-                Cancel::Neither => BOTH_RUNNING,
+                Cancel::Unclear => BOTH_RUNNING.to_owned(),
             };
-            let _ = hand_offs.commands.send(Command::Say(said.to_owned()));
+            let _ = hand_offs.commands.send(Command::Say(said));
         });
     }
 
@@ -260,9 +336,11 @@ impl HandOffs {
             return;
         }
         jobs.current = jobs.queued.take().map(|next| self.start(next));
-        if jobs.current.is_none() {
-            self.working.send_replace(Working::No);
-        }
+        let working = match jobs.current {
+            Some(_) => Working::Yes,
+            None => Working::No,
+        };
+        self.working.send_replace(working);
     }
 
     async fn environment(&self) -> Vec<(OsString, OsString)> {
@@ -383,6 +461,7 @@ pub struct Job {
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
     cancelled: Notify,
+    ended: watch::Sender<bool>,
 }
 
 #[derive(Default)]
@@ -453,6 +532,14 @@ impl Job {
     }
 
     pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
+        let mut ended = self.ended.subscribe();
+        tokio::select! {
+            result = self.answer(name, arguments) => result,
+            _ = ended.wait_for(|ended| *ended) => Some(error("Lucy has stopped this Hand-off.")),
+        }
+    }
+
+    async fn answer(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
         Some(match name {
             "report_progress" => {
                 self.show("Claude is working", string(arguments, "text"));
@@ -667,7 +754,7 @@ impl Job {
             };
             let _ = hand_offs
                 .commands
-                .send(Command::TurnOrNextSession(text, kept));
+                .send(Command::ShownTurnOrNextSession(text, kept));
         }
     }
 
@@ -677,6 +764,7 @@ impl Job {
             (state.model.take(), state.token.take())
         };
         drop((model, token));
+        self.ended.send_replace(true);
         if let Some(hand_offs) = self.hand_offs.upgrade() {
             hand_offs.finished(self);
         }
@@ -770,4 +858,18 @@ fn parse_env(printed: &[u8]) -> Vec<(OsString, OsString)> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_answer_to_which_one_names_the_build_claude_or_both() {
+        assert_eq!(which_to_cancel("The Plugin build."), Cancel::Build);
+        assert_eq!(which_to_cancel("claude"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("the hand-off"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("both of them"), Cancel::Both);
+        assert_eq!(which_to_cancel("neither"), Cancel::Unclear);
+    }
 }

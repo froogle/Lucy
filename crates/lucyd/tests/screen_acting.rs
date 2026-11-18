@@ -1,6 +1,6 @@
 //! Acting on the screen (ADR 0008): before a `click` or `key` reaches the
 //! Plugin, Lucy matches its `describe` against `[screen] risky_words`, and a
-//! match needs a spoken yes. A `type` ending in a newline counts as a key.
+//! match needs a spoken yes. A `type` with a newline in it counts as a key.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
@@ -207,19 +207,21 @@ fn a_click_or_key_without_a_describe_is_refused_unsent() {
 }
 
 #[test]
-fn a_risky_type_ending_in_a_newline_asks_like_a_key() {
-    let lucyd = with_hands("");
-    let mut events = session(&lucyd);
-    let typed = json!({"text": "see you at 6\n", "describe": "Enter, to send the message"});
-    let call = model_calls(&lucyd, "type", typed.clone());
+fn a_risky_type_with_a_newline_in_it_asks_like_a_key() {
+    for text in ["see you at 6\n", "see you at 6\nthanks"] {
+        let lucyd = with_hands("");
+        let mut events = session(&lucyd);
+        let typed = json!({"text": text, "describe": "Enter, to send the message"});
+        let call = model_calls(&lucyd, "type", typed.clone());
 
-    assert_eq!(
-        asked(&lucyd, &mut events),
-        "Shall I type that and press Enter, to send the message?"
-    );
-    lucyd.say("yes");
+        assert_eq!(
+            asked(&lucyd, &mut events),
+            "Shall I type that and press Enter, to send the message?"
+        );
+        lucyd.say("yes");
 
-    assert_eq!(forwarded(&call.join().unwrap().unwrap(), "type"), typed);
+        assert_eq!(forwarded(&call.join().unwrap().unwrap(), "type"), typed);
+    }
 }
 
 #[test]
@@ -234,14 +236,16 @@ fn a_type_with_no_newline_is_never_checked() {
 }
 
 #[test]
-fn a_type_ending_in_a_newline_without_a_describe_is_refused_unsent() {
+fn a_type_with_a_newline_in_it_without_a_describe_is_refused_unsent() {
     let lucyd = with_hands("");
     let _events = session(&lucyd);
 
-    let result = unasked(&lucyd, "type", json!({"text": "hello\n"}));
+    for typed in ["hello\n", "hello\nthere"] {
+        let result = unasked(&lucyd, "type", json!({"text": typed}));
 
-    assert_eq!(result.is_error, Some(true), "{}", text(&result));
-    assert!(text(&result).contains("describe"), "{}", text(&result));
+        assert_eq!(result.is_error, Some(true), "{}", text(&result));
+        assert!(text(&result).contains("describe"), "{}", text(&result));
+    }
 }
 
 #[test]
@@ -287,4 +291,26 @@ fn screen_access_turned_off_drops_every_acting_tool() {
         names.iter().all(|name| !name.starts_with("hands__")),
         "{names:?}"
     );
+}
+
+#[test]
+fn a_risky_click_on_a_tool_that_always_confirms_asks_once() {
+    let lucyd = Harness::start();
+    let confirming = HANDS.replacen(
+        "screen = \"click\"\n",
+        "screen = \"click\"\nconfirm = true\n",
+        1,
+    );
+    lucyd.install_plugin("hands", &confirming);
+    lucyd.approve("hands");
+    let mut events = session(&lucyd);
+    let click = json!({"x": 10, "y": 20, "describe": "the Send button"});
+    let call = model_calls(&lucyd, "click", click.clone());
+
+    assert_eq!(asked(&lucyd, &mut events), "Shall I click the Send button?");
+    lucyd.say("yes");
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(forwarded(&result, "click"), click);
+    assert_eq!(lucyd.tts.sentences(), ["Shall I click the Send button?"]);
 }

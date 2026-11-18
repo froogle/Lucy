@@ -952,6 +952,7 @@ impl SessionTools {
             }
         };
         if entry.confirm
+            && !risky
             && !self
                 .confirmed(plugin_name, entry, arguments.as_ref(), None)
                 .await

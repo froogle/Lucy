@@ -9,6 +9,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -572,7 +573,6 @@ impl Default for Authoring {
 pub struct Screen {
     /// When false, the Plugins' screen tools are left out of the tool list.
     pub enabled: bool,
-    /// A click or key whose description has one of these words needs a Confirmation.
     pub risky_words: Vec<String>,
 }
 
@@ -628,18 +628,40 @@ impl Default for Files {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct HandOff {
-    /// Where a folder named by name is searched for, three levels deep; `~` is the user's home.
     pub roots: Vec<PathBuf>,
-    /// Minutes a Hand-off may run before Lucy stops it.
-    pub budget_mins: f64,
+    pub budget_mins: Minutes,
 }
 
 impl Default for HandOff {
     fn default() -> Self {
         HandOff {
             roots: vec![PathBuf::from("~")],
-            budget_mins: 60.0,
+            budget_mins: Minutes(Duration::from_secs(60 * 60)),
         }
+    }
+}
+
+/// A positive, finite number of minutes, checked when the config loads.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(try_from = "f64")]
+pub struct Minutes(Duration);
+
+impl Minutes {
+    /// How long these minutes last.
+    pub fn to_duration(self) -> Duration {
+        self.0
+    }
+}
+
+impl TryFrom<f64> for Minutes {
+    type Error = String;
+
+    fn try_from(minutes: f64) -> Result<Self, Self::Error> {
+        Duration::try_from_secs_f64(minutes * 60.0)
+            .ok()
+            .filter(|duration| !duration.is_zero())
+            .map(Minutes)
+            .ok_or_else(|| format!("{minutes} isn't a positive number of minutes"))
     }
 }
 
@@ -894,11 +916,28 @@ mod tests {
 
     #[test]
     fn a_hand_off_has_an_hour_unless_config_says_otherwise() {
-        assert_eq!(Config::default().handoff.budget_mins, 60.0);
+        assert_eq!(
+            Config::default().handoff.budget_mins.to_duration(),
+            std::time::Duration::from_secs(60 * 60)
+        );
 
         let config = parse("[handoff]\nbudget_mins = 90\n");
 
-        assert_eq!(config.handoff.budget_mins, 90.0);
+        assert_eq!(
+            config.handoff.budget_mins.to_duration(),
+            std::time::Duration::from_secs(90 * 60)
+        );
+    }
+
+    #[test]
+    fn a_hand_off_budget_must_be_a_positive_number_of_minutes() {
+        for budget in ["-5", "nan", "inf", "0", "\"soon\""] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, format!("[handoff]\nbudget_mins = {budget}\n")).unwrap();
+
+            assert!(load(&path).is_err(), "{budget}");
+        }
     }
 
     #[test]
