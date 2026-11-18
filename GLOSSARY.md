@@ -50,10 +50,10 @@ _Avoid_: Descriptor, spec
 
 **Approval**:
 The user's yes or no that lets a new or changed Plugin be used. Every Plugin needs one, whoever wrote it, and any change to it needs a fresh one.
-_Avoid_: Confirmation (that is the spoken yes before a single risky action), permission, consent
+_Avoid_: Confirmation (that is the spoken yes before a risky action), permission, consent
 
 **Confirmation**:
-The user's spoken yes before one risky action, asked and heard by Lucy herself rather than by the thinking model. Anything other than a clear yes means no.
+The user's spoken yes before a risky action, asked and heard by Lucy herself rather than by the thinking model. Most cover one action; the yes to the screen covers every screen action until lucyd restarts. Anything other than a clear yes means no.
 _Avoid_: Approval (that is the yes for a whole Plugin), permission
 
 **Input dialog**:
