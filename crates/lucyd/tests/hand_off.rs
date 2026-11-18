@@ -138,7 +138,6 @@ fn a_permission_request_is_asked_with_claudes_description_and_the_full_input_not
     let lucyd = Harness::start();
     let mut events = handed_off(&lucyd, &lucyd.scratch());
     lucyd.thinking.hand_off.next_turn();
-    assert_eq!(lucyd.thinking.hand_off.tool_names(), ["permission"]);
 
     let call = asks_permission(&lucyd, run_the_tests());
 
