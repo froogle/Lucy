@@ -11,7 +11,7 @@ use atspi::zbus;
 use atspi::{AccessibilityConnection, CoordType, ObjectRefOwned, Role, State};
 use futures_lite::StreamExt;
 
-use crate::screen::{Element, FocusedWindow, InWindow, Pid, WindowPoint};
+use crate::screen::{Element, FocusedWindow, InWindow, Page, Pid, WindowPoint};
 
 const PATIENCE: Duration = Duration::from_secs(2);
 
@@ -86,13 +86,45 @@ struct Top<N> {
 }
 
 pub async fn text_at(at: InWindow) -> Result<Option<Element>, String> {
-    match tokio::time::timeout(PATIENCE, read(at)).await {
+    patiently(read(at)).await
+}
+
+pub async fn page(window: InWindow) -> Result<Page, String> {
+    patiently(find_page(window)).await
+}
+
+async fn patiently<T>(reading: impl Future<Output = Reading<T>>) -> Result<T, String> {
+    match tokio::time::timeout(PATIENCE, reading).await {
         Ok(read) => read.map_err(|e| format!("AT-SPI can't be read: {e}")),
         Err(_) => Err(format!(
             "AT-SPI didn't answer within {} s",
             PATIENCE.as_secs()
         )),
     }
+}
+
+async fn find_page(window: InWindow) -> Reading<Page> {
+    let a11y = AccessibilityConnection::new().await?;
+    let bus = a11y.connection();
+    let Some(app) = app(&a11y, window.pid).await? else {
+        return Ok(Page::Unknown);
+    };
+    let tops = tops(bus, &app).await?;
+    let Some(frame) = frame(&tops, &window.title) else {
+        return Ok(Page::Unknown);
+    };
+    let mut unsearched = std::collections::VecDeque::from([frame.clone()]);
+    for _ in 0..MOST_SEARCHED {
+        let Some(node) = unsearched.pop_front() else {
+            return Ok(Page::Empty);
+        };
+        let proxy = node.as_accessible_proxy(bus).await?;
+        if proxy.get_role().await? == Role::DocumentWeb {
+            return Ok(Page::Filled);
+        }
+        unsearched.extend(proxy.get_children().await?);
+    }
+    Ok(Page::Filled)
 }
 
 pub async fn focused_role(events: &FocusEvents, window: FocusedWindow) -> Result<String, String> {

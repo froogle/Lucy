@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use hyprland::{lua_string, Address, Hyprland, Window};
 pub use screen::{
     Acted, Button, Captured, Combo, Direction, Element, Focus, FocusedWindow, Image, InWindow,
-    Modifier, Pid, Point, Probed, Region, Screen, Wayland, WindowPoint,
+    Modifier, Page, Paged, Pid, Point, Probed, Region, Screen, Wayland, WindowPoint,
 };
 use settings::Named;
 
@@ -297,22 +297,26 @@ impl Omarchy {
         let readable = hyprland::window_at(&windows, at)
             .filter(|window| !window.xwayland)
             .and_then(|window| Some((u32::try_from(window.pid).ok()?, window)));
-        let found = match readable {
-            Some((pid, window)) => {
-                let inside = InWindow {
-                    pid: Pid(pid),
-                    title: window.title.clone(),
-                    at: WindowPoint {
-                        x: (at.x - f64::from(window.at[0])).floor() as i32,
-                        y: (at.y - f64::from(window.at[1])).floor() as i32,
-                    },
-                };
-                self.screen.text_at(inside).await?
-            }
-            None => None,
+        let Some((pid, window)) = readable else {
+            return Ok(json!({ "found": null }));
         };
-        let found = found.map(|e| json!({"name": e.name, "text": e.text, "role": e.role}));
-        Ok(json!({ "found": found }))
+        let inside = InWindow {
+            pid: Pid(pid),
+            title: window.title.clone(),
+            at: WindowPoint {
+                x: (at.x - f64::from(window.at[0])).floor() as i32,
+                y: (at.y - f64::from(window.at[1])).floor() as i32,
+            },
+        };
+        if let Some(e) = self.screen.text_at(inside.clone()).await? {
+            return Ok(json!({ "found": {"name": e.name, "text": e.text, "role": e.role} }));
+        }
+        match browser(&window.class) {
+            Some(browser) if self.screen.page(inside).await == Ok(Page::Empty) => {
+                Ok(json!({ "found": null, "accessibility_off": browser }))
+            }
+            _ => Ok(json!({ "found": null })),
+        }
     }
 
     fn point(&self, args: &JsonObject) -> Result<Point, String> {
@@ -530,6 +534,15 @@ impl Omarchy {
 }
 
 const POISONED: &str = "no thread panics while holding the last look";
+
+fn browser(class: &str) -> Option<&'static str> {
+    match class {
+        "google-chrome" => Some("chrome"),
+        "chromium" => Some("chromium"),
+        brave if brave.starts_with("brave-") => Some("brave"),
+        _ => None,
+    }
+}
 
 fn described(window: &Window) -> String {
     format!(
@@ -768,7 +781,9 @@ fn tools() -> Vec<Tool> {
             "text_at",
             "Reads the accessible name, text and role of the element at a point in the last \
              screenshot_for_model image, through AT-SPI; found is null when nothing there can \
-             be read for sure. Lucy calls it before a click whose describe is plain.",
+             be read for sure, and accessibility_off names the browser (brave, chrome or \
+             chromium) when the point is in one whose page isn't in its tree. Lucy calls it \
+             before a click whose describe is plain.",
             schema(
                 json!({"x": {"type": "number"}, "y": {"type": "number"}}),
                 &["x", "y"],

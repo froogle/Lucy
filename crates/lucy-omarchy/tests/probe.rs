@@ -150,6 +150,55 @@ fn a_layer_surface_under_the_windows_or_away_from_the_point_leaves_the_window_pr
 }
 
 #[test]
+fn a_browser_with_an_empty_page_tree_is_found_null_with_its_accessibility_off() {
+    for (class, browser) in [
+        ("brave-browser", "brave"),
+        ("brave-app.hey.com__-Default", "brave"),
+        ("google-chrome", "chrome"),
+        ("chromium", "chromium"),
+    ] {
+        let omarchy = desktop();
+        omarchy.hyprland.set(FIREFOX, "class", json!(class));
+        omarchy.screen.empty_page();
+
+        let read = omarchy.call("text_at", json!({"x": 300, "y": 240}));
+
+        assert_eq!(
+            read,
+            json!({"found": null, "accessibility_off": browser}),
+            "{class}"
+        );
+    }
+}
+
+#[test]
+fn a_browser_with_its_page_in_the_tree_or_something_read_has_no_accessibility_off() {
+    let omarchy = desktop();
+    omarchy
+        .hyprland
+        .set(FIREFOX, "class", json!("brave-browser"));
+
+    let read = omarchy.call("text_at", json!({"x": 300, "y": 240}));
+    assert_eq!(read, json!({"found": null}));
+
+    omarchy.screen.empty_page();
+    omarchy.screen.show(send_button());
+    let read = omarchy.call("text_at", json!({"x": 300, "y": 240}));
+    assert_eq!(read["found"]["name"], json!("Send"));
+    assert_eq!(read.get("accessibility_off"), None);
+}
+
+#[test]
+fn an_app_that_isnt_a_browser_has_no_accessibility_off_even_with_no_page() {
+    let omarchy = desktop();
+    omarchy.screen.empty_page();
+
+    let read = omarchy.call("text_at", json!({"x": 300, "y": 240}));
+
+    assert_eq!(read, json!({"found": null}));
+}
+
+#[test]
 fn the_probe_before_any_look_is_refused() {
     let omarchy = Plugin::start();
 

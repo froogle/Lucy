@@ -109,6 +109,20 @@ pub struct Element {
 /// What [`Screen::text_at`] returns: the element there, or `None` when none can be read.
 pub type Probed<'a> = Pin<Box<dyn Future<Output = Result<Option<Element>, String>> + Send + 'a>>;
 
+/// Whether a window's accessibility tree holds a web page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    /// A web document is in the tree, or the tree is too big to be empty.
+    Filled,
+    /// The window's frame is there but holds no web document.
+    Empty,
+    /// The window's frame can't be told apart, so it can't be said.
+    Unknown,
+}
+
+/// What [`Screen::page`] returns.
+pub type Paged<'a> = Pin<Box<dyn Future<Output = Result<Page, String>> + Send + 'a>>;
+
 /// What [`Screen::focused_role`] returns: the focused element's role, or why it can't be found.
 pub type Focus<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 
@@ -142,6 +156,9 @@ pub trait Screen: Send + Sync {
     /// `None` means it can't be sure what is there: nothing readable, or
     /// something drawn over the window that it can't read, such as a menu.
     fn text_at(&self, at: InWindow) -> Probed<'_>;
+
+    /// Says whether the window `window` names holds a web page in its accessibility tree.
+    fn page(&self, window: InWindow) -> Paged<'_>;
 
     /// Finds the AT-SPI role name (`"password text"`, `"entry"`) of the
     /// element with the keyboard focus in `window`.
@@ -183,6 +200,10 @@ impl Screen for Wayland {
 
     fn text_at(&self, at: InWindow) -> Probed<'_> {
         Box::pin(crate::accessible::text_at(at))
+    }
+
+    fn page(&self, window: InWindow) -> Paged<'_> {
+        Box::pin(crate::accessible::page(window))
     }
 
     fn focused_role(&self, window: FocusedWindow) -> Focus<'_> {
