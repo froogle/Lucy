@@ -1,15 +1,12 @@
-use std::ffi::OsString;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
-use std::process::Stdio;
 
 use atspi::Role;
-use tokio::process::Command;
 
 use crate::accessible::FocusEvents;
-use crate::hyprland::{Monitor, Window};
-
-const GRIM: &str = "grim";
+use crate::capture::{Look, Placement};
+use crate::hyprland::{Hyprland, Monitor, Window};
 
 const MODEL_LONG_EDGE: f64 = 1568.0;
 
@@ -165,17 +162,17 @@ pub trait Screen: Send + Sync {
     fn focused_role(&self, window: FocusedWindow) -> RoleFound<'_>;
 }
 
-/// The real [`Screen`]: captures through `grim`, found on `path`, acts
-/// through Wayland's virtual pointer and keyboard, and reads through AT-SPI.
+/// The real [`Screen`]: captures and acts over Wayland, and reads through AT-SPI.
 pub struct Wayland {
-    path: OsString,
+    hyprland: Hyprland,
     focus: FocusEvents,
 }
 
 impl Wayland {
-    pub fn new(path: OsString) -> Wayland {
+    /// Reaches Hyprland's request socket at `socket` to find which monitor to capture.
+    pub fn new(socket: PathBuf) -> Wayland {
         Wayland {
-            path,
+            hyprland: Hyprland::new(socket),
             focus: FocusEvents::default(),
         }
     }
@@ -213,35 +210,19 @@ impl Screen for Wayland {
 
     fn capture(&self, region: Region, scale: f64) -> Captured<'_> {
         Box::pin(async move {
-            let geometry = format!(
-                "{},{} {}x{}",
-                region.x, region.y, region.width, region.height
-            );
-            let output = Command::new(GRIM)
-                .args([
-                    "-g",
-                    &geometry,
-                    "-s",
-                    &format!("{scale:.4}"),
-                    "-t",
-                    "png",
-                    "-",
-                ])
-                .env("PATH", &self.path)
-                .stdin(Stdio::null())
-                .output()
-                .await
-                .map_err(|e| format!("{GRIM} can't run: {e}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "{GRIM} failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
-            Ok(Image {
-                bytes: output.stdout,
-                mime_type: "image/png".into(),
-            })
+            let monitors = self.hyprland.monitors().await?;
+            let monitor =
+                holding(&monitors, region).ok_or("no monitor shows that part of the screen")?;
+            let look = Look {
+                monitor: Placement {
+                    x: monitor.x,
+                    y: monitor.y,
+                    scale: monitor.scale,
+                },
+                region,
+                scale,
+            };
+            crate::screencopy::capture(monitor.name.clone(), look).await
         })
     }
 }
@@ -261,6 +242,18 @@ pub(crate) fn monitor(monitor: &Monitor) -> Region {
         width,
         height,
     }
+}
+
+pub(crate) fn holding(monitors: &[Monitor], region: Region) -> Option<&Monitor> {
+    let middle_x = f64::from(region.x) + f64::from(region.width) / 2.0;
+    let middle_y = f64::from(region.y) + f64::from(region.height) / 2.0;
+    monitors.iter().find(|candidate| {
+        let shown = monitor(candidate);
+        let within = |middle: f64, start: i32, extent: u32| {
+            (f64::from(start)..f64::from(start) + f64::from(extent)).contains(&middle)
+        };
+        within(middle_x, shown.x, shown.width) && within(middle_y, shown.y, shown.height)
+    })
 }
 
 pub(crate) fn desktop(monitors: &[Monitor]) -> Option<Region> {
@@ -304,4 +297,54 @@ pub(crate) fn fit(region: Region, native: f64) -> f64 {
 pub(crate) fn scaled(region: Region, scale: f64) -> (u32, u32) {
     let pixels = |logical: u32| (f64::from(logical) * scale).round() as u32;
     (pixels(region.width), pixels(region.height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn monitor(name: &str, x: i32, width: u32, scale: f64) -> Monitor {
+        Monitor {
+            id: 0,
+            name: name.to_owned(),
+            x,
+            y: 0,
+            width,
+            height: 1440,
+            scale,
+            transform: 0,
+            focused: false,
+        }
+    }
+
+    #[test]
+    fn a_region_belongs_to_the_monitor_holding_its_middle() {
+        let monitors = [
+            monitor("DP-1", 0, 2560, 1.0),
+            monitor("eDP-1", 2560, 2880, 2.0),
+        ];
+        let mostly_on_the_laptop = Region {
+            x: 2400,
+            y: 100,
+            width: 800,
+            height: 600,
+        };
+
+        let held = holding(&monitors, mostly_on_the_laptop).map(|m| m.name.as_str());
+
+        assert_eq!(held, Some("eDP-1"));
+    }
+
+    #[test]
+    fn a_region_whose_middle_is_off_every_monitor_belongs_to_none() {
+        let monitors = [monitor("DP-1", 0, 2560, 1.0)];
+        let beside = Region {
+            x: 2500,
+            y: 0,
+            width: 400,
+            height: 400,
+        };
+
+        assert!(holding(&monitors, beside).is_none());
+    }
 }

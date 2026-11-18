@@ -11,11 +11,13 @@
 //! `omarchy-*` commands (`tests/`).
 
 mod accessible;
+mod capture;
 mod command;
 mod hyprland;
 mod keys;
 mod layout;
 mod screen;
+mod screencopy;
 mod settings;
 mod wayland;
 
@@ -144,7 +146,7 @@ impl Action {
 impl Omarchy {
     /// The server, reaching Hyprland and the `omarchy-*` commands where `desktop` says.
     pub fn new(desktop: Desktop) -> Omarchy {
-        let wayland = Wayland::new(desktop.path.clone());
+        let wayland = Wayland::new(desktop.socket.clone());
         Omarchy::with_screen(desktop, Arc::new(wayland))
     }
 

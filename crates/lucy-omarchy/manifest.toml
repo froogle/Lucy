@@ -116,8 +116,8 @@ examples = ["lock the screen", "keep the computer awake"]
 # themes and language from ~/.config/omarchy. The lock looks for running apps
 # through /proc. The screenshot and the night light's toggle start through
 # Hyprland's exec, outside this sandbox (ADR 0012), so they're listed in
-# commands but need no access here. grim captures the screen for the model
-# over the Wayland socket and writes the image to its stdout. Clicks, keys,
+# commands but need no access here. Looks capture the screen over the
+# Wayland socket into a memfd, never a file in /dev/shm. Clicks, keys,
 # scrolling and typing go over the same socket through Wayland's virtual
 # pointer and keyboard, with the keymap in a memfd. The text_at probe reads
 # apps' accessibility trees over the AT-SPI bus, a socket under
@@ -131,7 +131,6 @@ write = [
 ]
 read = ["~/.config/omarchy", "/proc"]
 commands = [
-    "grim",
     "omarchy-capture-screenshot",
     "omarchy-hyprland-workspace-layout-current",
     "omarchy-hyprland-workspace-layout-toggle",

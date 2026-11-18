@@ -27,3 +27,5 @@ Spec: [v0.2](../spec.md), Screen access. ADR 0008. Stories 32–36, 42, 43.
 ## Comments
 
 2026-11-17: built in slice 1 (`lucy-v0-2-slice-1`). The Plugin captures with `grim`. Images are scaled to at most 1568 px on the long edge and 1.15 MP (the smallest Claude limit, so the API never rescales and 07's coordinates hold). The "looking" mark shows on every allowed look, the first included, and lasts until the Turn ends: cleared per call, it flashed too briefly to see. Any answer but yes, a cut-in included, declines for the Session. lucyd holds rmcp's log to warnings, since at trace it logged whole tool results, images included (ADR 0008). Hand check left: on Omarchy, "what's on my screen?" after a yes.
+
+2026-11-18: capture with `grim` never worked inside the Plugin sandbox (it needs `/dev/shm`). [15](15-capture-the-screen-without-grim.md) replaces it with the Plugin's own capture over Wayland.

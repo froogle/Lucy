@@ -16,9 +16,11 @@ base64.workspace = true
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
-rustix = { version = "1", features = ["fs", "time"] }
+rustix = { version = "1", features = ["event", "fs", "time"] }
 futures-lite = "2"
 atspi = { version = "=0.30.0", default-features = false, features = ["connection", "proxies", "tokio", "zbus"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client"] }

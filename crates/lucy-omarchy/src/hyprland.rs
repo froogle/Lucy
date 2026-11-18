@@ -58,6 +58,7 @@ pub struct Window {
 #[derive(Deserialize)]
 pub struct Monitor {
     pub id: i64,
+    pub name: String,
     pub x: i32,
     pub y: i32,
     pub width: u32,
