@@ -22,6 +22,10 @@
 //!   `LucyScreenSecret`, and the text `a fake screen`.
 //! - `click`, `key`, `type` and `scroll`: return their name, `: ` and the
 //!   arguments they got, as JSON.
+//! - `text_at`: appends its arguments, as a JSON line, to `probed` in its
+//!   private state dir and returns `{"found": ...}` holding the JSON in `under`
+//!   there (`null` when there is none). When `under` holds `fail`, it answers
+//!   with a tool error.
 
 use std::sync::Arc;
 
@@ -162,6 +166,7 @@ impl ServerHandler for Fixture {
                 None => return Ok(ask_form(&request).into()),
                 Some(responses) => Ok(format!("answered: {}", responses["answer"])),
             },
+            "text_at" => return Ok(text_at(&request).into()),
             "click" | "key" | "type" | "scroll" => {
                 let arguments = Value::Object(request.arguments.clone().unwrap_or_default());
                 Ok(format!("{}: {arguments}", request.name))
@@ -172,6 +177,22 @@ impl ServerHandler for Fixture {
         };
         Ok(result(outcome).into())
     }
+}
+
+fn text_at(request: &CallToolRequestParams) -> CallToolResult {
+    let dir = std::path::PathBuf::from(std::env::var("LUCY_PLUGIN_STATE_DIR").unwrap_or_default());
+    let arguments = Value::Object(request.arguments.clone().unwrap_or_default());
+    let mut probed = std::fs::read_to_string(dir.join("probed")).unwrap_or_default();
+    probed.push_str(&format!("{arguments}\n"));
+    let _ = std::fs::write(dir.join("probed"), probed);
+    let under = std::fs::read_to_string(dir.join("under")).unwrap_or_else(|_| "null".into());
+    if under.trim() == "fail" {
+        return CallToolResult::error(vec![ContentBlock::text("AT-SPI can't be read")]);
+    }
+    let found: Value = serde_json::from_str(&under).expect("tests write under as JSON");
+    CallToolResult::success(vec![ContentBlock::text(
+        json!({ "found": found }).to_string(),
+    )])
 }
 
 fn ask(question: &str) -> InputRequiredResult {

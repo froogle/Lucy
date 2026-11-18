@@ -2,13 +2,15 @@
 //! manages windows and workspaces by dispatching to Hyprland over its IPC
 //! socket, and changes the tiling layout, theme, bar, night light,
 //! screenshots and screen lock through Omarchy's own commands. It shows the
-//! model the screen through a [`Screen`]. It runs only
+//! model the screen and acts on it through a [`Screen`], and its `text_at`
+//! probe reads the element under a point for Lucy's risk check. It runs only
 //! the `omarchy-*` commands named here, never arbitrary ones, and offers no
 //! logout, reboot or shutdown.
 //!
 //! Its tests drive it through MCP against a fake Hyprland socket and fake
 //! `omarchy-*` commands (`tests/`).
 
+mod accessible;
 mod command;
 mod hyprland;
 mod keys;
@@ -34,7 +36,8 @@ use serde_json::{json, Value};
 
 use hyprland::{lua_string, Address, Hyprland, Window};
 pub use screen::{
-    Acted, Button, Captured, Combo, Direction, Image, Modifier, Point, Region, Screen, Wayland,
+    Acted, Button, Captured, Combo, Direction, Element, Image, InWindow, Modifier, Point, Probed,
+    Region, Screen, Wayland,
 };
 use settings::Named;
 
@@ -240,6 +243,28 @@ impl Omarchy {
         }
         self.screen.type_text(text.to_owned()).await?;
         Ok(json!({"done": "typed"}))
+    }
+
+    async fn text_at(&self, args: &JsonObject) -> Result<Value, String> {
+        let at = self.point(args)?;
+        let windows = self.hyprland.windows().await?;
+        let readable = hyprland::window_at(&windows, at.x, at.y)
+            .filter(|window| !window.xwayland)
+            .and_then(|window| Some((u32::try_from(window.pid).ok()?, window)));
+        let found = match readable {
+            Some((pid, window)) => {
+                let inside = InWindow {
+                    pid,
+                    title: window.title.clone(),
+                    x: (at.x - f64::from(window.at[0])).floor() as i32,
+                    y: (at.y - f64::from(window.at[1])).floor() as i32,
+                };
+                self.screen.text_at(inside).await?
+            }
+            None => None,
+        };
+        let found = found.map(|e| json!({"name": e.name, "text": e.text, "role": e.role}));
+        Ok(json!({ "found": found }))
     }
 
     fn point(&self, args: &JsonObject) -> Result<Point, String> {
@@ -692,6 +717,16 @@ fn tools() -> Vec<Tool> {
             ),
         ),
         Tool::new(
+            "text_at",
+            "Reads the accessible name, text and role of the element at a point in the last \
+             screenshot_for_model image, through AT-SPI; found is null when nothing there can \
+             be read. Lucy calls it before each click.",
+            schema(
+                json!({"x": {"type": "number"}, "y": {"type": "number"}}),
+                &["x", "y"],
+            ),
+        ),
+        Tool::new(
             "idle_lock",
             "Locks the screen now, or keeps the computer awake (no idle lock or screensaver) \
              until idling is allowed again.",
@@ -759,6 +794,7 @@ impl ServerHandler for Omarchy {
             "scroll" => self.scroll(&args).await,
             "key" => self.key(&args).await,
             "type" => self.type_text(&args).await,
+            "text_at" => self.text_at(&args).await,
             "idle_lock" => setting(&args, |action| settings::idle_lock(&self.path, action)).await,
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };

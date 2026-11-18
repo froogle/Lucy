@@ -1,6 +1,8 @@
 //! Acting on the screen (ADR 0008): before a `click` or `key` reaches the
 //! Plugin, Lucy matches its `describe` against `[screen] risky_words`, and a
 //! match needs a spoken yes. A `type` with a newline in it counts as a key.
+//! Before a `click`, Lucy also reads the text under it through the Plugin's
+//! probe and matches that; a click on nothing readable asks.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
@@ -16,7 +18,7 @@ const HANDS: &str = "name = \"hands\"\n\
      version = \"0.1.0\"\n\
      author = \"human\"\n\
      summary = \"Acts on the screen\"\n\
-     command = [\"./fixture-plugin\", \"click\", \"key\", \"type\", \"scroll\"]\n\
+     command = [\"./fixture-plugin\", \"click\", \"key\", \"type\", \"scroll\", \"text_at\"]\n\
      \n\
      [[tools]]\n\
      name = \"click\"\n\
@@ -36,7 +38,14 @@ const HANDS: &str = "name = \"hands\"\n\
      [[tools]]\n\
      name = \"scroll\"\n\
      handles = \"scrolling\"\n\
-     screen = \"scroll\"\n";
+     screen = \"scroll\"\n\
+     \n\
+     [[tools]]\n\
+     name = \"text_at\"\n\
+     handles = \"reading the screen at a point\"\n\
+     screen = \"probe\"\n";
+
+const A_VIDEO: &str = r#"{"name": "Video", "text": "", "role": "link"}"#;
 
 type Call = JoinHandle<Result<CallToolResult, String>>;
 
@@ -44,7 +53,23 @@ fn with_hands(config: &str) -> Harness {
     let lucyd = Harness::with_config(config);
     lucyd.install_plugin("hands", HANDS);
     lucyd.approve("hands");
+    show(&lucyd, A_VIDEO);
     lucyd
+}
+
+fn show(lucyd: &Harness, under: &str) {
+    let dir = lucyd.state_dir().join("plugins/hands");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("under"), under).unwrap();
+}
+
+fn probed(lucyd: &Harness) -> Vec<Value> {
+    let probed =
+        std::fs::read_to_string(lucyd.state_dir().join("plugins/hands/probed")).unwrap_or_default();
+    probed
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
 }
 
 fn session(lucyd: &Harness) -> Client {
@@ -303,6 +328,7 @@ fn a_risky_click_on_a_tool_that_always_confirms_asks_once() {
     );
     lucyd.install_plugin("hands", &confirming);
     lucyd.approve("hands");
+    show(&lucyd, A_VIDEO);
     let mut events = session(&lucyd);
     let click = json!({"x": 10, "y": 20, "describe": "the Send button"});
     let call = model_calls(&lucyd, "click", click.clone());
@@ -313,4 +339,105 @@ fn a_risky_click_on_a_tool_that_always_confirms_asks_once() {
     let result = call.join().unwrap().unwrap();
     assert_eq!(forwarded(&result, "click"), click);
     assert_eq!(lucyd.tts.sentences(), ["Shall I click the Send button?"]);
+}
+
+#[test]
+fn the_text_under_a_click_matching_a_risky_word_asks_even_when_describe_is_plain() {
+    let lucyd = with_hands("");
+    show(
+        &lucyd,
+        r#"{"name": "Send", "text": "Send", "role": "push button"}"#,
+    );
+    let mut events = session(&lucyd);
+    let click = json!({"x": 10, "y": 20, "describe": "the Play button"});
+    let call = model_calls(&lucyd, "click", click.clone());
+
+    assert_eq!(
+        asked(&lucyd, &mut events),
+        "Shall I click the Play button? On screen it says Send."
+    );
+    lucyd.say("yes");
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(forwarded(&result, "click"), click);
+    assert_eq!(probed(&lucyd), [json!({"x": 10, "y": 20})]);
+}
+
+#[test]
+fn a_click_on_nothing_readable_asks_in_its_own_words() {
+    for under in ["null", "fail"] {
+        let lucyd = with_hands("");
+        show(&lucyd, under);
+        let mut events = session(&lucyd);
+        let call = model_calls(
+            &lucyd,
+            "click",
+            json!({"x": 10, "y": 20, "describe": "the Play button"}),
+        );
+
+        assert_eq!(asked(&lucyd, &mut events), "Shall I click the Play button?");
+        lucyd.say("no");
+
+        let result = call.join().unwrap().unwrap();
+        assert!(text(&result).starts_with("declined"), "{}", text(&result));
+    }
+}
+
+#[test]
+fn a_click_on_a_plugin_with_no_probe_asks() {
+    let lucyd = Harness::start();
+    let unprobed = HANDS
+        .split("\n[[tools]]\nname = \"text_at\"")
+        .next()
+        .unwrap()
+        .replace(", \"text_at\"]", "]");
+    lucyd.install_plugin("hands", &unprobed);
+    lucyd.approve("hands");
+    let mut events = session(&lucyd);
+    let call = model_calls(
+        &lucyd,
+        "click",
+        json!({"x": 10, "y": 20, "describe": "the Play button"}),
+    );
+
+    assert_eq!(asked(&lucyd, &mut events), "Shall I click the Play button?");
+    lucyd.say("no");
+    call.join().unwrap().unwrap();
+}
+
+#[test]
+fn a_risky_describe_asks_without_probing() {
+    let lucyd = with_hands("");
+    let mut events = session(&lucyd);
+    let call = model_calls(
+        &lucyd,
+        "click",
+        json!({"x": 10, "y": 20, "describe": "the Send button"}),
+    );
+
+    assert_eq!(asked(&lucyd, &mut events), "Shall I click the Send button?");
+    lucyd.say("no");
+    call.join().unwrap().unwrap();
+    assert!(probed(&lucyd).is_empty());
+}
+
+#[test]
+fn the_probe_is_never_offered_to_the_model_nor_called_by_it() {
+    let lucyd = with_hands("");
+    let _events = session(&lucyd);
+
+    let names = lucyd.thinking.tool_names();
+    let called = lucyd
+        .thinking
+        .call_tool_with("hands__text_at", json!({"x": 1, "y": 1}));
+
+    assert!(names.contains(&"hands__click".to_owned()), "{names:?}");
+    assert!(!names.contains(&"hands__text_at".to_owned()), "{names:?}");
+    assert!(
+        called
+            .as_ref()
+            .map_or(true, |result| result.is_error == Some(true)),
+        "{called:?}"
+    );
+    assert!(probed(&lucyd).is_empty());
 }

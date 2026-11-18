@@ -93,6 +93,13 @@ handles = "scrolling on the screen, after looking at it"
 examples = ["scroll down", "scroll up a bit"]
 screen = "scroll"
 
+# Lucy calls this herself before each click, to check the text under it
+# against [screen] risky_words; it is never offered to the model.
+[[tools]]
+name = "text_at"
+handles = "reading the element under a point on the screen"
+screen = "probe"
+
 [[tools]]
 name = "idle_lock"
 handles = "locking the screen, or keeping the computer awake"
@@ -111,7 +118,9 @@ examples = ["lock the screen", "keep the computer awake"]
 # commands but need no access here. grim captures the screen for the model
 # over the Wayland socket and writes the image to its stdout. Clicks, keys,
 # scrolling and typing go over the same socket through Wayland's virtual
-# pointer and keyboard, with the keymap in a memfd.
+# pointer and keyboard, with the keymap in a memfd. The text_at probe reads
+# apps' accessibility trees over the AT-SPI bus, a socket under
+# $XDG_RUNTIME_DIR/at-spi found through the session bus's socket there.
 write = [
     "$XDG_RUNTIME_DIR/omarchy-theme-set.lock",
     "$XDG_RUNTIME_DIR/omarchy-theme-set-retint.lock",

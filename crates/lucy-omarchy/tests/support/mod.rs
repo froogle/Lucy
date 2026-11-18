@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lucy_omarchy::{
-    Acted, Button, Captured, Combo, Desktop, Direction, Image, Omarchy, Point, Region, Screen,
-    Wayland,
+    Acted, Button, Captured, Combo, Desktop, Direction, Element, Image, InWindow, Omarchy, Point,
+    Probed, Region, Screen, Wayland,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
@@ -65,7 +65,8 @@ impl Hyprland {
     pub fn windows(&self, windows: &[(&str, &str, &str, &str)], focused: Option<&str>) {
         let clients: Vec<Value> = windows
             .iter()
-            .map(|(address, class, title, workspace)| {
+            .enumerate()
+            .map(|(focus, (address, class, title, workspace))| {
                 json!({
                     "address": address,
                     "mapped": true,
@@ -77,6 +78,9 @@ impl Hyprland {
                     "pinned": false,
                     "fullscreen": 0,
                     "pid": 4242,
+                    "xwayland": false,
+                    "visible": true,
+                    "focusHistoryID": focus,
                     "at": [0, 0],
                     "size": [800, 600],
                     "monitor": 0,
@@ -163,9 +167,19 @@ pub struct FakeScreen {
     captures: Arc<Mutex<Vec<(Region, f64)>>>,
     acts: Arc<Mutex<Vec<Act>>>,
     failure: Arc<Mutex<Option<String>>>,
+    under: Arc<Mutex<Option<Element>>>,
+    probed: Arc<Mutex<Vec<InWindow>>>,
 }
 
 impl FakeScreen {
+    pub fn show(&self, under: Element) {
+        *self.under.lock().unwrap() = Some(under);
+    }
+
+    pub fn probed(&self) -> Vec<InWindow> {
+        self.probed.lock().unwrap().clone()
+    }
+
     pub fn captures(&self) -> Vec<(Region, f64)> {
         self.captures.lock().unwrap().clone()
     }
@@ -202,6 +216,12 @@ impl Screen for FakeScreen {
 
     fn type_text(&self, text: String) -> Acted<'_> {
         self.act(Act::Type(text))
+    }
+
+    fn text_at(&self, at: InWindow) -> Probed<'_> {
+        self.probed.lock().unwrap().push(at);
+        let under = self.under.lock().unwrap().clone();
+        Box::pin(async move { Ok(under) })
     }
 
     fn capture(&self, region: Region, scale: f64) -> Captured<'_> {
