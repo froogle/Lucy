@@ -229,6 +229,50 @@ fn no_answer_counts_as_a_no_and_is_not_remembered() {
     assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
 }
 
+#[test]
+fn cutting_in_on_the_question_counts_as_a_no_and_is_not_remembered() {
+    let lucyd = with_eyes("");
+    let mut events = session(&lucyd);
+    let call = model_looks(&lucyd);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    assert_eq!(lucyd.tts.next_sentence(), SCREEN_QUESTION);
+
+    lucyd.start_speaking();
+    lucyd.say("hang on, why?");
+    lucyd.stop_speaking();
+    lucyd.tts.finish_playing();
+
+    declined_then_heard(&lucyd, call);
+    let again = model_looks(&lucyd);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
+    assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
+    assert_eq!(times_asked(&lucyd), 2);
+}
+
+#[test]
+fn ending_the_session_on_the_question_counts_as_a_no_and_is_not_remembered() {
+    let lucyd = with_eyes("");
+    let mut events = session(&lucyd);
+    let call = model_looks(&lucyd);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+
+    events.end_session().unwrap();
+
+    assert_eq!(next_state(&mut events).state, State::Idle);
+    let unless_the_relay_was_cut_off = call.join().unwrap();
+    if let Ok(result) = unless_the_relay_was_cut_off {
+        assert!(text(&result).starts_with("declined"), "{result:?}");
+        assert!(images(&result).is_empty());
+    }
+    let mut events = session(&lucyd);
+    let again = model_looks(&lucyd);
+    assert_eq!(lucyd.asked(&mut events), SCREEN_QUESTION);
+    lucyd.say("yes");
+    assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
+    assert_eq!(times_asked(&lucyd), 2);
+}
+
 fn end(lucyd: &Harness, mut events: Client) {
     lucyd.thinking.turn_end();
     events.end_session().unwrap();
