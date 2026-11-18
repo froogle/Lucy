@@ -651,7 +651,7 @@ fn tools() -> Vec<Tool> {
         Tool::new(
             "type",
             "Types text into whatever has the keyboard focus, as though on a keyboard; a \
-             newline presses Enter. Text ending in a newline needs describe, saying what that \
+             newline presses Enter. Text with a newline in it needs describe, saying what that \
              Enter does (\"Enter, to send the message\"). Never type a password or other \
              secret: ask for it through ask_typed. Look again afterwards to check it worked.",
             schema(

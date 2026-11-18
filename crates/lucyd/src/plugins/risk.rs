@@ -7,7 +7,7 @@ const UNDESCRIBED: &str = "refused: describe is required, in a few plain words n
                            this acts on and what it does (\"the Send button\", \"Enter, to send \
                            the message\"), so nothing was done.";
 
-const UNDESCRIBED_ENTER: &str = "refused: text ending in a newline presses Enter, so describe \
+const UNDESCRIBED_ENTER: &str = "refused: a newline in the text presses Enter, so describe \
                                  is required, in a few plain words saying what that Enter does \
                                  (\"Enter, to send the message\"), so nothing was done.";
 
@@ -27,7 +27,7 @@ pub fn check(screen: Option<ScreenUse>, arguments: Option<&JsonObject>, risky: &
     let (asks, undescribed) = match screen {
         Some(ScreenUse::Click) => ("Shall I click", UNDESCRIBED),
         Some(ScreenUse::Key) => ("Shall I press", UNDESCRIBED),
-        Some(ScreenUse::Type) if argument("text").is_some_and(|text| text.ends_with('\n')) => {
+        Some(ScreenUse::Type) if argument("text").is_some_and(|text| text.contains('\n')) => {
             ("Shall I type that and press", UNDESCRIBED_ENTER)
         }
         _ => return Risk::Plain,
@@ -78,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn a_risky_phrase_matches_whole_words_in_order() {
+    fn a_risky_phrase_matches_its_words_in_order_from_a_word_start() {
         assert_ne!(click("Buy it now", &["buy now", "buy it"]), Risk::Plain);
         assert_eq!(click("Buy, then go now", &["buy now"]), Risk::Plain);
     }
