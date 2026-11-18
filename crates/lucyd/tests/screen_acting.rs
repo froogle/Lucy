@@ -480,3 +480,105 @@ fn the_probe_is_never_offered_to_the_model_nor_called_by_it() {
     );
     assert!(probed(&lucyd).is_empty());
 }
+
+const OFFER: &str = "I can't read the page in Brave, so I'll ask before each click. Its \
+                     accessibility switch turns off when Brave restarts; the \
+                     force-renderer-accessibility flag in brave-flags.conf keeps it on. Want me \
+                     to open Brave's accessibility settings?";
+
+fn accessibility_off(lucyd: &Harness, browser: &str) {
+    show(lucyd, "null");
+    let dir = lucyd.state_dir().join("plugins/hands");
+    std::fs::write(dir.join("accessibility_off"), browser).unwrap();
+}
+
+fn asked_next(lucyd: &Harness, events: &mut Client) -> String {
+    while next_state(events).state != State::Confirming {}
+    let prompt = lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    prompt
+}
+
+fn plain_click(lucyd: &Harness) -> Call {
+    model_calls(
+        lucyd,
+        "click",
+        json!({"x": 10, "y": 20, "describe": "the Play button"}),
+    )
+}
+
+#[test]
+fn a_browser_with_accessibility_off_gets_the_offer_once_and_a_yes_opens_its_settings() {
+    let lucyd = with_hands("");
+    accessibility_off(&lucyd, "brave");
+    let mut events = session(&lucyd);
+    let call = plain_click(&lucyd);
+
+    assert_eq!(asked(&lucyd, &mut events), OFFER);
+    lucyd.say("yes");
+    assert_eq!(
+        asked_next(&lucyd, &mut events),
+        "Shall I click the Play button?"
+    );
+    lucyd.say("yes");
+    call.join().unwrap().unwrap();
+    assert_eq!(
+        lucyd.launcher.opened_in_browser(),
+        [("brave".to_owned(), "brave://accessibility".to_owned())]
+    );
+
+    let again = plain_click(&lucyd);
+    assert_eq!(
+        asked_next(&lucyd, &mut events),
+        "Shall I click the Play button?"
+    );
+    lucyd.say("no");
+    again.join().unwrap().unwrap();
+    assert_eq!(lucyd.launcher.opened_in_browser().len(), 1);
+}
+
+#[test]
+fn a_no_to_the_offer_opens_nothing_and_the_click_still_asks() {
+    let lucyd = with_hands("");
+    accessibility_off(&lucyd, "chrome");
+    let mut events = session(&lucyd);
+    let call = plain_click(&lucyd);
+
+    let offer = asked(&lucyd, &mut events);
+    assert!(
+        offer.starts_with("I can't read the page in Chrome"),
+        "{offer}"
+    );
+    assert!(offer.contains("chrome-flags.conf"), "{offer}");
+    lucyd.say("no");
+    assert_eq!(lucyd.tts.next_sentence(), "Okay, I won't.");
+    lucyd.tts.finish_playing();
+    assert_eq!(
+        asked_next(&lucyd, &mut events),
+        "Shall I click the Play button?"
+    );
+    lucyd.say("no");
+
+    let result = call.join().unwrap().unwrap();
+    assert!(text(&result).starts_with("declined"), "{}", text(&result));
+    assert!(lucyd.launcher.opened_in_browser().is_empty());
+    assert!(lucyd.launcher.opened().is_empty());
+}
+
+#[test]
+fn an_app_that_returns_nothing_or_an_unknown_browser_gets_no_offer() {
+    for off in [None, Some("netscape")] {
+        let lucyd = with_hands("");
+        show(&lucyd, "null");
+        if let Some(browser) = off {
+            accessibility_off(&lucyd, browser);
+        }
+        let mut events = session(&lucyd);
+        let call = plain_click(&lucyd);
+
+        assert_eq!(asked(&lucyd, &mut events), "Shall I click the Play button?");
+        lucyd.say("no");
+        call.join().unwrap().unwrap();
+        assert!(lucyd.launcher.opened_in_browser().is_empty());
+    }
+}

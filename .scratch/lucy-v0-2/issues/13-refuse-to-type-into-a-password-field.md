@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Screen access (Plugin: password fields). ADR 0008. Sto
 
 **Seams:** owns the `Screen` trait's focused-role method. Uses the Plugin's AT-SPI connection (owned by 10).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -22,3 +22,5 @@ Spec: [v0.2](../spec.md), Screen access (Plugin: password fields). ADR 0008. Sto
 - [ ] Once, by hand on Omarchy: asking her to type into a login page's password box is refused
 
 ## Comments
+
+2026-11-18: built in slice 4 (`lucy-v0-2-slice-4`). Focus events start at the first `type` in a Plugin run, not at Plugin start, so the shipped binary in lucyd's tests stays off the real bus; that first `type` always uses the fallback search, and a listener that ends restarts at a later `type`. A remembered focus counts only when its parent chain reaches a frame titled like the focused window. The search covers that window's frames, skips hidden elements and lists that manage their own items, and stops at 4000 elements. Unknown focus types and logs without the text. Hand check left: on Omarchy, typing into a login page's password box is refused.

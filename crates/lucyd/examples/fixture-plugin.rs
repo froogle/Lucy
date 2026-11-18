@@ -25,7 +25,9 @@
 //! - `text_at`: appends its arguments, as a JSON line, to `probed` in its
 //!   private state dir and returns `{"found": ...}` holding the JSON in `under`
 //!   there (`null` when there is none). When `under` holds `fail`, it answers
-//!   with a tool error; when it holds `hang`, it never answers.
+//!   with a tool error; when it holds `hang`, it never answers. When
+//!   `accessibility_off` is there too, its text is the answer's
+//!   `accessibility_off`, the browser whose page it couldn't read.
 
 use std::sync::Arc;
 
@@ -199,8 +201,12 @@ fn text_at(request: &CallToolRequestParams) -> Option<CallToolResult> {
         _ => {}
     }
     let found: Value = serde_json::from_str(&under).expect("tests write under as JSON");
+    let mut answer = json!({ "found": found });
+    if let Ok(browser) = std::fs::read_to_string(dir.join("accessibility_off")) {
+        answer["accessibility_off"] = json!(browser.trim());
+    }
     Some(CallToolResult::success(vec![ContentBlock::text(
-        json!({ "found": found }).to_string(),
+        answer.to_string(),
     )]))
 }
 

@@ -34,10 +34,11 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{json, Value};
 
+pub use atspi::Role;
 use hyprland::{lua_string, Address, Hyprland, Window};
 pub use screen::{
-    Acted, Button, Captured, Combo, Direction, Element, Image, InWindow, Modifier, Pid, Point,
-    Probed, Region, Screen, Wayland, WindowPoint,
+    Acted, Button, Captured, Combo, Direction, Element, FocusedWindow, Image, InWindow, Modifier,
+    Page, PageFound, Pid, Point, Probed, Region, RoleFound, Screen, Wayland, WindowPoint,
 };
 use settings::Named;
 
@@ -88,6 +89,11 @@ struct Look {
 const MOST_NOTCHES: u64 = 25;
 
 const MOST_TYPED: usize = 4000;
+
+const INTO_A_PASSWORD: &str = "The focused field is a password field, and I never type into \
+     one. Never put a password or other secret on the screen: a Plugin that needs one asks \
+     for it as its credential, and anything else the user types themselves through \
+     ask_typed.";
 
 const LOOK_FIRST: &str = "x and y are pixels in your last screenshot_for_model image, and      there isn't one yet: look first.";
 
@@ -241,8 +247,44 @@ impl Omarchy {
                 "{c:?} can't be typed; for keys like Escape or arrows use the key tool"
             ));
         }
+        if self.focused_role().await == Ok(Role::PasswordText) {
+            return Err(INTO_A_PASSWORD.into());
+        }
         self.screen.type_text(text.to_owned()).await?;
         Ok(json!({"done": "typed"}))
+    }
+
+    async fn focused_role(&self) -> Result<Role, String> {
+        let found = match self.focused_window().await {
+            Ok(window) => self.screen.focused_role(window).await,
+            Err(e) => Err(e),
+        };
+        if let Err(why) = &found {
+            eprintln!("omarchy: the password check couldn't run, so typing anyway: {why}");
+        }
+        found
+    }
+
+    async fn focused_window(&self) -> Result<FocusedWindow, String> {
+        let active = self
+            .hyprland
+            .active_window()
+            .await?
+            .ok_or("no window has the focus")?;
+        let windows = self.hyprland.windows().await?;
+        let window = windows
+            .into_iter()
+            .find(|window| window.address == active)
+            .ok_or("the focused window isn't listed")?;
+        if window.xwayland {
+            return Err("the focused window is an Xwayland one, outside AT-SPI's reach".into());
+        }
+        let pid =
+            u32::try_from(window.pid).map_err(|e| format!("the focused window has no PID: {e}"))?;
+        Ok(FocusedWindow {
+            pid: Pid(pid),
+            title: window.title,
+        })
     }
 
     async fn text_at(&self, args: &JsonObject) -> Result<Value, String> {
@@ -254,22 +296,26 @@ impl Omarchy {
         let readable = hyprland::window_at(&windows, at)
             .filter(|window| !window.xwayland)
             .and_then(|window| Some((u32::try_from(window.pid).ok()?, window)));
-        let found = match readable {
-            Some((pid, window)) => {
-                let inside = InWindow {
-                    pid: Pid(pid),
-                    title: window.title.clone(),
-                    at: WindowPoint {
-                        x: (at.x - f64::from(window.at[0])).floor() as i32,
-                        y: (at.y - f64::from(window.at[1])).floor() as i32,
-                    },
-                };
-                self.screen.text_at(inside).await?
-            }
-            None => None,
+        let Some((pid, window)) = readable else {
+            return Ok(json!({ "found": null }));
         };
-        let found = found.map(|e| json!({"name": e.name, "text": e.text, "role": e.role}));
-        Ok(json!({ "found": found }))
+        let inside = InWindow {
+            pid: Pid(pid),
+            title: window.title.clone(),
+            at: WindowPoint {
+                x: (at.x - f64::from(window.at[0])).floor() as i32,
+                y: (at.y - f64::from(window.at[1])).floor() as i32,
+            },
+        };
+        if let Some(e) = self.screen.text_at(inside.clone()).await? {
+            return Ok(json!({ "found": {"name": e.name, "text": e.text, "role": e.role} }));
+        }
+        match Browser::of(&window.class) {
+            Some(browser) if self.screen.page(inside).await == Ok(Page::Empty) => {
+                Ok(json!({ "found": null, "accessibility_off": browser.name() }))
+            }
+            _ => Ok(json!({ "found": null })),
+        }
     }
 
     fn point(&self, args: &JsonObject) -> Result<Point, String> {
@@ -487,6 +533,32 @@ impl Omarchy {
 }
 
 const POISONED: &str = "no thread panics while holding the last look";
+
+#[derive(Clone, Copy)]
+enum Browser {
+    Brave,
+    Chrome,
+    Chromium,
+}
+
+impl Browser {
+    fn of(class: &str) -> Option<Browser> {
+        match class {
+            "google-chrome" => Some(Browser::Chrome),
+            "chromium" => Some(Browser::Chromium),
+            brave if brave.starts_with("brave-") => Some(Browser::Brave),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Browser::Brave => "brave",
+            Browser::Chrome => "chrome",
+            Browser::Chromium => "chromium",
+        }
+    }
+}
 
 fn described(window: &Window) -> String {
     format!(
@@ -725,7 +797,9 @@ fn tools() -> Vec<Tool> {
             "text_at",
             "Reads the accessible name, text and role of the element at a point in the last \
              screenshot_for_model image, through AT-SPI; found is null when nothing there can \
-             be read for sure. Lucy calls it before a click whose describe is plain.",
+             be read for sure, and accessibility_off names the browser (brave, chrome or \
+             chromium) when the point is in one whose page isn't in its tree. Lucy calls it \
+             before a click whose describe is plain.",
             schema(
                 json!({"x": {"type": "number"}, "y": {"type": "number"}}),
                 &["x", "y"],

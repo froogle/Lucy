@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::mcp;
 
+use super::accessibility::Browser;
 use super::manifest::ScreenUse;
 
 const UNDESCRIBED: &str = "refused: describe is required, in a few plain words naming what \
@@ -59,7 +60,13 @@ fn confirmation(
     }
 }
 
-pub fn probed(result: &CallToolResult) -> Result<Option<String>, String> {
+#[derive(Default)]
+pub struct Probed {
+    pub under: Option<String>,
+    pub accessibility_off: Option<Browser>,
+}
+
+pub fn probed(result: &CallToolResult) -> Result<Probed, String> {
     let answer = mcp::result_text(result);
     if result.is_error == Some(true) {
         return Err(format!("it answered with an error: {answer}"));
@@ -78,7 +85,10 @@ pub fn probed(result: &CallToolResult) -> Result<Option<String>, String> {
         (false, true) => name,
         (false, false) => format!("{name}, {text}"),
     };
-    Ok((!under.is_empty()).then_some(under))
+    Ok(Probed {
+        under: (!under.is_empty()).then_some(under),
+        accessibility_off: read["accessibility_off"].as_str().and_then(Browser::named),
+    })
 }
 
 fn described(arguments: Option<&JsonObject>) -> Option<&str> {
