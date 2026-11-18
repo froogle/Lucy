@@ -2,6 +2,7 @@
 //! It keeps only the approved, working ones, and runs each in its sandbox on
 //! first use in a Session, forwarding the model's calls to it over MCP stdio.
 
+mod accessibility;
 mod approval;
 mod authored;
 mod environment;
@@ -14,6 +15,7 @@ pub(crate) mod sandbox;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
@@ -31,7 +33,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch};
 
-use crate::adapters::{Clock, CredentialStore, Notification, NotificationKind};
+use crate::adapters::{Clock, CredentialStore, Launcher, Notification, NotificationKind};
 use crate::input::{self, Filled, TypedAnswer};
 use crate::mcp;
 use crate::model_text::CALL_FINISHED;
@@ -39,6 +41,7 @@ use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
 use crate::sync::{Locked, POISONED};
+use accessibility::Browser;
 pub use environment::Environment;
 pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
 use manifest::{Manifest, ScreenUse, ToolEntry};
@@ -140,6 +143,7 @@ pub struct Host {
     credentials: Arc<dyn CredentialStore>,
     environment: Environment,
     clock: Arc<dyn Clock>,
+    launcher: Arc<dyn Launcher>,
 }
 
 struct Contents {
@@ -188,6 +192,7 @@ impl Host {
         credentials: Arc<dyn CredentialStore>,
         environment: Environment,
         clock: Arc<dyn Clock>,
+        launcher: Arc<dyn Launcher>,
     ) -> Arc<Host> {
         Arc::new(Host {
             paths,
@@ -199,6 +204,7 @@ impl Host {
             credentials,
             environment,
             clock,
+            launcher,
         })
     }
 
@@ -247,6 +253,7 @@ impl Host {
             screen,
             first_look: tokio::sync::Mutex::new(FirstLook::Unasked),
             looks: watch::Sender::new(0),
+            offered_accessibility: AtomicBool::new(false),
         });
         *self.session.locked() = Arc::downgrade(&tools);
         tools
@@ -792,6 +799,13 @@ pub struct SessionTools {
     screen: lucy_config::Screen,
     first_look: tokio::sync::Mutex<FirstLook>,
     looks: watch::Sender<u64>,
+    offered_accessibility: AtomicBool,
+}
+
+#[derive(Default)]
+struct Probed {
+    under: Option<String>,
+    accessibility_off: Option<Browser>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -826,17 +840,17 @@ impl SessionTools {
         plugin: &Usable,
         arguments: Option<&JsonObject>,
         read: Option<&Credentials>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Probed, String> {
         let Some(probe) = plugin
             .manifest
             .tools
             .iter()
             .find(|t| t.screen == Some(ScreenUse::Probe))
         else {
-            return Ok(None);
+            return Ok(Probed::default());
         };
         let Some(peer) = self.started(plugin, read).await? else {
-            return Ok(None);
+            return Ok(Probed::default());
         };
         let point: JsonObject = ["x", "y"]
             .into_iter()
@@ -847,7 +861,10 @@ impl SessionTools {
         deadline.set(Some(self.host.clock.now() + PROBE_PATIENCE));
         tokio::select! {
             answer = peer.call_tool_once(request) => match answer {
-                Ok(CallToolResponse::Complete(result)) => risk::probed(&result),
+                Ok(CallToolResponse::Complete(result)) => Ok(Probed {
+                    under: risk::probed(&result)?,
+                    accessibility_off: Browser::off(&result),
+                }),
                 Ok(_) => Err("it answered with a question or a task".into()),
                 Err(e) => Err(format!("its call failed: {e}")),
             },
@@ -872,6 +889,29 @@ impl SessionTools {
             running.insert(plugin.name.clone(), client);
         }
         Ok(Some(running[&plugin.name].peer().clone()))
+    }
+
+    async fn offer_accessibility(&self, browser: Browser) {
+        if self.offered_accessibility.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let question = Question {
+            prompt: browser.offer(),
+            expects: Expects::Yes,
+        };
+        if runner::ask(&self.host.commands, question, None).await != Some(Answer::Yes) {
+            return;
+        }
+        let launcher = self.host.launcher.clone();
+        let opened = tokio::task::spawn_blocking(move || {
+            launcher.open_in_browser(browser.program(), browser.settings())
+        })
+        .await;
+        match opened {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("lucyd: {browser:?}'s accessibility settings didn't open: {e}"),
+            Err(e) => eprintln!("lucyd: opening {browser:?}'s accessibility settings failed: {e}"),
+        }
     }
 
     async fn look(&self) -> Result<(), Declined> {
@@ -1012,11 +1052,14 @@ impl SessionTools {
                     ) => probed,
                     _ = barge_ins.changed() => return Some(mcp::error(CANCELLED)),
                 };
-                let under = probed.unwrap_or_else(|e| {
+                let probed = probed.unwrap_or_else(|e| {
                     eprintln!("lucyd: {plugin_name}'s probe couldn't read under a click: {e}");
-                    None
+                    Probed::default()
                 });
-                risk::under_click(arguments.as_ref(), under.as_deref(), risky_words)
+                if let Some(browser) = probed.accessibility_off {
+                    self.offer_accessibility(browser).await;
+                }
+                risk::under_click(arguments.as_ref(), probed.under.as_deref(), risky_words)
             }
             risk => risk,
         };

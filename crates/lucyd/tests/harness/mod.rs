@@ -1481,9 +1481,14 @@ pub struct FakeLauncher {
     launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
     terminals: Arc<Mutex<Vec<Vec<String>>>>,
     no_terminal: Arc<AtomicBool>,
+    opened_in_browser: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl FakeLauncher {
+    pub fn opened_in_browser(&self) -> Vec<(String, String)> {
+        self.opened_in_browser.lock().unwrap().clone()
+    }
+
     pub fn opened(&self) -> Vec<String> {
         self.opened.lock().unwrap().clone()
     }
@@ -1544,6 +1549,14 @@ impl Launcher for FakeLauncher {
             ));
         }
         self.terminals.lock().unwrap().push(command.to_vec());
+        Ok(())
+    }
+
+    fn open_in_browser(&self, browser: &str, page: &str) -> std::io::Result<()> {
+        self.opened_in_browser
+            .lock()
+            .unwrap()
+            .push((browser.to_owned(), page.to_owned()));
         Ok(())
     }
 }

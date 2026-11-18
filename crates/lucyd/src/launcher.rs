@@ -55,6 +55,16 @@ impl Launcher for SystemLauncher {
         terminal.extend(command.iter().map(String::as_str));
         spawn_detached(&terminal)
     }
+
+    fn open_in_browser(&self, browser: &str, page: &str) -> io::Result<()> {
+        let mut command = if uwsm_is_running() {
+            vec!["uwsm", "app", "--"]
+        } else {
+            vec![]
+        };
+        command.extend([browser, page]);
+        spawn_detached(&command)
+    }
 }
 
 const DBUS_WAIT: Duration = Duration::from_secs(5);

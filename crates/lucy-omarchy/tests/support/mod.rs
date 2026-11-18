@@ -3,12 +3,13 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lucy_omarchy::{
-    Acted, Button, Captured, Combo, Desktop, Direction, Element, Image, InWindow, Omarchy, Point,
-    Probed, Region, Screen, Wayland,
+    Acted, Button, Captured, Combo, Desktop, Direction, Element, Image, InWindow, Omarchy, Page,
+    Paged, Point, Probed, Region, Screen, Wayland,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
@@ -190,9 +191,14 @@ pub struct FakeScreen {
     failure: Arc<Mutex<Option<String>>>,
     under: Arc<Mutex<Option<Element>>>,
     probed: Arc<Mutex<Vec<InWindow>>>,
+    empty_page: Arc<AtomicBool>,
 }
 
 impl FakeScreen {
+    pub fn empty_page(&self) {
+        self.empty_page.store(true, Ordering::SeqCst);
+    }
+
     pub fn show(&self, under: Element) {
         *self.under.lock().unwrap() = Some(under);
     }
@@ -243,6 +249,15 @@ impl Screen for FakeScreen {
         self.probed.lock().unwrap().push(at);
         let under = self.under.lock().unwrap().clone();
         Box::pin(async move { Ok(under) })
+    }
+
+    fn page(&self, _window: InWindow) -> Paged<'_> {
+        let page = if self.empty_page.load(Ordering::SeqCst) {
+            Page::Empty
+        } else {
+            Page::Filled
+        };
+        Box::pin(async move { Ok(page) })
     }
 
     fn capture(&self, region: Region, scale: f64) -> Captured<'_> {

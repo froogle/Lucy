@@ -94,8 +94,8 @@ examples = ["scroll down", "scroll up a bit"]
 screen = "scroll"
 
 # Lucy calls this herself before a click whose describe is plain, to check
-# the text under it against [screen] risky_words; it is never offered to the
-# model.
+# the text under it against [screen] risky_words, and to see whether a
+# browser's accessibility is off; it is never offered to the model.
 [[tools]]
 name = "text_at"
 handles = "reading the element under a point on the screen"

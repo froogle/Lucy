@@ -146,6 +146,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         adapters.credentials.clone(),
         plugin_env,
         adapters.clock.clone(),
+        adapters.launcher.clone(),
     );
     let thinking = adapters.thinking.clone();
     thinking.sweep();
