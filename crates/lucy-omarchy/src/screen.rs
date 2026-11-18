@@ -162,15 +162,13 @@ pub trait Screen: Send + Sync {
     fn focused_role(&self, window: FocusedWindow) -> RoleFound<'_>;
 }
 
-/// The real [`Screen`]: captures and acts over Wayland, and reads through AT-SPI.
-pub struct Wayland {
+pub(crate) struct Wayland {
     hyprland: Hyprland,
     focus: FocusEvents,
 }
 
 impl Wayland {
-    /// Reaches Hyprland's request socket at `socket` to find which monitor to capture.
-    pub fn new(socket: PathBuf) -> Wayland {
+    pub(crate) fn new(socket: PathBuf) -> Wayland {
         Wayland {
             hyprland: Hyprland::new(socket),
             focus: FocusEvents::default(),
@@ -214,13 +212,9 @@ impl Screen for Wayland {
             let monitor =
                 holding(&monitors, region).ok_or("no monitor shows that part of the screen")?;
             let look = Look {
-                monitor: Placement {
-                    x: monitor.x,
-                    y: monitor.y,
-                    scale: monitor.scale,
-                },
+                monitor: Placement::from(monitor),
                 region,
-                scale,
+                image_scale: scale,
             };
             crate::screencopy::capture(monitor.name.clone(), look).await
         })

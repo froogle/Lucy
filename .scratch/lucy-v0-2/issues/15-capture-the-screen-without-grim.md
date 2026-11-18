@@ -35,3 +35,5 @@ Spec: [v0.2](../spec.md), Screen access. ADR 0008. Fixes [06](06-look-at-the-scr
 - [ ] Once, by hand on Omarchy after the redeploy and re-approval: "what's on my screen?" and a look at one window both work, with the Plugin sandboxed and no `/dev/shm` grant
 
 ## Comments
+
+2026-11-18: the monitor a look captures. `Screen::capture` takes only a region and a scale, so `Wayland::capture` captures the monitor (from `hyprctl monitors`) holding the middle of the region, not the one `hyprctl clients` names for a window. A window straddling two monitors whose scales differ is then cropped at the other monitor's scale, which can soften the image; and a region whose middle falls in a gap between monitors that don't form a rectangle fails with "no monitor shows that part of the screen". Any part of the region off that monitor is left transparent rather than trimmed, so the image keeps `screen::scaled`'s size and click coordinates stay true. The scaling treats the buffer as premultiplied, as Wayland buffers are, so that transparent part doesn't darken the pixels at the monitor's edge. The 5 s deadline covers the whole look, listing the globals and the monitors included.

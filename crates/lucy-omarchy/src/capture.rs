@@ -4,6 +4,7 @@ use image::imageops::{self, FilterType};
 use image::{ImageFormat, RgbaImage};
 use wayland_client::protocol::wl_output::Transform;
 
+use crate::hyprland::Monitor;
 use crate::screen::{self, Image, Region};
 
 const OPAQUE: u8 = 255;
@@ -81,6 +82,16 @@ pub(crate) struct Placement {
     pub(crate) scale: f64,
 }
 
+impl From<&Monitor> for Placement {
+    fn from(monitor: &Monitor) -> Placement {
+        Placement {
+            x: monitor.x,
+            y: monitor.y,
+            scale: monitor.scale,
+        }
+    }
+}
+
 pub(crate) fn crop(shown: &RgbaImage, monitor: Placement, region: Region) -> RgbaImage {
     let pixels = |logical: f64| (logical * monitor.scale).round() as i64;
     let left = pixels(f64::from(region.x - monitor.x));
@@ -101,7 +112,7 @@ pub(crate) fn crop(shown: &RgbaImage, monitor: Placement, region: Region) -> Rgb
 pub(crate) struct Look {
     pub(crate) monitor: Placement,
     pub(crate) region: Region,
-    pub(crate) scale: f64,
+    pub(crate) image_scale: f64,
 }
 
 pub(crate) fn picture(
@@ -111,8 +122,9 @@ pub(crate) fn picture(
 ) -> Result<Image, String> {
     let shown = untransform(to_rgba(buffer), transform);
     let cropped = crop(&shown, look.monitor, look.region);
-    let (width, height) = screen::scaled(look.region, look.scale);
-    let resized = imageops::resize(&cropped, width.max(1), height.max(1), FilterType::Triangle);
+    let (width, height) = screen::scaled(look.region, look.image_scale);
+    let mut resized = imageops::resize(&cropped, width.max(1), height.max(1), FilterType::Triangle);
+    resized.pixels_mut().for_each(unpremultiply);
     let mut bytes = Vec::new();
     resized
         .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
@@ -121,6 +133,19 @@ pub(crate) fn picture(
         bytes,
         mime_type: "image/png".into(),
     })
+}
+
+fn unpremultiply(pixel: &mut image::Rgba<u8>) {
+    let [red, green, blue, alpha] = pixel.0;
+    if alpha == 0 || alpha == OPAQUE {
+        return;
+    }
+    let straight = |channel: u8| {
+        let scaled =
+            (u16::from(channel) * u16::from(OPAQUE) + u16::from(alpha) / 2) / u16::from(alpha);
+        u8::try_from(scaled.min(u16::from(OPAQUE))).expect("clamped to a byte")
+    };
+    pixel.0 = [straight(red), straight(green), straight(blue), alpha];
 }
 
 #[cfg(test)]
@@ -349,7 +374,7 @@ mod tests {
                 width: 15,
                 height: 7,
             },
-            scale: 0.5,
+            image_scale: 0.5,
         };
 
         let picture = picture(&buffer, Transform::Normal, &look).unwrap();
@@ -360,5 +385,48 @@ mod tests {
             .into_rgba8();
         assert_eq!(decoded.dimensions(), (8, 4));
         assert!(decoded.pixels().all(|pixel| pixel.0 == [0, 0, 255, 255]));
+    }
+
+    #[test]
+    fn scaling_down_keeps_the_colour_at_the_edge_of_the_monitor() {
+        let white = [255, 255, 255, 0];
+        let bytes: Vec<u8> = std::iter::repeat_n(white, 8 * 8).flatten().collect();
+        let buffer = Buffer {
+            bytes: &bytes,
+            width: 8,
+            height: 8,
+            stride: 32,
+            channels: Channels::Xrgb8888,
+        };
+        let look = Look {
+            monitor: Placement {
+                x: 0,
+                y: 0,
+                scale: 1.0,
+            },
+            region: Region {
+                x: -5,
+                y: 0,
+                width: 13,
+                height: 8,
+            },
+            image_scale: 0.5,
+        };
+
+        let picture = picture(&buffer, Transform::Normal, &look).unwrap();
+
+        let decoded = image::load_from_memory_with_format(&picture.bytes, image::ImageFormat::Png)
+            .unwrap()
+            .into_rgba8();
+        let shown: Vec<[u8; 4]> = decoded
+            .pixels()
+            .map(|pixel| pixel.0)
+            .filter(|pixel| pixel[3] > 0)
+            .collect();
+        assert!(!shown.is_empty());
+        assert!(
+            shown.iter().all(|pixel| pixel[..3] == [255, 255, 255]),
+            "{shown:?}"
+        );
     }
 }

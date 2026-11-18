@@ -38,9 +38,10 @@ use serde_json::{json, Value};
 
 pub use atspi::Role;
 use hyprland::{lua_string, Address, Hyprland, Window};
+use screen::Wayland;
 pub use screen::{
     Acted, Button, Captured, Combo, Direction, Element, FocusedWindow, Image, InWindow, Modifier,
-    Page, PageFound, Pid, Point, Probed, Region, RoleFound, Screen, Wayland, WindowPoint,
+    Page, PageFound, Pid, Point, Probed, Region, RoleFound, Screen, WindowPoint,
 };
 use settings::Named;
 
