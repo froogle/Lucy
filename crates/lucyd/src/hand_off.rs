@@ -754,7 +754,7 @@ impl Job {
             };
             let _ = hand_offs
                 .commands
-                .send(Command::TurnOrNextSession(text, kept));
+                .send(Command::ShownTurnOrNextSession(text, kept));
         }
     }
 

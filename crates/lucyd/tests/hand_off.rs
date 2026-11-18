@@ -921,3 +921,58 @@ fn which_one_answered_after_claude_finished_leaves_the_queued_hand_off_running()
         .is_ok());
     assert!(lucyd.client().status().unwrap().working);
 }
+
+fn ends_with_no_session_open(config: &str, end: impl FnOnce(&Harness)) -> (Harness, String) {
+    let lucyd = Harness::with_config(config);
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    lucyd.client().end_session().unwrap();
+    let still = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(still.summary, "Claude is still working");
+    until_state(&mut events, State::Idle);
+
+    end(&lucyd);
+
+    lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    lucyd.client().start_session().unwrap();
+    let told = lucyd.thinking.next_turn();
+    let shown: Vec<_> = lucyd
+        .notifier
+        .shown()
+        .into_iter()
+        .filter(|shown| shown.kind == NotificationKind::HandOff)
+        .collect();
+    assert!(shown.is_empty(), "a second notification: {shown:?}");
+    (lucyd, told)
+}
+
+#[test]
+fn claude_finishing_with_no_session_open_sends_one_notification() {
+    let (_lucyd, told) = ends_with_no_session_open("", |lucyd| {
+        lucyd.thinking.hand_off.answer(CONVERSATION, ANSWER);
+    });
+    assert!(told.contains(ANSWER), "{told}");
+}
+
+#[test]
+fn claude_failing_with_no_session_open_sends_one_notification() {
+    let (_lucyd, told) = ends_with_no_session_open("", |lucyd| {
+        lucyd
+            .thinking
+            .hand_off
+            .fail("Linear's MCP server isn't connected");
+    });
+    assert!(told.contains("couldn't finish"), "{told}");
+}
+
+#[test]
+fn claude_running_out_of_time_with_no_session_open_sends_one_notification() {
+    let (_lucyd, told) = ends_with_no_session_open("[handoff]\nbudget_mins = 30\n", |lucyd| {
+        lucyd.clock.advance(Duration::from_secs(30 * 60));
+    });
+    assert!(told.contains("ran out of time"), "{told}");
+}

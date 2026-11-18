@@ -40,6 +40,7 @@ pub enum Command {
     Ask(Ask),
     Say(String),
     TurnOrNextSession(String, Notification),
+    ShownTurnOrNextSession(String, Notification),
     VoicePreview(VoicePreview),
     SetupTest(SetupTest),
 }
@@ -223,6 +224,7 @@ impl Runner {
             Command::TurnOrNextSession(text, kept) => {
                 self.keep(Parked::Turn(text, When::QuietOrNextSession(kept)));
             }
+            Command::ShownTurnOrNextSession(text, _) => self.keep(Parked::Turn(text, When::Kept)),
             Command::Say(_) => {}
             command => return Some(command),
         }
@@ -445,7 +447,10 @@ impl Runner {
                         continue;
                     }
                     Some(Command::Say(text)) => Input::Say(text),
-                    Some(Command::TurnOrNextSession(text, kept)) => {
+                    Some(
+                        Command::TurnOrNextSession(text, kept)
+                        | Command::ShownTurnOrNextSession(text, kept),
+                    ) => {
                         let when = When::QuietOrNextSession(kept);
                         self.parked.push_back(Parked::Turn(text, when));
                         continue;
