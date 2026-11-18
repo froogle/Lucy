@@ -47,14 +47,18 @@ fn the_manifest_lists_exactly_the_tools_it_offers_and_only_kill_window_confirms(
         offered,
         [
             "bar",
+            "click",
             "idle_lock",
+            "key",
             "kill_window",
             "layout",
             "list_windows",
             "night_light",
             "screenshot",
             "screenshot_for_model",
+            "scroll",
             "theme",
+            "type",
             "window",
             "workspace"
         ]

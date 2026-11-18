@@ -13,10 +13,12 @@ use crate::adapters::{
     Thinking, ThinkingEvent, PERMISSION_TOOL,
 };
 use crate::files::{self, Search, Words};
+use crate::input;
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
-use crate::runner::Command;
+use crate::runner::{self, Command, When};
+use crate::session::{Answer, Expects, Question};
 use crate::sync::Locked;
 
 const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice assistant, and \
@@ -28,9 +30,12 @@ const CAPTURE_WAIT: Duration = Duration::from_secs(5);
 
 const FOLDER_DEPTH: usize = 3;
 
-const DENIED: &str = "The user's Claude settings don't allow this, and Lucy can't ask them about \
-                      it, so it's denied. Carry on without it, and say in your final message \
-                      what you'd need.";
+const UNASKED: &str = "The user's Claude settings don't allow this, and Lucy couldn't ask them \
+                       about it, so it's denied. Carry on without it, and say in your final \
+                       message what you'd need.";
+
+const REFUSED: &str = "The user didn't allow this when Lucy asked them. Carry on without it, and \
+                       say in your final message what you'd need.";
 
 pub struct HandOffs {
     thinking: Arc<dyn Thinking>,
@@ -243,7 +248,22 @@ fn permission_tool() -> Tool {
 }
 
 pub fn hand_off_tools() -> Vec<Tool> {
-    vec![permission_tool()]
+    let string = |description: &str| json!({"type": "string", "description": description});
+    vec![
+        tool(
+            "report_progress",
+            "Report what you're doing, in a short line. It is shown to the user, never spoken.",
+            json!({"type": "object", "properties": {"text": string("What you're doing")}, "required": ["text"]}),
+        ),
+        tool(
+            "ask_user",
+            "Ask the user something only they can answer. Lucy asks it aloud once nobody is \
+             speaking and returns their answer.",
+            json!({"type": "object", "properties": {"question": string("One short spoken question")}, "required": ["question"]}),
+        ),
+        input::ask_typed_tool(),
+        permission_tool(),
+    ]
 }
 
 pub struct Job {
@@ -318,9 +338,78 @@ impl Job {
         }
     }
 
-    pub async fn call(&self, name: &str, _arguments: &JsonObject) -> Option<CallToolResult> {
-        (name == PERMISSION_TOOL)
-            .then(|| text(json!({"behavior": "deny", "message": DENIED}).to_string()))
+    pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
+        Some(match name {
+            "report_progress" => {
+                self.show("Claude is working", string(arguments, "text"));
+                text("Noted.")
+            }
+            "ask_user" => self.ask_user(string(arguments, "question")).await,
+            "ask_typed" => {
+                let Some(hand_offs) = self.hand_offs.upgrade() else {
+                    return Some(error("Lucy is stopping."));
+                };
+                let commands = hand_offs.commands.clone();
+                drop(hand_offs);
+                let kept = question_kept("Claude wants you to type something");
+                input::ask_typed_at(&commands, arguments, kept).await
+            }
+            PERMISSION_TOOL => text(self.permission(arguments).await.to_string()),
+            _ => return None,
+        })
+    }
+
+    async fn ask_user(&self, question: String) -> CallToolResult {
+        if question.trim().is_empty() {
+            return error("question must be what to ask the user.");
+        }
+        let Some(hand_offs) = self.hand_offs.upgrade() else {
+            return error("Lucy is stopping.");
+        };
+        let question = Question {
+            prompt: format!("Claude asks: {question}"),
+            expects: Expects::Words,
+        };
+        let kept = question_kept("Claude has a question");
+        let answer = runner::ask_at(&hand_offs.commands, question, None, kept);
+        drop(hand_offs);
+        match answer.await {
+            Some(Answer::Said(said)) => text(format!("The user answered: \"{said}\"")),
+            Some(_) => text(
+                "The user didn't answer. Carry on with your best judgement, and say in your \
+                 final message what you assumed.",
+            ),
+            None => text(
+                "The user couldn't be asked. Carry on with your best judgement, and say in \
+                 your final message what you assumed.",
+            ),
+        }
+    }
+
+    async fn permission(&self, arguments: &JsonObject) -> serde_json::Value {
+        let tool_name = string(arguments, "tool_name");
+        let empty = serde_json::Value::Object(JsonObject::new());
+        let input = arguments.get("input").unwrap_or(&empty);
+        let question = Question {
+            prompt: format!("Claude wants to {}. Okay?", description(&tool_name, input)),
+            expects: Expects::Yes,
+        };
+        let shown = Notification {
+            summary: "Claude needs your yes".into(),
+            body: format!("{tool_name}\n{input:#}"),
+            action: None,
+            kind: NotificationKind::Details,
+        };
+        let Some(hand_offs) = self.hand_offs.upgrade() else {
+            return json!({"behavior": "deny", "message": UNASKED});
+        };
+        let commands = hand_offs.commands.clone();
+        drop(hand_offs);
+        match runner::ask(&commands, question, Some(shown)).await {
+            Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
+            Some(_) => json!({"behavior": "deny", "message": REFUSED}),
+            None => json!({"behavior": "deny", "message": UNASKED}),
+        }
     }
 
     fn answered(&self) {
@@ -464,6 +553,40 @@ impl Job {
         if let Some(hand_offs) = self.hand_offs.upgrade() {
             hand_offs.finished(self);
         }
+    }
+}
+
+fn question_kept(summary: &str) -> When {
+    When::QuietOrNextSession(Notification {
+        summary: summary.to_owned(),
+        body: "Lucy will ask at your next Session.".to_owned(),
+        action: None,
+        kind: NotificationKind::HandOff,
+    })
+}
+
+fn description(tool_name: &str, input: &serde_json::Value) -> String {
+    let said = input
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .map(|said| said.trim().trim_end_matches('.').trim())
+        .filter(|said| !said.is_empty());
+    let Some(said) = said else {
+        let tool = tool_name.strip_prefix("mcp__").unwrap_or(tool_name);
+        return format!(
+            "use {}",
+            tool.replace('_', " ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    };
+    let mut chars = said.chars();
+    match (chars.next(), chars.next()) {
+        (Some(first), Some(second)) if first.is_uppercase() && !second.is_uppercase() => {
+            format!("{}{}", first.to_lowercase(), &said[first.len_utf8()..])
+        }
+        _ => said.to_owned(),
     }
 }
 

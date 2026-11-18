@@ -566,17 +566,23 @@ impl Default for Authoring {
     }
 }
 
-/// `[screen]`: whether Lucy may look at the screen (ADR 0008).
+/// `[screen]`: screen access, and which screen actions need a Confirmation (ADR 0008).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Screen {
     /// When false, the Plugins' screen tools are left out of the tool list.
     pub enabled: bool,
+    /// A click or key whose description has one of these words needs a Confirmation.
+    pub risky_words: Vec<String>,
 }
 
 impl Default for Screen {
     fn default() -> Self {
-        Screen { enabled: true }
+        let risky = ["send", "buy", "pay", "delete", "submit", "post", "confirm"];
+        Screen {
+            enabled: true,
+            risky_words: risky.map(String::from).to_vec(),
+        }
     }
 }
 

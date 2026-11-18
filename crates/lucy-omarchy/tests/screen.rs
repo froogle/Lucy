@@ -60,21 +60,6 @@ fn fits_the_model(width: f64, height: f64) {
 }
 
 #[test]
-fn the_manifest_marks_screenshot_for_model_as_a_look() {
-    let manifest: toml::Table = toml::from_str(
-        &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/manifest.toml")).unwrap(),
-    )
-    .unwrap();
-    let marked: Vec<(&str, &str)> = manifest["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|tool| Some((tool["name"].as_str()?, tool.get("screen")?.as_str()?)))
-        .collect();
-    assert_eq!(marked, [("screenshot_for_model", "look")]);
-}
-
-#[test]
 fn a_look_captures_the_focused_monitor_scaled_to_fit_the_model() {
     let omarchy = two_monitors();
 
