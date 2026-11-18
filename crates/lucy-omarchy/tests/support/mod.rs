@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lucy_omarchy::{
-    Acted, Button, Captured, Combo, Desktop, Direction, Element, Image, InWindow, Omarchy, Page,
-    Paged, Point, Probed, Region, Screen, Wayland,
+    Acted, Button, Captured, Combo, Desktop, Direction, Element, Focus, FocusedWindow, Image,
+    InWindow, Omarchy, Page, Paged, Point, Probed, Region, Screen, Wayland,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
@@ -192,6 +192,8 @@ pub struct FakeScreen {
     under: Arc<Mutex<Option<Element>>>,
     probed: Arc<Mutex<Vec<InWindow>>>,
     empty_page: Arc<AtomicBool>,
+    focus: Arc<Mutex<Option<String>>>,
+    focus_asked: Arc<Mutex<Vec<FocusedWindow>>>,
 }
 
 impl FakeScreen {
@@ -201,6 +203,14 @@ impl FakeScreen {
 
     pub fn show(&self, under: Element) {
         *self.under.lock().unwrap() = Some(under);
+    }
+
+    pub fn focus_on(&self, role: &str) {
+        *self.focus.lock().unwrap() = Some(role.into());
+    }
+
+    pub fn focus_asked(&self) -> Vec<FocusedWindow> {
+        self.focus_asked.lock().unwrap().clone()
     }
 
     pub fn probed(&self) -> Vec<InWindow> {
@@ -258,6 +268,12 @@ impl Screen for FakeScreen {
             Page::Filled
         };
         Box::pin(async move { Ok(page) })
+    }
+
+    fn focused_role(&self, window: FocusedWindow) -> Focus<'_> {
+        self.focus_asked.lock().unwrap().push(window);
+        let focus = self.focus.lock().unwrap().clone();
+        Box::pin(async move { focus.ok_or_else(|| "the fake knows no focus".into()) })
     }
 
     fn capture(&self, region: Region, scale: f64) -> Captured<'_> {
