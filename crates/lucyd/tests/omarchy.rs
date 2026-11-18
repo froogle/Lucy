@@ -188,14 +188,18 @@ fn on_omarchy_the_shipped_plugin_is_approved_at_scan_and_offered_without_asking(
         tools,
         [
             "omarchy__bar",
+            "omarchy__click",
             "omarchy__idle_lock",
+            "omarchy__key",
             "omarchy__kill_window",
             "omarchy__layout",
             "omarchy__list_windows",
             "omarchy__night_light",
             "omarchy__screenshot",
             "omarchy__screenshot_for_model",
+            "omarchy__scroll",
             "omarchy__theme",
+            "omarchy__type",
             "omarchy__window",
             "omarchy__workspace",
         ]
