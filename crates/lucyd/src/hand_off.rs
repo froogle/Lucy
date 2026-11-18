@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use lucy_config::{Kind, Provider};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{mpsc, watch, Notify};
 
@@ -19,7 +20,7 @@ use crate::files::{self, Search, Words};
 use crate::input;
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
-use crate::plugins::Environment;
+use crate::plugins::{self, Environment};
 use crate::runner::{self, Command, When};
 use crate::session::{
     self, Answer, Expects, Question, BUILD_STOPPED, HAND_OFF_STOPPED, QUEUED_DROPPED,
@@ -51,6 +52,7 @@ pub struct HandOffs {
     clock: Arc<dyn Clock>,
     working: watch::Sender<Working>,
     config_path: PathBuf,
+    state_dir: PathBuf,
     jobs: Mutex<Jobs>,
 }
 
@@ -62,9 +64,24 @@ struct Jobs {
 
 struct Request {
     task: String,
-    folder: PathBuf,
+    start: Start,
     budget: Duration,
 }
+
+enum Start {
+    Fresh(PathBuf),
+    Continue,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Last {
+    conversation: String,
+    folder: PathBuf,
+}
+
+const NOTHING_TO_CONTINUE: &str = "There's nothing to continue: Claude hasn't finished a \
+                                   Hand-off yet, so nothing has started. Tell the user \
+                                   there's nothing to continue.";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Working {
@@ -125,6 +142,7 @@ impl HandOffs {
         relays: Relays,
         env: Environment,
         config_path: PathBuf,
+        state_dir: &Path,
         commands: mpsc::UnboundedSender<Command>,
     ) -> Arc<HandOffs> {
         Arc::new(HandOffs {
@@ -136,6 +154,7 @@ impl HandOffs {
             clock: adapters.clock.clone(),
             working: watch::Sender::new(Working::No),
             config_path,
+            state_dir: state_dir.to_owned(),
             jobs: Mutex::default(),
         })
     }
@@ -153,9 +172,17 @@ impl HandOffs {
         if task.trim().is_empty() {
             return error("request must be what the user wants Claude to do, in their words.");
         }
-        let folder = match self.folder(&string(arguments, "folder"), folders).await {
-            Ok(folder) => folder,
-            Err(refused) => return error(refused),
+        let start = if arguments
+            .get("continue")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            Start::Continue
+        } else {
+            match self.folder(&string(arguments, "folder"), folders).await {
+                Ok(folder) => Start::Fresh(folder),
+                Err(refused) => return error(refused),
+            }
         };
         let budget = match lucy_config::load(&self.config_path) {
             Ok(config) => config.handoff.budget_mins.to_duration(),
@@ -169,7 +196,7 @@ impl HandOffs {
         };
         let request = Request {
             task,
-            folder,
+            start,
             budget,
         };
         let mut jobs = self.jobs.locked();
@@ -177,7 +204,10 @@ impl HandOffs {
             let running = running.request.clone();
             return self.queue(&mut jobs, &running, request, arguments);
         }
-        jobs.current = Some(self.start(request));
+        let Some(job) = self.start(request) else {
+            return error(NOTHING_TO_CONTINUE);
+        };
+        jobs.current = Some(job);
         drop(jobs);
         self.working.send_replace(Working::Yes);
         text(
@@ -205,7 +235,7 @@ impl HandOffs {
                 "Nothing has started: Claude is still working on \"{running}\". Ask the user \
                  whether to queue this, naming that one in a few words, such as \"Claude's \
                  still on the lucy test; want me to queue this?\" If they say yes, call \
-                 hand_to_claude again with the same request and folder, and queue set to true."
+                 hand_to_claude again with the same arguments, and queue set to true."
             ));
         }
         jobs.queued = Some(request);
@@ -216,18 +246,50 @@ impl HandOffs {
         )
     }
 
-    fn start(self: &Arc<Self>, request: Request) -> Arc<Job> {
+    fn start(self: &Arc<Self>, request: Request) -> Option<Arc<Job>> {
+        let (folder, resume) = match request.start {
+            Start::Fresh(folder) => (folder, None),
+            Start::Continue => {
+                let last = self.last()?;
+                (last.folder, Some(last.conversation))
+            }
+        };
         let job = Arc::new(Job {
             request: request.task,
-            folder: request.folder,
+            folder,
             budget: request.budget,
             hand_offs: Arc::downgrade(self),
-            state: Mutex::default(),
+            state: Mutex::new(JobState {
+                conversation: resume.clone(),
+                ..JobState::default()
+            }),
+            resume,
             cancelled: Notify::new(),
             ended: watch::Sender::new(false),
         });
         tokio::spawn(job.clone().run());
-        job
+        Some(job)
+    }
+
+    fn last_path(&self) -> PathBuf {
+        self.state_dir.join("hand-off.toml")
+    }
+
+    fn last(&self) -> Option<Last> {
+        let text = std::fs::read_to_string(self.last_path()).ok()?;
+        toml::from_str(&text).ok()
+    }
+
+    fn remember(&self, last: &Last) {
+        let saved = toml::to_string(last)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                plugins::save_state(&self.state_dir, &self.last_path(), &text)
+                    .map_err(|e| e.to_string())
+            });
+        if let Err(e) = saved {
+            eprintln!("lucyd: the last Hand-off couldn't be saved, so it can't be continued: {e}");
+        }
     }
 
     async fn folder(&self, said: &str, folders: &Search) -> Result<PathBuf, String> {
@@ -335,7 +397,18 @@ impl HandOffs {
         {
             return;
         }
-        jobs.current = jobs.queued.take().map(|next| self.start(next));
+        jobs.current = jobs.queued.take().and_then(|next| {
+            let started = self.start(next);
+            if started.is_none() {
+                self.show(Notification {
+                    summary: "Claude didn't start".to_owned(),
+                    body: "There was nothing for it to continue.".to_owned(),
+                    action: None,
+                    kind: NotificationKind::HandOff,
+                });
+            }
+            started
+        });
         let working = match jobs.current {
             Some(_) => Working::Yes,
             None => Working::No,
@@ -413,6 +486,7 @@ pub fn hand_to_claude_tool() -> Tool {
                 "request": {"type": "string", "description": "What the user wants Claude to do, in their words"},
                 "folder": {"type": "string", "description": "The folder as the user said it: a name (\"lucy\"), an absolute path or one starting with ~. Leave it out when they named none."},
                 "queue": {"type": "boolean", "description": "True once the user has said yes to queueing this behind the Hand-off running"},
+                "continue": {"type": "boolean", "description": "True when the user is replying to Claude's last result, such as \"yes, go ahead\" to its offer. Claude carries on that conversation, in its folder."},
             },
             "required": ["request"],
         }),
@@ -458,6 +532,7 @@ pub struct Job {
     request: String,
     folder: PathBuf,
     budget: Duration,
+    resume: Option<String>,
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
     cancelled: Notify,
@@ -487,6 +562,7 @@ impl Job {
         let hand_off = HandOff {
             folder: self.folder.clone(),
             env,
+            resume: self.resume.clone(),
         };
         {
             let mut state = self.state.locked();
@@ -621,10 +697,8 @@ impl Job {
     }
 
     fn answered(&self) {
-        let (answer, conversation) = {
-            let state = self.state.locked();
-            (state.answer.clone(), state.conversation.clone())
-        };
+        let answer = self.state.locked().answer.clone();
+        let conversation = self.remembered();
         let resume = self.resume(conversation.as_deref());
         let summary = "Claude has finished";
         match answer.filter(|answer| !answer.trim().is_empty()) {
@@ -663,7 +737,7 @@ impl Job {
     }
 
     fn failed(&self, reason: &str) {
-        let conversation = self.state.locked().conversation.clone();
+        let conversation = self.remembered();
         self.show(
             "Claude couldn't finish",
             format!("{reason}{}", self.resume(conversation.as_deref())),
@@ -689,7 +763,7 @@ impl Job {
     }
 
     fn stopped(&self) {
-        let conversation = self.state.locked().conversation.clone();
+        let conversation = self.remembered();
         self.show(
             "Lucy stopped Claude",
             format!(
@@ -701,7 +775,7 @@ impl Job {
     }
 
     fn out_of_time(&self) {
-        let conversation = self.state.locked().conversation.clone();
+        let conversation = self.remembered();
         let budget = spoken_duration(self.budget);
         self.show(
             "Claude ran out of time",
@@ -721,6 +795,17 @@ impl Job {
             "Lucy will tell you more at your next Session.",
         );
         self.finish();
+    }
+
+    fn remembered(&self) -> Option<String> {
+        let conversation = self.state.locked().conversation.clone()?;
+        if let Some(hand_offs) = self.hand_offs.upgrade() {
+            hand_offs.remember(&Last {
+                conversation: conversation.clone(),
+                folder: self.folder.clone(),
+            });
+        }
+        Some(conversation)
     }
 
     fn resume(&self, conversation: Option<&str>) -> String {

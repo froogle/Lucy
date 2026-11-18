@@ -739,7 +739,7 @@ fn matches_manifest(manifest: &Manifest, listed: &[Tool]) -> Result<(), String> 
     Ok(())
 }
 
-fn save_state(state: &Path, path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn save_state(state: &Path, path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
