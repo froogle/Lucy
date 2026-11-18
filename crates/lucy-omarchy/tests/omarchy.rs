@@ -57,7 +57,6 @@ fn the_manifest_lists_exactly_the_tools_it_offers_and_only_kill_window_confirms(
             "screenshot",
             "screenshot_for_model",
             "scroll",
-            "text_at",
             "theme",
             "type",
             "window",
