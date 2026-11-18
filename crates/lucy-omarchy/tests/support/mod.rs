@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lucy_omarchy::{Captured, Desktop, Grim, Image, Omarchy, Region, Screen};
+use lucy_omarchy::{
+    Acted, Button, Captured, Combo, Desktop, Direction, Image, Omarchy, Point, Region, Screen,
+    Wayland,
+};
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
 use rmcp::{RoleClient, ServiceExt};
@@ -147,9 +150,18 @@ pub struct Monitor {
 
 pub const PNG: &[u8] = b"\x89PNG fake screen";
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Act {
+    Click(Point, Button),
+    Scroll(Point, Direction, u32),
+    Key(Combo),
+    Type(String),
+}
+
 #[derive(Clone, Default)]
 pub struct FakeScreen {
     captures: Arc<Mutex<Vec<(Region, f64)>>>,
+    acts: Arc<Mutex<Vec<Act>>>,
     failure: Arc<Mutex<Option<String>>>,
 }
 
@@ -158,12 +170,40 @@ impl FakeScreen {
         self.captures.lock().unwrap().clone()
     }
 
+    pub fn acts(&self) -> Vec<Act> {
+        self.acts.lock().unwrap().clone()
+    }
+
+    fn act(&self, act: Act) -> Acted<'_> {
+        let failure = self.failure.lock().unwrap().clone();
+        if failure.is_none() {
+            self.acts.lock().unwrap().push(act);
+        }
+        Box::pin(async move { failure.map_or(Ok(()), Err) })
+    }
+
     pub fn fail(&self, reason: &str) {
         *self.failure.lock().unwrap() = Some(reason.into());
     }
 }
 
 impl Screen for FakeScreen {
+    fn click(&self, at: Point, button: Button) -> Acted<'_> {
+        self.act(Act::Click(at, button))
+    }
+
+    fn scroll(&self, at: Point, direction: Direction, notches: u32) -> Acted<'_> {
+        self.act(Act::Scroll(at, direction, notches))
+    }
+
+    fn key(&self, combo: Combo) -> Acted<'_> {
+        self.act(Act::Key(combo))
+    }
+
+    fn type_text(&self, text: String) -> Acted<'_> {
+        self.act(Act::Type(text))
+    }
+
     fn capture(&self, region: Region, scale: f64) -> Captured<'_> {
         self.captures.lock().unwrap().push((region, scale));
         let failure = self.failure.lock().unwrap().clone();
@@ -283,8 +323,8 @@ impl Plugin {
         let omarchy = match capturing {
             Capturing::Fake => Omarchy::with_screen(desktop, Arc::new(screen.clone())),
             Capturing::Grim => {
-                let grim = Grim::new(desktop.path.clone());
-                Omarchy::with_screen(desktop, Arc::new(grim))
+                let wayland = Wayland::new(desktop.path.clone());
+                Omarchy::with_screen(desktop, Arc::new(wayland))
             }
         };
         let client = runtime.block_on(async {
@@ -354,6 +394,17 @@ impl Plugin {
         tools
             .into_iter()
             .map(|tool| tool.name.into_owned())
+            .collect()
+    }
+
+    pub fn required(&self, tool: &str) -> Vec<String> {
+        let tools = self.runtime.block_on(self.client.list_all_tools()).unwrap();
+        let tool = tools.into_iter().find(|t| t.name == tool).unwrap();
+        tool.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap().to_owned())
             .collect()
     }
 
