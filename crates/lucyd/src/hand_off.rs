@@ -157,7 +157,7 @@ impl HandOffs {
             budget: Duration::from_secs_f64(budget.budget_mins * 60.0),
             hand_offs: Arc::downgrade(self),
             state: Mutex::default(),
-            stopping: Notify::new(),
+            cancelled: Notify::new(),
         });
         tokio::spawn(job.clone().run());
         job
@@ -187,22 +187,25 @@ impl HandOffs {
         Ok(folder)
     }
 
-    pub fn stop(&self) {
-        self.halt(Stop::SessionEnded);
+    pub fn show_still_working(&self) {
+        if self.jobs.locked().current.is_some() {
+            self.show(Notification {
+                summary: "Claude is still working".to_owned(),
+                body: "Lucy will let you know when it's done.".to_owned(),
+                action: None,
+                kind: NotificationKind::HandOff,
+            });
+        }
     }
 
     pub fn cancel(&self) {
-        self.halt(Stop::Cancelled);
-    }
-
-    fn halt(&self, why: Stop) {
         let current = {
             let mut jobs = self.jobs.locked();
             jobs.queued = None;
             jobs.current.clone()
         };
         if let Some(job) = current {
-            job.stop(why);
+            job.cancelled.notify_one();
         }
     }
 
@@ -328,23 +331,15 @@ pub struct Job {
     budget: Duration,
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
-    stopping: Notify,
+    cancelled: Notify,
 }
 
 #[derive(Default)]
 struct JobState {
-    over: bool,
     model: Option<Box<dyn SessionModel>>,
     token: Option<Token>,
     conversation: Option<String>,
     answer: Option<String>,
-    stop: Option<Stop>,
-}
-
-#[derive(Clone, Copy)]
-enum Stop {
-    SessionEnded,
-    Cancelled,
 }
 
 impl Job {
@@ -365,9 +360,6 @@ impl Job {
         };
         {
             let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
             let mut model = hand_offs.thinking.open_hand_off(
                 &claude(),
                 events_tx,
@@ -404,7 +396,7 @@ impl Job {
                     Some(_) => {}
                 },
                 () = &mut budget_spent => return self.out_of_time(),
-                () = self.stopping.notified() => return self.stopped(),
+                () = self.cancelled.notified() => return self.stopped(),
             }
         }
     }
@@ -465,9 +457,16 @@ impl Job {
             prompt: format!("Claude wants to {}. Okay?", description(&tool_name, input)),
             expects: Expects::Yes,
         };
+        let details = format!("{tool_name}\n{input:#}");
+        let kept = When::QuietOrNextSession(Notification {
+            summary: "Claude is waiting for your permission".into(),
+            body: format!("{details}\n\nLucy will ask at your next Session."),
+            action: None,
+            kind: NotificationKind::HandOff,
+        });
         let shown = Notification {
             summary: "Claude needs your yes".into(),
-            body: format!("{tool_name}\n{input:#}"),
+            body: details,
             action: None,
             kind: NotificationKind::Details,
         };
@@ -476,7 +475,7 @@ impl Job {
         };
         let commands = hand_offs.commands.clone();
         drop(hand_offs);
-        match runner::ask(&commands, question, Some(shown)).await {
+        match runner::ask_at(&commands, question, Some(shown), kept).await {
             Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
             Some(_) => json!({"behavior": "deny", "message": REFUSED}),
             None => json!({"behavior": "deny", "message": UNASKED}),
@@ -551,35 +550,14 @@ impl Job {
         self.failed(&exit.stopped("Claude"));
     }
 
-    fn stop(&self, why: Stop) {
-        let started = {
-            let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
-            state.over = state.model.is_none();
-            state.stop = Some(why);
-            state.model.is_some()
-        };
-        if started {
-            self.stopping.notify_one();
-        } else {
-            self.stopped();
-        }
-    }
-
     fn stopped(&self) {
-        let (conversation, why) = {
-            let state = self.state.locked();
-            (state.conversation.clone(), state.stop)
-        };
-        let why = match why.expect("a Hand-off is stopped for a reason") {
-            Stop::SessionEnded => "The Session ended before Claude had finished.",
-            Stop::Cancelled => "You asked Lucy to cancel it.",
-        };
+        let conversation = self.state.locked().conversation.clone();
         self.show(
             "Lucy stopped Claude",
-            format!("{why}{}", self.resume(conversation.as_deref())),
+            format!(
+                "You asked Lucy to cancel it.{}",
+                self.resume(conversation.as_deref())
+            ),
         );
         self.finish();
     }
@@ -645,7 +623,6 @@ impl Job {
     fn finish(&self) {
         let (model, token) = {
             let mut state = self.state.locked();
-            state.over = true;
             (state.model.take(), state.token.take())
         };
         drop((model, token));

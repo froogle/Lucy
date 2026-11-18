@@ -22,6 +22,7 @@ impl StatusBus {
                 session_id: None,
                 building: false,
                 looking: false,
+                working: false,
             },
             subscribers: vec![],
         })))

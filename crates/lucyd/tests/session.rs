@@ -83,6 +83,7 @@ fn silence_in_listening_ends_the_session_quietly() {
             session_id: None,
             building: false,
             looking: false,
+            working: false,
         }
     );
     assert_eq!(lucyd.tts.sentences(), Vec::<String>::new());
@@ -169,6 +170,7 @@ fn a_turn_goes_from_listening_through_thinking_and_speaking_back_to_listening() 
             session_id: Some(session_id.clone()),
             building: false,
             looking: false,
+            working: false,
         }
     );
 
@@ -181,6 +183,7 @@ fn a_turn_goes_from_listening_through_thinking_and_speaking_back_to_listening() 
             session_id: Some(session_id.clone()),
             building: false,
             looking: false,
+            working: false,
         }
     );
 

@@ -204,7 +204,8 @@ impl Runner {
                 ignored_speech = self.adapters.speech.recv(), if self.speech_open => {
                     self.speech_open = ignored_speech.is_some();
                 }
-                Ok(()) = self.building.changed() => self.show_building_mark(),
+                Ok(()) = self.building.changed() => self.show_marks(),
+                Ok(()) = self.working.changed() => self.show_marks(),
                 () = mic_lost_for(&mut self.adapters.hearing, REOPEN_MIC_EVERY) => self.reopen_mic(),
             }
         }
@@ -257,7 +258,7 @@ impl Runner {
             .await;
         self.looks = None;
         self.looking = false;
-        self.hand_offs.stop();
+        self.hand_offs.show_still_working();
         self.keep_unsaid_for_next_session();
         if let Some(hearing) = &mut self.adapters.hearing {
             hearing.lucy_speaking(false);
@@ -273,7 +274,7 @@ impl Runner {
         }
     }
 
-    fn show_building_mark(&self) {
+    fn show_marks(&self) {
         self.publish(State::Idle, None);
     }
 
@@ -702,6 +703,7 @@ impl Runner {
             session_id: session_id.map(|id| id.to_string()),
             building: *self.building.borrow() == Building::Working,
             looking: self.looking && session_id.is_some(),
+            working: *self.working.borrow() == Working::Yes,
         });
     }
 }

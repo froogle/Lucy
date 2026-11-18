@@ -124,6 +124,10 @@ pub struct Status {
     /// adds a "looking" mark.
     #[serde(default)]
     pub looking: bool,
+    /// A Hand-off is running, with or without a Session. The Indicator adds
+    /// a "working" mark.
+    #[serde(default)]
+    pub working: bool,
 }
 
 /// Lucy's Session state.
