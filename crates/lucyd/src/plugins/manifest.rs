@@ -44,6 +44,8 @@ pub enum ScreenUse {
     Look,
     Click,
     Key,
+    Type,
+    Scroll,
     Probe,
 }
 

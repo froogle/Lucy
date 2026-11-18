@@ -20,6 +20,8 @@
 //!   exists. If the call is cancelled first, it writes `<path>.cancelled`.
 //! - `look`: returns an `image/png` image, base64 of a PNG signature then
 //!   `LucyScreenSecret`, and the text `a fake screen`.
+//! - `click`, `key`, `type` and `scroll`: return their name, `: ` and the
+//!   arguments they got, as JSON.
 
 use std::sync::Arc;
 
@@ -160,6 +162,10 @@ impl ServerHandler for Fixture {
                 None => return Ok(ask_form(&request).into()),
                 Some(responses) => Ok(format!("answered: {}", responses["answer"])),
             },
+            "click" | "key" | "type" | "scroll" => {
+                let arguments = Value::Object(request.arguments.clone().unwrap_or_default());
+                Ok(format!("{}: {arguments}", request.name))
+            }
             "crash" => std::process::exit(1),
             "reject" => return Err(ErrorData::invalid_params("rejected", None)),
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),

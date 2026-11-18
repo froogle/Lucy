@@ -70,6 +70,30 @@ examples = ["what's on my screen?", "what does this error say?", "read me the op
 screen = "look"
 
 [[tools]]
+name = "click"
+handles = "clicking something on the screen, after looking at it"
+examples = ["play the third video", "click Sign in", "open the first result"]
+screen = "click"
+
+[[tools]]
+name = "type"
+handles = "typing text into the focused field, after looking at it"
+examples = ["search for lofi beats", "type hello world"]
+screen = "type"
+
+[[tools]]
+name = "key"
+handles = "pressing a key or key combination, such as Enter, Escape or Ctrl+L"
+examples = ["press Enter", "go back a page", "close this tab"]
+screen = "key"
+
+[[tools]]
+name = "scroll"
+handles = "scrolling on the screen, after looking at it"
+examples = ["scroll down", "scroll up a bit"]
+screen = "scroll"
+
+[[tools]]
 name = "idle_lock"
 handles = "locking the screen, or keeping the computer awake"
 examples = ["lock the screen", "keep the computer awake"]
@@ -85,7 +109,9 @@ examples = ["lock the screen", "keep the computer awake"]
 # through /proc. The screenshot and the night light's toggle start through
 # Hyprland's exec, outside this sandbox (ADR 0012), so they're listed in
 # commands but need no access here. grim captures the screen for the model
-# over the Wayland socket and writes the image to its stdout.
+# over the Wayland socket and writes the image to its stdout. Clicks, keys,
+# scrolling and typing go over the same socket through Wayland's virtual
+# pointer and keyboard, with the keymap in a memfd.
 write = [
     "$XDG_RUNTIME_DIR/omarchy-theme-set.lock",
     "$XDG_RUNTIME_DIR/omarchy-theme-set-retint.lock",
