@@ -6,7 +6,7 @@ use std::time::Duration;
 use lucy_config::{Kind, Provider};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
 use serde_json::json;
-use tokio::sync::{mpsc, watch, Notify};
+use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{
     Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
@@ -96,7 +96,6 @@ impl HandOffs {
             folder,
             hand_offs: Arc::downgrade(self),
             state: Mutex::default(),
-            stopping: Notify::new(),
         });
         *current = Some(job.clone());
         drop(current);
@@ -132,10 +131,14 @@ impl HandOffs {
         Ok(folder)
     }
 
-    pub fn stop(&self) {
-        let current = self.current.locked().clone();
-        if let Some(job) = current {
-            job.stop();
+    pub fn show_still_working(&self) {
+        if self.current.locked().is_some() {
+            self.show(Notification {
+                summary: "Claude is still working".to_owned(),
+                body: "Lucy will let you know when it's done.".to_owned(),
+                action: None,
+                kind: NotificationKind::HandOff,
+            });
         }
     }
 
@@ -220,12 +223,10 @@ pub struct Job {
     folder: PathBuf,
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
-    stopping: Notify,
 }
 
 #[derive(Default)]
 struct JobState {
-    over: bool,
     model: Option<Box<dyn SessionModel>>,
     token: Option<Token>,
     conversation: Option<String>,
@@ -248,9 +249,6 @@ impl Job {
         };
         {
             let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
             let mut model = hand_offs.thinking.open_hand_off(
                 &claude(),
                 events_tx,
@@ -268,21 +266,17 @@ impl Job {
 
     async fn follow(&self, mut events: mpsc::UnboundedReceiver<ThinkingEvent>) {
         loop {
-            tokio::select! {
-                biased;
-                event = events.recv() => match event {
-                    Some(ThinkingEvent::Conversation(id)) => {
-                        self.state.locked().conversation = Some(id);
-                    }
-                    Some(ThinkingEvent::Final(answer)) => self.state.locked().answer = Some(answer),
-                    Some(ThinkingEvent::TurnEnd) => return self.answered(),
-                    Some(ThinkingEvent::Unavailable(reason)) => return self.failed(&reason),
-                    Some(ThinkingEvent::Failed(message)) => return self.failed(&message),
-                    Some(ThinkingEvent::Died(exit)) => return self.died(&exit),
-                    None => return self.failed("Claude stopped unexpectedly."),
-                    Some(_) => {}
-                },
-                () = self.stopping.notified() => return self.stopped(),
+            match events.recv().await {
+                Some(ThinkingEvent::Conversation(id)) => {
+                    self.state.locked().conversation = Some(id);
+                }
+                Some(ThinkingEvent::Final(answer)) => self.state.locked().answer = Some(answer),
+                Some(ThinkingEvent::TurnEnd) => return self.answered(),
+                Some(ThinkingEvent::Unavailable(reason)) => return self.failed(&reason),
+                Some(ThinkingEvent::Failed(message)) => return self.failed(&message),
+                Some(ThinkingEvent::Died(exit)) => return self.died(&exit),
+                None => return self.failed("Claude stopped unexpectedly."),
+                Some(_) => {}
             }
         }
     }
@@ -343,9 +337,16 @@ impl Job {
             prompt: format!("Claude wants to {}. Okay?", description(&tool_name, input)),
             expects: Expects::Yes,
         };
+        let details = format!("{tool_name}\n{input:#}");
+        let kept = When::QuietOrNextSession(Notification {
+            summary: "Claude is waiting for your permission".into(),
+            body: format!("{details}\n\nLucy will ask at your next Session."),
+            action: None,
+            kind: NotificationKind::HandOff,
+        });
         let shown = Notification {
             summary: "Claude needs your yes".into(),
-            body: format!("{tool_name}\n{input:#}"),
+            body: details,
             action: None,
             kind: NotificationKind::Details,
         };
@@ -354,7 +355,7 @@ impl Job {
         };
         let commands = hand_offs.commands.clone();
         drop(hand_offs);
-        match runner::ask(&commands, question, Some(shown)).await {
+        match runner::ask_at(&commands, question, Some(shown), kept).await {
             Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
             Some(_) => json!({"behavior": "deny", "message": REFUSED}),
             None => json!({"behavior": "deny", "message": UNASKED}),
@@ -429,34 +430,6 @@ impl Job {
         self.failed(&exit.stopped("Claude"));
     }
 
-    fn stop(&self) {
-        let started = {
-            let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
-            state.over = state.model.is_none();
-            state.model.is_some()
-        };
-        if started {
-            self.stopping.notify_one();
-        } else {
-            self.stopped();
-        }
-    }
-
-    fn stopped(&self) {
-        let conversation = self.state.locked().conversation.clone();
-        self.show(
-            "Lucy stopped Claude",
-            format!(
-                "The Session ended before Claude had finished.{}",
-                self.resume(conversation.as_deref())
-            ),
-        );
-        self.finish();
-    }
-
     fn resume(&self, conversation: Option<&str>) -> String {
         match conversation {
             Some(id) => format!(
@@ -495,7 +468,6 @@ impl Job {
     fn finish(&self) {
         let (model, token) = {
             let mut state = self.state.locked();
-            state.over = true;
             (state.model.take(), state.token.take())
         };
         drop((model, token));

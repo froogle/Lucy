@@ -619,6 +619,11 @@
         },
         "state": {
           "$ref": "#/$defs/State"
+        },
+        "working": {
+          "default": false,
+          "description": "A Hand-off is running, with or without a Session. The Indicator adds\na \"working\" mark.",
+          "type": "boolean"
         }
       },
       "required": [

@@ -310,28 +310,125 @@ fn a_second_hand_off_is_refused_while_one_runs() {
 }
 
 #[test]
-fn ending_the_session_stops_claude_with_the_resume_command_notified() {
+fn claude_carries_on_after_the_session_ends_and_its_summary_is_offered_at_the_next_session() {
     let lucyd = Harness::start();
     let folder = lucyd.scratch();
-    let _events = handed_off(&lucyd, &folder);
+    let mut events = handed_off(&lucyd, &folder);
     let hand_off = &lucyd.thinking.hand_off;
     hand_off.next_turn();
-    hand_off.conversation(CONVERSATION);
 
     lucyd.client().end_session().unwrap();
+    let still = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(still.summary, "Claude is still working");
+    until_state(&mut events, State::Idle);
 
+    hand_off.answer(CONVERSATION, ANSWER);
     let shown = lucyd
         .notifier
         .next_notification_of(NotificationKind::HandOff);
-    assert_eq!(shown.summary, "Lucy stopped Claude");
+    assert_eq!(shown.summary, "Claude has finished");
+    assert!(shown.body.starts_with(ANSWER), "{}", shown.body);
     let resume = format!("claude --resume {CONVERSATION}");
     assert!(shown.body.contains(&resume), "{}", shown.body);
+    lucyd.thinking.assert_no_turn();
+
+    lucyd.client().start_session().unwrap();
+    let turn = lucyd.thinking.next_turn();
+    assert!(turn.contains(ANSWER), "{turn}");
+    assert!(turn.contains("one to three"), "{turn}");
+}
+
+#[test]
+fn the_state_carries_a_working_mark_while_claude_works_even_after_the_session_ends() {
+    let lucyd = Harness::start();
+    assert!(!lucyd.client().status().unwrap().working);
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    assert!(lucyd.client().status().unwrap().working);
+
+    lucyd.client().end_session().unwrap();
+    let ended = next_state(&mut events);
+    assert_eq!((ended.state, ended.working), (State::Idle, true));
+
+    hand_off.answer(CONVERSATION, ANSWER);
+    let over = next_state(&mut events);
+    assert_eq!((over.state, over.working), (State::Idle, false));
+}
+
+#[test]
+fn a_permission_request_with_no_session_open_is_notified_at_once_and_asked_at_the_next_session() {
+    let lucyd = Harness::start();
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    lucyd.client().end_session().unwrap();
+    until_state(&mut events, State::Idle);
+
+    let call = asks_permission(&lucyd, run_the_tests());
+    let kept = loop {
+        let shown = lucyd
+            .notifier
+            .next_notification_of(NotificationKind::HandOff);
+        if shown.summary == "Claude is waiting for your permission" {
+            break shown;
+        }
+    };
     assert!(
-        shown.body.contains(folder.to_str().unwrap()),
+        kept.body.contains("Bash") && kept.body.contains("cargo test -p lucyd"),
         "{}",
-        shown.body
+        kept.body
     );
-    assert!(hand_off.call_tool_with("permission", json!({})).is_err());
+    assert!(kept.body.contains("next Session"), "{}", kept.body);
+    assert!(lucyd.tts.sentences().is_empty(), "nothing was asked aloud");
+
+    lucyd.client().start_session().unwrap();
+    until_state(&mut events, State::Confirming);
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Claude wants to run lucyd's tests. Okay?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+
+    assert_eq!(decision(call)["behavior"], "allow");
+}
+
+#[test]
+fn a_question_with_no_session_open_is_notified_at_once_and_asked_at_the_next_session() {
+    let lucyd = Harness::start();
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    lucyd.client().end_session().unwrap();
+    until_state(&mut events, State::Idle);
+
+    let hand_off = lucyd.thinking.hand_off.clone();
+    let call = std::thread::spawn(move || {
+        hand_off.call_tool_with("ask_user", json!({"question": "Which team, LUC or OPS?"}))
+    });
+    let kept = loop {
+        let shown = lucyd
+            .notifier
+            .next_notification_of(NotificationKind::HandOff);
+        if shown.summary == "Claude has a question" {
+            break shown;
+        }
+    };
+    assert!(kept.body.contains("next Session"), "{}", kept.body);
+
+    lucyd.client().start_session().unwrap();
+    until_state(&mut events, State::Confirming);
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Claude asks: Which team, LUC or OPS?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("LUC");
+
+    let (failed, answer) = called(call.join().unwrap());
+    assert!(!failed, "{answer}");
+    assert!(answer.contains("LUC"), "{answer}");
 }
 
 #[test]
