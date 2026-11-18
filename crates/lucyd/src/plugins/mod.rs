@@ -247,6 +247,18 @@ impl Host {
         tools
     }
 
+    async fn ask_for_screen(&self) -> bool {
+        let mut allowed = self.screen_allowed.lock().await;
+        if !*allowed {
+            let question = Question {
+                prompt: SCREEN_PROMPT.into(),
+                expects: Expects::Yes,
+            };
+            *allowed = runner::ask(&self.commands, question, None).await == Some(Answer::Yes);
+        }
+        *allowed
+    }
+
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
         let verdict = self.ask_approval(name, When::Now).await?;
         Ok(verdict == Verdict::Approved)
@@ -804,18 +816,6 @@ impl SessionTools {
         }
     }
 
-    async fn screen_allowed(&self) -> bool {
-        let mut allowed = self.host.screen_allowed.lock().await;
-        if !*allowed {
-            let question = Question {
-                prompt: SCREEN_PROMPT.into(),
-                expects: Expects::Yes,
-            };
-            *allowed = runner::ask(&self.host.commands, question, None).await == Some(Answer::Yes);
-        }
-        *allowed
-    }
-
     pub fn take_finished(&self) -> Vec<String> {
         std::mem::take(&mut *self.finished.locked())
     }
@@ -920,7 +920,7 @@ impl SessionTools {
             }
         }
         if entry.screen.is_some() {
-            if !self.screen_allowed().await {
+            if !self.host.ask_for_screen().await {
                 return Some(mcp::text(SCREEN_DECLINED));
             }
             self.screen_uses.send_modify(|uses| *uses += 1);
