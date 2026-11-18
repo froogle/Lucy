@@ -45,7 +45,7 @@ use accessibility::Browser;
 pub use environment::Environment;
 pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
 use manifest::{Manifest, ScreenUse, ToolEntry};
-use risk::Risk;
+use risk::{Probed, Risk};
 
 const MAX_QUESTIONS: usize = 10;
 
@@ -802,12 +802,6 @@ pub struct SessionTools {
     offered_accessibility: AtomicBool,
 }
 
-#[derive(Default)]
-struct Probed {
-    under: Option<String>,
-    accessibility_off: Option<Browser>,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct Declined;
 
@@ -861,10 +855,7 @@ impl SessionTools {
         deadline.set(Some(self.host.clock.now() + PROBE_PATIENCE));
         tokio::select! {
             answer = peer.call_tool_once(request) => match answer {
-                Ok(CallToolResponse::Complete(result)) => Ok(Probed {
-                    under: risk::probed(&result)?,
-                    accessibility_off: Browser::off(&result),
-                }),
+                Ok(CallToolResponse::Complete(result)) => risk::probed(&result),
                 Ok(_) => Err("it answered with a question or a task".into()),
                 Err(e) => Err(format!("its call failed: {e}")),
             },

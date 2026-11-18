@@ -5,7 +5,7 @@
 
 mod support;
 
-use lucy_omarchy::{FocusedWindow, Pid};
+use lucy_omarchy::{FocusedWindow, Pid, Role};
 use serde_json::json;
 use support::{Act, Plugin};
 
@@ -28,7 +28,7 @@ fn firefox_focused() -> Plugin {
 #[test]
 fn typing_into_a_password_field_is_refused_with_the_way_to_ask_for_it() {
     let omarchy = firefox_focused();
-    omarchy.screen.focus_on("password text");
+    omarchy.screen.focus_on(Role::PasswordText);
 
     let refused = omarchy.refused("type", json!({"text": TYPED}));
 
@@ -41,7 +41,7 @@ fn typing_into_a_password_field_is_refused_with_the_way_to_ask_for_it() {
 #[test]
 fn the_focus_is_looked_for_in_the_focused_window() {
     let omarchy = firefox_focused();
-    omarchy.screen.focus_on("entry");
+    omarchy.screen.focus_on(Role::Entry);
 
     omarchy.call("type", json!({"text": TYPED}));
 
@@ -57,7 +57,7 @@ fn the_focus_is_looked_for_in_the_focused_window() {
 #[test]
 fn a_plain_field_is_typed_into() {
     let omarchy = firefox_focused();
-    omarchy.screen.focus_on("entry");
+    omarchy.screen.focus_on(Role::Entry);
 
     omarchy.call("type", json!({"text": TYPED}));
 

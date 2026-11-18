@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::process::Stdio;
 
+use atspi::Role;
 use tokio::process::Command;
 
 use crate::accessible::FocusEvents;
@@ -112,19 +113,19 @@ pub type Probed<'a> = Pin<Box<dyn Future<Output = Result<Option<Element>, String
 /// Whether a window's accessibility tree holds a web page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
-    /// A web document is in the tree, or the tree is too big to be empty.
+    /// A web document is in the tree.
     Filled,
     /// The window's frame is there but holds no web document.
     Empty,
-    /// The window's frame can't be told apart, so it can't be said.
+    /// The window's frame can't be told apart, or its tree is too big to search.
     Unknown,
 }
 
 /// What [`Screen::page`] returns.
-pub type Paged<'a> = Pin<Box<dyn Future<Output = Result<Page, String>> + Send + 'a>>;
+pub type PageFound<'a> = Pin<Box<dyn Future<Output = Result<Page, String>> + Send + 'a>>;
 
 /// What [`Screen::focused_role`] returns: the focused element's role, or why it can't be found.
-pub type Focus<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+pub type RoleFound<'a> = Pin<Box<dyn Future<Output = Result<Role, String>> + Send + 'a>>;
 
 /// What a [`Screen`] call returns once it has finished.
 pub type Captured<'a> = Pin<Box<dyn Future<Output = Result<Image, String>> + Send + 'a>>;
@@ -158,11 +159,10 @@ pub trait Screen: Send + Sync {
     fn text_at(&self, at: InWindow) -> Probed<'_>;
 
     /// Says whether the window `window` names holds a web page in its accessibility tree.
-    fn page(&self, window: InWindow) -> Paged<'_>;
+    fn page(&self, window: InWindow) -> PageFound<'_>;
 
-    /// Finds the AT-SPI role name (`"password text"`, `"entry"`) of the
-    /// element with the keyboard focus in `window`.
-    fn focused_role(&self, window: FocusedWindow) -> Focus<'_>;
+    /// Finds the AT-SPI role of the element with the keyboard focus in `window`.
+    fn focused_role(&self, window: FocusedWindow) -> RoleFound<'_>;
 }
 
 /// The real [`Screen`]: captures through `grim`, found on `path`, acts
@@ -202,11 +202,11 @@ impl Screen for Wayland {
         Box::pin(crate::accessible::text_at(at))
     }
 
-    fn page(&self, window: InWindow) -> Paged<'_> {
+    fn page(&self, window: InWindow) -> PageFound<'_> {
         Box::pin(crate::accessible::page(window))
     }
 
-    fn focused_role(&self, window: FocusedWindow) -> Focus<'_> {
+    fn focused_role(&self, window: FocusedWindow) -> RoleFound<'_> {
         self.focus.follow();
         Box::pin(crate::accessible::focused_role(&self.focus, window))
     }

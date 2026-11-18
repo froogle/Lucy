@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lucy_omarchy::{
-    Acted, Button, Captured, Combo, Desktop, Direction, Element, Focus, FocusedWindow, Image,
-    InWindow, Omarchy, Page, Paged, Point, Probed, Region, Screen, Wayland,
+    Acted, Button, Captured, Combo, Desktop, Direction, Element, FocusedWindow, Image, InWindow,
+    Omarchy, Page, PageFound, Point, Probed, Region, Role, RoleFound, Screen, Wayland,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
@@ -192,7 +192,7 @@ pub struct FakeScreen {
     under: Arc<Mutex<Option<Element>>>,
     probed: Arc<Mutex<Vec<InWindow>>>,
     empty_page: Arc<AtomicBool>,
-    focus: Arc<Mutex<Option<String>>>,
+    focus: Arc<Mutex<Option<Role>>>,
     focus_asked: Arc<Mutex<Vec<FocusedWindow>>>,
 }
 
@@ -205,8 +205,8 @@ impl FakeScreen {
         *self.under.lock().unwrap() = Some(under);
     }
 
-    pub fn focus_on(&self, role: &str) {
-        *self.focus.lock().unwrap() = Some(role.into());
+    pub fn focus_on(&self, role: Role) {
+        *self.focus.lock().unwrap() = Some(role);
     }
 
     pub fn focus_asked(&self) -> Vec<FocusedWindow> {
@@ -261,7 +261,7 @@ impl Screen for FakeScreen {
         Box::pin(async move { Ok(under) })
     }
 
-    fn page(&self, _window: InWindow) -> Paged<'_> {
+    fn page(&self, _window: InWindow) -> PageFound<'_> {
         let page = if self.empty_page.load(Ordering::SeqCst) {
             Page::Empty
         } else {
@@ -270,9 +270,9 @@ impl Screen for FakeScreen {
         Box::pin(async move { Ok(page) })
     }
 
-    fn focused_role(&self, window: FocusedWindow) -> Focus<'_> {
+    fn focused_role(&self, window: FocusedWindow) -> RoleFound<'_> {
         self.focus_asked.lock().unwrap().push(window);
-        let focus = self.focus.lock().unwrap().clone();
+        let focus = *self.focus.lock().unwrap();
         Box::pin(async move { focus.ok_or_else(|| "the fake knows no focus".into()) })
     }
 

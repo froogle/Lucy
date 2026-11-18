@@ -1,8 +1,3 @@
-use rmcp::model::CallToolResult;
-use serde_json::Value;
-
-use crate::mcp;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Browser {
     Brave,
@@ -11,12 +6,8 @@ pub enum Browser {
 }
 
 impl Browser {
-    pub fn off(result: &CallToolResult) -> Option<Browser> {
-        if result.is_error == Some(true) {
-            return None;
-        }
-        let answer: Value = serde_json::from_str(&mcp::result_text(result)).ok()?;
-        match answer["accessibility_off"].as_str()? {
+    pub fn named(name: &str) -> Option<Browser> {
+        match name {
             "brave" => Some(Browser::Brave),
             "chrome" => Some(Browser::Chrome),
             "chromium" => Some(Browser::Chromium),
