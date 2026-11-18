@@ -46,7 +46,7 @@ Lucy opens every web page in a new window of the user's default browser, so it a
 - **`--new-window`:** passed to every resolved browser. Brave, Chrome, Chromium, Edge and Firefox all accept it. Lucy doesn't keep a list of browsers she knows.
 - **`open_in_browser`:** the accessibility offer's settings page, opened in a named browser, also gets `--new-window` before the page.
 - **Named workspaces:** "open it on workspace N" stays two calls by the model: the Omarchy Plugin's `workspace {action: switch}`, then `open_url`. Neither `open_url` nor `launch_app` gains a workspace argument, and lucyd doesn't talk to Hyprland. The new window opens on whatever workspace is active.
-- **Shape for testing:** working out the browser command is a pure function. It takes the URL, the default entry's name (already resolved, including through the Omarchy wrapper) and the data dirs, and returns the command to run: the browser with `--new-window <url>`, or the `xdg-open` fallback. Running `xdg-settings` and `omarchy-cmd-default-browser`, and starting the process, stay outside it.
+- **Shape for testing:** working out the browser command is a pure function. It takes the URL, the default entry's name, the data dirs and a function that asks Omarchy for its default browser's entry, and returns the command to run: the browser with `--new-window <url>`, or the `xdg-open` fallback. Following the Omarchy wrapper happens inside it, through that function, so tests pass a fixed answer. Running `xdg-settings` and `omarchy-cmd-default-browser`, and starting the process, stay outside it.
 
 ## Testing Decisions
 

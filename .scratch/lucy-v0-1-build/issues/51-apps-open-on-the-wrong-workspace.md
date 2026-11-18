@@ -22,7 +22,7 @@ Spec: [Open pages in a new window](../../open-pages-in-a-new-window/spec.md); th
 
 **Seams:** none new. It changes lucyd's `SystemLauncher` (`crates/lucyd/src/launcher.rs`).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -32,10 +32,12 @@ Spec: [Open pages in a new window](../../open-pages-in-a-new-window/spec.md); th
 
 **Acceptance:**
 
-- [ ] A test shows `open_url` running the default browser's executable with `--new-window <url>`, and falling back to `xdg-open` when the browser can't be worked out; `open_in_browser` passes `--new-window` too
+- [x] A test shows `open_url` running the default browser's executable with `--new-window <url>`, and falling back to `xdg-open` when the browser can't be worked out; `open_in_browser` passes `--new-window` too
 - [ ] Once, by hand on Omarchy: with Brave open only on workspace 1, ask from workspace 4 for a YouTube search. It opens in a new Brave window on 4, and the desktop stays on 4
 - [ ] Once, by hand on Omarchy: from workspace 4, "open YouTube on workspace 3" leaves the desktop on 3, with the page in a new window there
 
 ## Comments
 
 2026-11-18: grilled with the user; cause reproduced on the live desktop.
+
+Resolved on `open-pages-in-a-new-window` (9e6334e..7f48ca3). `open_url` runs the default browser's `Exec` program with `--new-window <url>` (through `uwsm app --` when uwsm runs), following `omarchy-launch-browser` (matched by file name) through `omarchy-cmd-default-browser`, and never running it. An `Exec` starting with `flatpak`, `env` or a quoted path, or any failed lookup, falls back to `xdg-open`. Reading an entry's program lives in `desktop_entries::exec_program`. `browser_command` takes the Omarchy lookup as a function, so the wrapper is followed behind the test seam (spec updated). Spawn success still means only that the process started, as before. The two hand checks on Omarchy are still to do.
