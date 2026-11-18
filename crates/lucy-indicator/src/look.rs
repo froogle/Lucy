@@ -12,6 +12,7 @@ pub struct Indicator {
     flash_until: Option<f32>,
     building: bool,
     looking: bool,
+    working: bool,
 }
 
 impl Indicator {
@@ -23,6 +24,7 @@ impl Indicator {
             flash_until: None,
             building: false,
             looking: false,
+            working: false,
         }
     }
 
@@ -40,6 +42,10 @@ impl Indicator {
 
     pub fn on_looking(&mut self, looking: bool) {
         self.looking = looking;
+    }
+
+    pub fn on_working(&mut self, working: bool) {
+        self.working = working;
     }
 
     pub fn on_state(&mut self, state: State, t: f32) {
@@ -69,6 +75,9 @@ impl Indicator {
         if self.looking {
             looking(&mut canvas, self.palette.warning);
         }
+        if self.working {
+            working(&mut canvas, self.palette.accent);
+        }
         Some(canvas)
     }
 }
@@ -83,6 +92,18 @@ fn flash(canvas: &mut Pixmap, colour: Color, remaining: f32) {
 
 fn building(canvas: &mut Pixmap, colour: Color) {
     let dot = PathBuilder::from_circle(SIZE as f32 - 5.0, 5.0, 4.0).expect("positive radius");
+    canvas.fill_path(
+        &dot,
+        &paint(colour),
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
+fn working(canvas: &mut Pixmap, colour: Color) {
+    let dot = PathBuilder::from_circle(SIZE as f32 - 5.0, SIZE as f32 - 5.0, 4.0)
+        .expect("positive radius");
     canvas.fill_path(
         &dot,
         &paint(colour),
@@ -313,6 +334,27 @@ mod tests {
         assert!(corner(&frame) > 10);
 
         indicator.on_looking(false);
+        assert_eq!(corner(&indicator.draw(0.0).expect("shown")), 0);
+    }
+
+    #[test]
+    fn a_hand_off_adds_a_mark_in_the_corner_below_the_building_mark() {
+        let corner = |frame: &Pixmap| {
+            (SIZE - 8..SIZE)
+                .flat_map(|x| (SIZE - 8..SIZE).map(move |y| (x, y)))
+                .filter(|&(x, y)| frame.pixel(x, y).is_some_and(|p| p.alpha() >= 64))
+                .count()
+        };
+        let mut indicator = Indicator::new(palette());
+        indicator.on_state(State::Listening, 0.0);
+        indicator.on_building(true);
+        assert_eq!(corner(&indicator.draw(0.0).expect("shown")), 0);
+
+        indicator.on_working(true);
+        let frame = indicator.draw(0.0).expect("shown");
+        assert!(corner(&frame) > 10);
+
+        indicator.on_working(false);
         assert_eq!(corner(&indicator.draw(0.0).expect("shown")), 0);
     }
 

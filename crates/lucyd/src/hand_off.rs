@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use lucy_config::{Kind, Provider};
 use rmcp::model::{CallToolResult, JsonObject, Tool};
-use serde_json::json;
-use tokio::sync::{mpsc, watch, Notify};
+use serde_json::{json, Value};
+use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{
     Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
@@ -15,7 +15,8 @@ use crate::adapters::{
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
-use crate::runner::Command;
+use crate::runner::{self, Command};
+use crate::session::{Answer, Expects, Question};
 use crate::sync::Locked;
 
 const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice assistant, and \
@@ -25,9 +26,8 @@ const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice
 
 const CAPTURE_WAIT: Duration = Duration::from_secs(5);
 
-const DENIED: &str = "The user's Claude settings don't allow this, and Lucy can't ask them about \
-                      it, so it's denied. Carry on without it, and say in your final message \
-                      what you'd need.";
+const DENIED: &str = "The user didn't allow this. Carry on without it, and say in your final \
+                      message what you'd need.";
 
 pub struct HandOffs {
     thinking: Arc<dyn Thinking>,
@@ -91,7 +91,6 @@ impl HandOffs {
             folder,
             hand_offs: Arc::downgrade(self),
             state: Mutex::default(),
-            stopping: Notify::new(),
         });
         *current = Some(job.clone());
         drop(current);
@@ -127,10 +126,14 @@ impl HandOffs {
         Ok(folder)
     }
 
-    pub fn stop(&self) {
-        let current = self.current.locked().clone();
-        if let Some(job) = current {
-            job.stop();
+    pub fn show_still_working(&self) {
+        if self.current.locked().is_some() {
+            self.show(Notification {
+                summary: "Claude is still working".to_owned(),
+                body: "Lucy will let you know when it's done.".to_owned(),
+                action: None,
+                kind: NotificationKind::HandOff,
+            });
         }
     }
 
@@ -200,12 +203,10 @@ pub struct Job {
     folder: PathBuf,
     hand_offs: Weak<HandOffs>,
     state: Mutex<JobState>,
-    stopping: Notify,
 }
 
 #[derive(Default)]
 struct JobState {
-    over: bool,
     model: Option<Box<dyn SessionModel>>,
     token: Option<Token>,
     conversation: Option<String>,
@@ -228,9 +229,6 @@ impl Job {
         };
         {
             let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
             let mut model = hand_offs.thinking.open_hand_off(
                 &claude(),
                 events_tx,
@@ -248,28 +246,69 @@ impl Job {
 
     async fn follow(&self, mut events: mpsc::UnboundedReceiver<ThinkingEvent>) {
         loop {
-            tokio::select! {
-                biased;
-                event = events.recv() => match event {
-                    Some(ThinkingEvent::Conversation(id)) => {
-                        self.state.locked().conversation = Some(id);
-                    }
-                    Some(ThinkingEvent::Final(answer)) => self.state.locked().answer = Some(answer),
-                    Some(ThinkingEvent::TurnEnd) => return self.answered(),
-                    Some(ThinkingEvent::Unavailable(reason)) => return self.failed(&reason),
-                    Some(ThinkingEvent::Failed(message)) => return self.failed(&message),
-                    Some(ThinkingEvent::Died(exit)) => return self.died(&exit),
-                    None => return self.failed("Claude stopped unexpectedly."),
-                    Some(_) => {}
-                },
-                () = self.stopping.notified() => return self.stopped(),
+            match events.recv().await {
+                Some(ThinkingEvent::Conversation(id)) => {
+                    self.state.locked().conversation = Some(id);
+                }
+                Some(ThinkingEvent::Final(answer)) => self.state.locked().answer = Some(answer),
+                Some(ThinkingEvent::TurnEnd) => return self.answered(),
+                Some(ThinkingEvent::Unavailable(reason)) => return self.failed(&reason),
+                Some(ThinkingEvent::Failed(message)) => return self.failed(&message),
+                Some(ThinkingEvent::Died(exit)) => return self.died(&exit),
+                None => return self.failed("Claude stopped unexpectedly."),
+                Some(_) => {}
             }
         }
     }
 
-    pub async fn call(&self, name: &str, _arguments: &JsonObject) -> Option<CallToolResult> {
-        (name == PERMISSION_TOOL)
-            .then(|| text(json!({"behavior": "deny", "message": DENIED}).to_string()))
+    pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
+        if name != PERMISSION_TOOL {
+            return None;
+        }
+        Some(self.permission(arguments).await)
+    }
+
+    async fn permission(&self, arguments: &JsonObject) -> CallToolResult {
+        let tool_name = string(arguments, "tool_name");
+        let input = arguments.get("input").cloned().unwrap_or_else(|| json!({}));
+        let wants = match input.get("description").and_then(Value::as_str) {
+            Some(description) if !description.trim().is_empty() => lower_first(description.trim()),
+            _ => format!("use {tool_name}"),
+        };
+        let details = format!("{tool_name}\n{input:#}");
+        let question = Question {
+            prompt: format!("Claude wants to {wants}. Okay?"),
+            expects: Expects::Yes,
+        };
+        let shown = Notification {
+            summary: "Claude wants permission".to_owned(),
+            body: details.clone(),
+            action: None,
+            kind: NotificationKind::HandOff,
+        };
+        let kept = Notification {
+            summary: "Claude is waiting for your permission".to_owned(),
+            body: format!("{details}\n\nLucy will ask at your next Session."),
+            action: None,
+            kind: NotificationKind::HandOff,
+        };
+        let decision = match self.ask(question, Some(shown), kept).await {
+            Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
+            _ => json!({"behavior": "deny", "message": DENIED}),
+        };
+        text(decision.to_string())
+    }
+
+    /// Asks the user once neither side is speaking, or at the next Session
+    /// when none is open, notifying `kept` when it waits for one.
+    async fn ask(
+        &self,
+        question: Question,
+        shown: Option<Notification>,
+        kept: Notification,
+    ) -> Option<Answer> {
+        let commands = self.hand_offs.upgrade()?.commands.clone();
+        runner::ask_when_quiet_or_next_session(&commands, question, shown, kept).await
     }
 
     fn answered(&self) {
@@ -340,34 +379,6 @@ impl Job {
         self.failed(&exit.stopped("Claude"));
     }
 
-    fn stop(&self) {
-        let started = {
-            let mut state = self.state.locked();
-            if state.over {
-                return;
-            }
-            state.over = state.model.is_none();
-            state.model.is_some()
-        };
-        if started {
-            self.stopping.notify_one();
-        } else {
-            self.stopped();
-        }
-    }
-
-    fn stopped(&self) {
-        let conversation = self.state.locked().conversation.clone();
-        self.show(
-            "Lucy stopped Claude",
-            format!(
-                "The Session ended before Claude had finished.{}",
-                self.resume(conversation.as_deref())
-            ),
-        );
-        self.finish();
-    }
-
     fn resume(&self, conversation: Option<&str>) -> String {
         match conversation {
             Some(id) => format!(
@@ -406,7 +417,6 @@ impl Job {
     fn finish(&self) {
         let (model, token) = {
             let mut state = self.state.locked();
-            state.over = true;
             (state.model.take(), state.token.take())
         };
         drop((model, token));
@@ -414,6 +424,13 @@ impl Job {
             hand_offs.finished(self);
         }
     }
+}
+
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_lowercase().chain(chars).collect()
+    })
 }
 
 fn claude() -> Provider {
