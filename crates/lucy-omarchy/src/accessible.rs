@@ -143,17 +143,21 @@ async fn find_focused(last: Option<ObjectRefOwned>, window: FocusedWindow) -> Re
     let app = app(&a11y, window.pid)
         .await?
         .ok_or("no app on the bus owns the focused window")?;
-    if let Some(last) = last.filter(|last| last.name() == app.name()) {
-        if focused(bus, &last).await {
-            return role(bus, last).await;
-        }
-    }
-    let frames = tops(bus, &app)
+    let frames: Vec<ObjectRefOwned> = tops(bus, &app)
         .await?
         .into_iter()
         .filter(|top| top.name == window.title)
         .map(|top| top.node)
         .collect();
+    if let Some(last) = last.filter(|last| last.name() == app.name()) {
+        if focused(bus, &last).await
+            && within(last.clone(), &frames, |node| parent(bus, node))
+                .await
+                .is_ok_and(|inside| inside)
+        {
+            return role(bus, last).await;
+        }
+    }
     let found = search(frames, |node| look(bus, node))
         .await?
         .ok_or("nothing in the focused window has the focus")?;
@@ -168,6 +172,30 @@ async fn focused(bus: &zbus::Connection, node: &ObjectRefOwned) -> bool {
         .get_state()
         .await
         .is_ok_and(|state| state.contains(State::Focused))
+}
+
+async fn parent(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<Option<ObjectRefOwned>> {
+    let up = node.as_accessible_proxy(bus).await?.parent().await?;
+    Ok((!up.is_null()).then_some(up))
+}
+
+async fn within<N, F, H>(node: N, frames: &[N], mut parent: F) -> Reading<bool>
+where
+    N: PartialEq,
+    F: FnMut(N) -> H,
+    H: Future<Output = Reading<Option<N>>>,
+{
+    let mut here = node;
+    for _ in 0..MOST_SEARCHED {
+        if frames.contains(&here) {
+            return Ok(true);
+        }
+        match parent(here).await? {
+            Some(up) => here = up,
+            None => return Ok(false),
+        }
+    }
+    Ok(false)
 }
 
 async fn role(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<String> {
@@ -510,6 +538,35 @@ mod tests {
 
         assert_eq!(found.expect("the fake tree reads"), None);
         assert_eq!(looked.len(), 6);
+    }
+
+    fn inside(parents: &[(&str, &str)], node: &str, frames: &[&str]) -> bool {
+        let frames: Vec<String> = frames.iter().map(|frame| (*frame).to_owned()).collect();
+        reading(within(node.to_owned(), &frames, |node: String| {
+            let up = parents.iter().find(|(child, _)| *child == node);
+            let up = up.map(|(_, parent)| (*parent).to_owned());
+            async move { Ok(up) }
+        }))
+        .expect("the fake tree reads")
+    }
+
+    const TWO_WINDOWS: [(&str, &str); 6] = [
+        ("password", "document"),
+        ("document", "frame"),
+        ("frame", "app"),
+        ("search", "other document"),
+        ("other document", "other frame"),
+        ("other frame", "app"),
+    ];
+
+    #[test]
+    fn an_element_under_the_frame_is_within_it() {
+        assert!(inside(&TWO_WINDOWS, "password", &["frame"]));
+    }
+
+    #[test]
+    fn an_element_in_another_window_of_the_app_isnt_within_the_frame() {
+        assert!(!inside(&TWO_WINDOWS, "search", &["frame"]));
     }
 
     #[test]
