@@ -624,18 +624,21 @@ impl Default for Files {
     }
 }
 
-/// `[handoff]`: where a Hand-off's folder named by name is searched for.
+/// `[handoff]`: how a Hand-off to the user's own Claude runs.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct HandOff {
-    /// The folders searched, three levels deep; `~` is the user's home.
+    /// Where a folder named by name is searched for, three levels deep; `~` is the user's home.
     pub roots: Vec<PathBuf>,
+    /// Minutes a Hand-off may run before Lucy stops it.
+    pub budget_mins: f64,
 }
 
 impl Default for HandOff {
     fn default() -> Self {
         HandOff {
             roots: vec![PathBuf::from("~")],
+            budget_mins: 60.0,
         }
     }
 }
@@ -887,6 +890,15 @@ mod tests {
 
         assert_eq!(config.authoring.budget_secs, 60.0);
         assert!(!config.authoring.progress_notifications);
+    }
+
+    #[test]
+    fn a_hand_off_has_an_hour_unless_config_says_otherwise() {
+        assert_eq!(Config::default().handoff.budget_mins, 60.0);
+
+        let config = parse("[handoff]\nbudget_mins = 90\n");
+
+        assert_eq!(config.handoff.budget_mins, 90.0);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use harness::{next_state, Harness};
+use harness::{next_state, wait_until, Harness};
 use lucy_ipc::{Client, State};
 use lucyd::adapters::NotificationKind;
 use rmcp::model::CallToolResult;
@@ -357,20 +357,36 @@ fn the_session_stays_open_in_listening_while_claude_works() {
     assert_eq!(lucyd.client().status().unwrap().state, State::Listening);
 }
 
+fn hand_to_claude(lucyd: &Harness, arguments: serde_json::Value) -> (bool, String) {
+    called(lucyd.thinking.call_tool_with("hand_to_claude", arguments))
+}
+
 #[test]
-fn a_second_hand_off_is_refused_while_one_runs() {
+fn a_second_request_offers_to_queue_and_a_third_is_refused_while_one_waits() {
     let lucyd = Harness::start();
     let _events = handed_off(&lucyd, &lucyd.scratch());
-    lucyd.thinking.hand_off.next_turn();
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
 
-    lucyd.say("tell Claude to check my email");
-    lucyd.thinking.next_turn();
-    let arguments = json!({"request": "check my email"});
-    let (failed, said) = called(lucyd.thinking.call_tool_with("hand_to_claude", arguments));
+    let (failed, offer) = hand_to_claude(&lucyd, json!({"request": "check my email"}));
+    assert!(failed, "nothing starts before the user says to queue it");
+    assert!(offer.contains(REQUEST), "{offer}");
+    assert!(offer.contains("want me to queue this?"), "{offer}");
 
-    assert!(failed);
-    assert!(said.contains("still working"), "{said}");
-    lucyd.thinking.hand_off.assert_no_turn();
+    let (failed, queued) =
+        hand_to_claude(&lucyd, json!({"request": "check my email", "queue": true}));
+    assert!(!failed, "{queued}");
+    let (failed, refused) =
+        hand_to_claude(&lucyd, json!({"request": "tidy my desktop", "queue": true}));
+    assert!(failed, "{refused}");
+    assert!(refused.contains("check my email"), "{refused}");
+    hand_off.assert_no_turn();
+    assert_eq!(hand_off.opened().len(), 1);
+
+    hand_off.answer(CONVERSATION, ANSWER);
+
+    assert_eq!(hand_off.next_turn(), "check my email");
+    assert_eq!(hand_off.opened().len(), 2);
 }
 
 #[test]
@@ -573,4 +589,147 @@ fn claude_finishing_without_a_final_message_says_so() {
     let turn = lucyd.thinking.next_turn();
     assert!(turn.contains("left no final message"), "{turn}");
     assert!(!turn.contains("Its final message"), "{turn}");
+}
+
+#[test]
+fn at_its_budget_claude_is_stopped_on_the_clock_with_the_resume_command_and_folder_notified() {
+    let lucyd = Harness::with_config("[handoff]\nbudget_mins = 30\n");
+    let folder = lucyd.scratch();
+    let _events = handed_off(&lucyd, &folder);
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    hand_off.conversation(CONVERSATION);
+
+    lucyd.clock.advance(Duration::from_secs(30 * 60 - 1));
+    lucyd.barrier();
+    let shown = lucyd.notifier.shown();
+    assert!(
+        shown
+            .iter()
+            .all(|shown| shown.kind != NotificationKind::HandOff),
+        "{shown:?}"
+    );
+    lucyd.clock.advance(Duration::from_secs(1));
+
+    let shown = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(shown.summary, "Claude ran out of time");
+    assert!(shown.body.contains("30 minutes"), "{}", shown.body);
+    let resume = format!("claude --resume {CONVERSATION}");
+    assert!(shown.body.contains(&resume), "{}", shown.body);
+    assert!(
+        shown.body.contains(folder.to_str().unwrap()),
+        "{}",
+        shown.body
+    );
+    assert!(hand_off.call_tool_with("permission", json!({})).is_err());
+    let report = lucyd.thinking.next_turn();
+    assert!(report.contains("ran out of time"), "{report}");
+}
+
+#[test]
+fn the_budget_runs_on_with_no_session_open() {
+    let lucyd = Harness::with_config("[handoff]\nbudget_mins = 30\n");
+    let _events = handed_off(&lucyd, &lucyd.scratch());
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    hand_off.conversation(CONVERSATION);
+    lucyd.client().end_session().unwrap();
+    let still = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(still.summary, "Claude is still working");
+
+    lucyd.clock.advance(Duration::from_secs(30 * 60));
+
+    let shown = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(shown.summary, "Claude ran out of time");
+    let resume = format!("claude --resume {CONVERSATION}");
+    assert!(shown.body.contains(&resume), "{}", shown.body);
+    assert!(hand_off.call_tool_with("permission", json!({})).is_err());
+    wait_until("Claude to stop working", || {
+        (!lucyd.client().status().unwrap().working).then_some(())
+    });
+}
+
+const HAND_OFF_STOPPED: &str = "Okay, I've stopped Claude.";
+
+#[test]
+fn cancel_it_stops_claude_with_the_resume_command_notified() {
+    let lucyd = Harness::start();
+    let folder = lucyd.scratch();
+    let _events = handed_off(&lucyd, &folder);
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    hand_off.conversation(CONVERSATION);
+
+    lucyd.say("Cancel it.");
+
+    assert_eq!(lucyd.tts.next_sentence(), HAND_OFF_STOPPED);
+    let shown = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    assert_eq!(shown.summary, "Lucy stopped Claude");
+    let resume = format!("claude --resume {CONVERSATION}");
+    assert!(shown.body.contains(&resume), "{}", shown.body);
+    assert!(
+        shown.body.contains(folder.to_str().unwrap()),
+        "{}",
+        shown.body
+    );
+    assert!(hand_off.call_tool_with("permission", json!({})).is_err());
+    lucyd.barrier();
+    lucyd.thinking.assert_no_turn();
+}
+
+fn request_a_build(lucyd: &Harness) {
+    let (failed, said) = called(lucyd.thinking.call_tool_with(
+        "request_plugin",
+        json!({
+            "name": "photos",
+            "goal": "find the user's photos",
+            "clarifications": "",
+            "request": "find my photos of Rome",
+        }),
+    ));
+    assert!(!failed, "{said}");
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "This is going to take a few minutes."
+    );
+    lucyd.tts.finish_playing();
+}
+
+#[test]
+fn a_hand_off_and_a_build_run_together_and_cancel_it_asks_which_one() {
+    let lucyd = Harness::start();
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    let hand_off = &lucyd.thinking.hand_off;
+    assert_eq!(hand_off.next_turn(), REQUEST);
+    lucyd.say("make a Plugin to find my photos");
+    lucyd.thinking.next_turn();
+    request_a_build(&lucyd);
+    lucyd.thinking.turn_end();
+    until_state(&mut events, State::Listening);
+    let build = &lucyd.thinking.delegate;
+    assert!(build.next_turn().contains("photos"));
+
+    lucyd.say("cancel it");
+
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Do you mean the Plugin build, or Claude?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("Claude");
+    assert_eq!(lucyd.tts.next_sentence(), HAND_OFF_STOPPED);
+    assert!(hand_off.call_tool_with("permission", json!({})).is_err());
+    assert!(build
+        .call_tool_with("report_progress", json!({"text": "still going"}))
+        .is_ok());
+    assert!(lucyd.client().status().unwrap().building);
+    lucyd.thinking.assert_no_turn();
 }

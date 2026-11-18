@@ -68,6 +68,8 @@ pub enum Output {
     StopSpeaking,
     Interrupt,
     CancelBuild,
+    CancelHandOff,
+    AskWhichToCancel,
 }
 
 const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
@@ -75,6 +77,22 @@ const DIDNT_CATCH_THAT: &str = "Sorry, I didn't catch that.";
 const CANCEL_IT: &str = "cancel it";
 
 pub const BUILD_STOPPED: &str = "Okay, I've stopped the build.";
+
+pub const HAND_OFF_STOPPED: &str = "Okay, I've stopped Claude.";
+
+pub const BOTH_STOPPED: &str = "Okay, I've stopped them both.";
+
+pub const BOTH_RUNNING: &str = "Okay, I'll leave them both running.";
+
+pub const WHICH_TO_CANCEL: &str = "Do you mean the Plugin build, or Claude?";
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Cancel {
+    Build,
+    HandOff,
+    Both,
+    Neither,
+}
 
 pub const KEEP_WORKING: &str = "I'll keep working on the Plugin, and let you know when it's ready.";
 
@@ -215,11 +233,10 @@ impl Session {
                 if nothing_recognised {
                     return vec![];
                 }
-                if self.building != Building::No && is_phrase(text, CANCEL_IT) {
-                    self.sentence = BUILD_STOPPED.to_owned();
-                    let mut outputs = vec![Output::CancelBuild];
-                    outputs.extend(self.speak_sentence());
-                    return outputs;
+                if is_phrase(text, CANCEL_IT) {
+                    if let Some(outputs) = self.cancel() {
+                        return outputs;
+                    }
                 }
                 self.turn_in_progress = true;
                 self.heard.clear();
@@ -344,6 +361,19 @@ impl Session {
         }
     }
 
+    fn cancel(&mut self) -> Option<Vec<Output>> {
+        let (cancel, stopped) = match (self.building != Building::No, self.working) {
+            (true, Working::Yes) => return Some(vec![Output::AskWhichToCancel]),
+            (true, Working::No) => (Output::CancelBuild, BUILD_STOPPED),
+            (false, Working::Yes) => (Output::CancelHandOff, HAND_OFF_STOPPED),
+            (false, Working::No) => return None,
+        };
+        self.sentence = stopped.to_owned();
+        let mut outputs = vec![cancel];
+        outputs.extend(self.speak_sentence());
+        Some(outputs)
+    }
+
     fn barge_in(&mut self) -> Vec<Output> {
         let mut outputs = vec![];
         if let Some(playing) = self.queued.front() {
@@ -408,17 +438,32 @@ fn push_sentence(heard: &mut String, sentence: &str) {
     heard.push_str(sentence);
 }
 
+pub fn which_to_cancel(said: &str) -> Cancel {
+    let said = words(said);
+    let named = |names: &[&str]| said.iter().any(|word| names.contains(&word.as_str()));
+    let both = named(&["both", "all"]);
+    let build = both || named(&["build", "plugin"]);
+    let hand_off = both || named(&["claude", "hand", "handoff"]);
+    match (build, hand_off) {
+        (true, true) => Cancel::Both,
+        (true, false) => Cancel::Build,
+        (false, true) => Cancel::HandOff,
+        (false, false) => Cancel::Neither,
+    }
+}
+
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
 fn is_one_of(reply: &str, phrases: &[String]) -> bool {
     phrases.iter().any(|phrase| is_phrase(reply, phrase))
 }
 
 fn is_phrase(utterance: &str, phrase: &str) -> bool {
-    let words = |text: &str| -> Vec<String> {
-        text.split(|c: char| !c.is_alphanumeric() && c != '\'')
-            .filter(|word| !word.is_empty())
-            .map(str::to_lowercase)
-            .collect()
-    };
     let utterance = words(utterance);
     !utterance.is_empty() && words(phrase) == utterance
 }
@@ -466,6 +511,15 @@ mod tests {
             session.handle(Input::Transcript("stop".into())),
             [Output::SendTurn("[You were interrupted]\nstop".into())]
         );
+    }
+
+    #[test]
+    fn the_answer_to_which_one_names_the_build_claude_or_both() {
+        assert_eq!(which_to_cancel("The Plugin build."), Cancel::Build);
+        assert_eq!(which_to_cancel("claude"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("the hand-off"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("both of them"), Cancel::Both);
+        assert_eq!(which_to_cancel("neither"), Cancel::Neither);
     }
 
     #[test]
