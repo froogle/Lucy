@@ -1,13 +1,17 @@
 use std::error::Error;
 use std::future::Future;
+use std::pin::pin;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use atspi::events::object::StateChangedEvent;
 use atspi::proxy::accessible::{AccessibleProxy, ObjectRefExt};
 use atspi::proxy::proxy_ext::ProxyExt;
 use atspi::zbus;
 use atspi::{AccessibilityConnection, CoordType, ObjectRefOwned, Role, State};
+use futures_lite::StreamExt;
 
-use crate::screen::{Element, InWindow, Pid, WindowPoint};
+use crate::screen::{Element, FocusedWindow, InWindow, Pid, WindowPoint};
 
 const PATIENCE: Duration = Duration::from_secs(2);
 
@@ -19,9 +23,60 @@ const HIT_RETRIES: u32 = 2;
 
 const HIT_WAIT: Duration = Duration::from_millis(40);
 
+const MOST_SEARCHED: usize = 4000;
+
 const POPUPS: [Role; 4] = [Role::Menu, Role::PopupMenu, Role::Window, Role::ToolTip];
 
 type Reading<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+/// The element that last took the keyboard focus, as AT-SPI's focus events
+/// tell it once [`FocusEvents::follow`] has started following them.
+#[derive(Default)]
+pub struct FocusEvents {
+    last: Arc<Mutex<Option<ObjectRefOwned>>>,
+    following: OnceLock<()>,
+}
+
+impl FocusEvents {
+    /// Starts following focus events for as long as the Plugin runs, the first time only.
+    pub fn follow(&self) {
+        self.following.get_or_init(|| {
+            let last = self.last.clone();
+            tokio::spawn(async move {
+                if let Err(e) = follow(&last).await {
+                    eprintln!("omarchy: AT-SPI's focus events can't be followed: {e}");
+                }
+            });
+        });
+    }
+
+    fn last(&self) -> Option<ObjectRefOwned> {
+        self.last
+            .lock()
+            .expect("the focus lock is never poisoned")
+            .clone()
+    }
+}
+
+async fn follow(last: &Mutex<Option<ObjectRefOwned>>) -> Reading<()> {
+    let a11y = AccessibilityConnection::new().await?;
+    let mut events = pin!(a11y.event_stream());
+    a11y.register_event::<StateChangedEvent>().await?;
+    while let Some(event) = events.next().await {
+        let Ok(changed) = event.and_then(StateChangedEvent::try_from) else {
+            continue;
+        };
+        if changed.state == State::Focused && changed.enabled {
+            *last.lock().expect("the focus lock is never poisoned") = Some(changed.item);
+        }
+    }
+    Ok(())
+}
+
+enum Looked<N> {
+    Focused,
+    Inside(Vec<N>),
+}
 
 struct Top<N> {
     node: N,
@@ -38,6 +93,85 @@ pub async fn text_at(at: InWindow) -> Result<Option<Element>, String> {
             PATIENCE.as_secs()
         )),
     }
+}
+
+pub async fn focused_role(events: &FocusEvents, window: FocusedWindow) -> Result<String, String> {
+    match tokio::time::timeout(PATIENCE, find_focused(events.last(), window)).await {
+        Ok(found) => found.map_err(|e| format!("the focus can't be found through AT-SPI: {e}")),
+        Err(_) => Err(format!(
+            "AT-SPI didn't answer within {} s",
+            PATIENCE.as_secs()
+        )),
+    }
+}
+
+async fn find_focused(last: Option<ObjectRefOwned>, window: FocusedWindow) -> Reading<String> {
+    let a11y = AccessibilityConnection::new().await?;
+    let bus = a11y.connection();
+    let app = app(&a11y, window.pid)
+        .await?
+        .ok_or("no app on the bus owns the focused window")?;
+    if let Some(last) = last.filter(|last| last.name() == app.name()) {
+        if focused(bus, &last).await {
+            return role(bus, last).await;
+        }
+    }
+    let frames = tops(bus, &app)
+        .await?
+        .into_iter()
+        .filter(|top| top.name == window.title)
+        .map(|top| top.node)
+        .collect();
+    let found = search(frames, |node| look(bus, node))
+        .await?
+        .ok_or("nothing in the focused window has the focus")?;
+    role(bus, found).await
+}
+
+async fn focused(bus: &zbus::Connection, node: &ObjectRefOwned) -> bool {
+    let Ok(proxy) = node.as_accessible_proxy(bus).await else {
+        return false;
+    };
+    proxy
+        .get_state()
+        .await
+        .is_ok_and(|state| state.contains(State::Focused))
+}
+
+async fn role(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<String> {
+    let role = node.as_accessible_proxy(bus).await?.get_role().await?;
+    Ok(role.name().to_owned())
+}
+
+async fn look(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<Looked<ObjectRefOwned>> {
+    let proxy = node.as_accessible_proxy(bus).await?;
+    let state = proxy.get_state().await?;
+    if state.contains(State::Focused) {
+        return Ok(Looked::Focused);
+    }
+    if !state.contains(State::Showing) || state.contains(State::ManagesDescendants) {
+        return Ok(Looked::Inside(Vec::new()));
+    }
+    Ok(Looked::Inside(proxy.get_children().await?))
+}
+
+async fn search<N, F, H>(tops: Vec<N>, mut look: F) -> Reading<Option<N>>
+where
+    N: Clone,
+    F: FnMut(N) -> H,
+    H: Future<Output = Reading<Looked<N>>>,
+{
+    let mut left: Vec<N> = tops.into_iter().rev().collect();
+    for _ in 0..MOST_SEARCHED {
+        let Some(node) = left.pop() else {
+            return Ok(None);
+        };
+        match look(node.clone()).await? {
+            Looked::Focused => return Ok(Some(node)),
+            Looked::Inside(children) => left.extend(children.into_iter().rev()),
+        }
+    }
+    Err(format!("more than {MOST_SEARCHED} elements to search").into())
 }
 
 async fn read(at: InWindow) -> Reading<Option<Element>> {
@@ -300,5 +434,60 @@ mod tests {
 
         assert_eq!(here, "button");
         assert_eq!(asked.len(), 4);
+    }
+
+    fn searched(tree: &[(&str, &[&str])], focused: &str) -> (Reading<Option<String>>, Vec<String>) {
+        let looked = RefCell::new(Vec::new());
+        let found = reading(search(vec!["frame".to_owned()], |node: String| {
+            looked.borrow_mut().push(node.clone());
+            let answer = if node == focused {
+                Looked::Focused
+            } else {
+                let children = tree.iter().find(|(at, _)| *at == node);
+                let children = children.map_or(&[][..], |(_, children)| children);
+                Looked::Inside(children.iter().map(|child| (*child).to_owned()).collect())
+            };
+            async move { Ok(answer) }
+        }));
+        (found, looked.into_inner())
+    }
+
+    const FORM: [(&str, &[&str]); 3] = [
+        ("frame", &["toolbar", "document"]),
+        ("toolbar", &["address"]),
+        ("document", &["user", "password"]),
+    ];
+
+    #[test]
+    fn the_search_finds_the_focused_element_looking_in_tree_order() {
+        let (found, looked) = searched(&FORM, "password");
+
+        assert_eq!(
+            found.expect("the fake tree reads"),
+            Some("password".to_owned())
+        );
+        assert_eq!(
+            looked,
+            ["frame", "toolbar", "address", "document", "user", "password"]
+        );
+    }
+
+    #[test]
+    fn a_window_with_nothing_focused_has_no_focused_element() {
+        let (found, looked) = searched(&FORM, "elsewhere");
+
+        assert_eq!(found.expect("the fake tree reads"), None);
+        assert_eq!(looked.len(), 6);
+    }
+
+    #[test]
+    fn a_tree_too_big_to_search_is_an_error() {
+        let many: Vec<String> = (0..MOST_SEARCHED).map(|n| n.to_string()).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+
+        let (found, looked) = searched(&[("frame", &many)], "elsewhere");
+
+        assert!(found.is_err());
+        assert_eq!(looked.len(), MOST_SEARCHED);
     }
 }
