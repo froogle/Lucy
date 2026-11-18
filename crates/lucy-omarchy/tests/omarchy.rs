@@ -70,7 +70,7 @@ fn the_manifest_lists_exactly_the_tools_it_offers_and_only_kill_window_confirms(
 
 #[test]
 fn the_manifest_declares_exactly_the_commands_its_tools_run() {
-    let omarchy = Plugin::with_grim();
+    let omarchy = Plugin::start();
     omarchy.hyprland.windows(
         &[(FIREFOX, "firefox", "Lucy - Mozilla Firefox", "1")],
         Some(FIREFOX),

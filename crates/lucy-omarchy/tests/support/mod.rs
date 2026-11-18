@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use lucy_omarchy::{
     Acted, Button, Captured, Combo, Desktop, Direction, Element, FocusedWindow, Image, InWindow,
-    Omarchy, Page, PageFound, Point, Probed, Region, Role, RoleFound, Screen, Wayland,
+    Omarchy, Page, PageFound, Point, Probed, Region, Role, RoleFound, Screen,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
@@ -299,11 +299,6 @@ pub struct Plugin {
     dir: tempfile::TempDir,
 }
 
-enum Capturing {
-    Fake,
-    Grim,
-}
-
 fn write_executable(path: &Path, script: &str) {
     let mut writer = std::process::Command::new("/bin/sh")
         .args(["-c", "cat > \"$1\" && chmod +x \"$1\"", "sh"])
@@ -322,14 +317,6 @@ fn write_executable(path: &Path, script: &str) {
 
 impl Plugin {
     pub fn start() -> Plugin {
-        Plugin::capturing(Capturing::Fake)
-    }
-
-    pub fn with_grim() -> Plugin {
-        Plugin::capturing(Capturing::Grim)
-    }
-
-    fn capturing(capturing: Capturing) -> Plugin {
         let dir = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
         let hyprland = Hyprland::serve(&dir.path().join(".socket.sock"));
         let bin = dir.path().join("bin");
@@ -381,7 +368,6 @@ impl Plugin {
         );
         std::fs::write(dir.path().join("nightlight"), "false\n").unwrap();
         std::fs::write(dir.path().join("layout"), "dwindle\n").unwrap();
-        fake("grim", "printf 'grim png'\n");
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -392,13 +378,7 @@ impl Plugin {
             path: bin.into_os_string(),
         };
         let screen = FakeScreen::default();
-        let omarchy = match capturing {
-            Capturing::Fake => Omarchy::with_screen(desktop, Arc::new(screen.clone())),
-            Capturing::Grim => {
-                let wayland = Wayland::new(desktop.path.clone());
-                Omarchy::with_screen(desktop, Arc::new(wayland))
-            }
-        };
+        let omarchy = Omarchy::with_screen(desktop, Arc::new(screen.clone()));
         let client = runtime.block_on(async {
             let (ours, theirs) = tokio::io::duplex(1 << 16);
             tokio::spawn(async move {
