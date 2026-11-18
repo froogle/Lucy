@@ -31,7 +31,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch};
 
-use crate::adapters::{CredentialStore, Notification, NotificationKind};
+use crate::adapters::{Clock, CredentialStore, Notification, NotificationKind};
 use crate::input::{self, Filled, TypedAnswer};
 use crate::mcp;
 use crate::model_text::CALL_FINISHED;
@@ -60,6 +60,8 @@ const LOOK_DECLINED: &str = "declined: the user hasn't let you look at their scr
 const CANCELLED: &str = "cancelled: the user cut in, so the call was stopped.";
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+
+const PROBE_PATIENCE: Duration = Duration::from_secs(3);
 
 /// Where Plugins and Lucy's state live.
 #[derive(Debug, Clone)]
@@ -137,6 +139,7 @@ pub struct Host {
     editing: Mutex<()>,
     credentials: Arc<dyn CredentialStore>,
     environment: Environment,
+    clock: Arc<dyn Clock>,
 }
 
 struct Contents {
@@ -184,6 +187,7 @@ impl Host {
         changes: ChangeBus,
         credentials: Arc<dyn CredentialStore>,
         environment: Environment,
+        clock: Arc<dyn Clock>,
     ) -> Arc<Host> {
         Arc::new(Host {
             paths,
@@ -194,6 +198,7 @@ impl Host {
             editing: Mutex::default(),
             credentials,
             environment,
+            clock,
         })
     }
 
@@ -739,7 +744,7 @@ fn matches_manifest(manifest: &Manifest, listed: &[Tool]) -> Result<(), String> 
     Ok(())
 }
 
-fn save_state(state: &Path, path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn save_state(state: &Path, path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -809,7 +814,64 @@ impl SessionTools {
     }
 
     fn offers(&self, tool: &ToolEntry) -> bool {
-        tool.screen.is_none() || self.screen.enabled
+        match tool.screen {
+            None => true,
+            Some(ScreenUse::Probe) => false,
+            Some(_) => self.screen.enabled,
+        }
+    }
+
+    async fn text_under(
+        &self,
+        plugin: &Usable,
+        arguments: Option<&JsonObject>,
+        read: Option<&Credentials>,
+    ) -> Result<Option<String>, String> {
+        let Some(probe) = plugin
+            .manifest
+            .tools
+            .iter()
+            .find(|t| t.screen == Some(ScreenUse::Probe))
+        else {
+            return Ok(None);
+        };
+        let Some(peer) = self.started(plugin, read).await? else {
+            return Ok(None);
+        };
+        let point: JsonObject = ["x", "y"]
+            .into_iter()
+            .filter_map(|name| Some((name.to_owned(), arguments?.get(name)?.clone())))
+            .collect();
+        let request = CallToolRequestParams::new(probe.name.clone()).with_arguments(point);
+        let mut deadline = self.host.clock.timer();
+        deadline.set(Some(self.host.clock.now() + PROBE_PATIENCE));
+        tokio::select! {
+            answer = peer.call_tool_once(request) => match answer {
+                Ok(CallToolResponse::Complete(result)) => risk::probed(&result),
+                Ok(_) => Err("it answered with a question or a task".into()),
+                Err(e) => Err(format!("its call failed: {e}")),
+            },
+            () = deadline.fired() => Err(format!(
+                "it didn't answer within {} s",
+                PROBE_PATIENCE.as_secs()
+            )),
+        }
+    }
+
+    async fn started(
+        &self,
+        plugin: &Usable,
+        read: Option<&Credentials>,
+    ) -> Result<Option<Peer<RoleClient>>, String> {
+        let mut running = self.running.lock().await;
+        if !running.contains_key(&plugin.name) {
+            let Some(read) = read.filter(|read| read.missing.is_empty()) else {
+                return Ok(None);
+            };
+            let client = self.host.start(plugin, &read.entered).await?;
+            running.insert(plugin.name.clone(), client);
+        }
+        Ok(Some(running[&plugin.name].peer().clone()))
     }
 
     async fn look(&self) -> Result<(), Declined> {
@@ -938,7 +1000,27 @@ impl SessionTools {
         if entry.screen == Some(ScreenUse::Look) && self.look().await == Err(Declined) {
             return Some(mcp::text(LOOK_DECLINED));
         }
-        let risky = match risk::check(entry.screen, arguments.as_ref(), &self.screen.risky_words) {
+        let risky_words = &self.screen.risky_words;
+        let risk = match risk::check(entry.screen, arguments.as_ref(), risky_words) {
+            Risk::Plain if entry.screen == Some(ScreenUse::Click) => {
+                let mut barge_ins = self.barge_ins.subscribe();
+                let probed = tokio::select! {
+                    probed = self.text_under(
+                        &plugin,
+                        arguments.as_ref(),
+                        read_before_confirming.as_ref(),
+                    ) => probed,
+                    _ = barge_ins.changed() => return Some(mcp::error(CANCELLED)),
+                };
+                let under = probed.unwrap_or_else(|e| {
+                    eprintln!("lucyd: {plugin_name}'s probe couldn't read under a click: {e}");
+                    None
+                });
+                risk::under_click(arguments.as_ref(), under.as_deref(), risky_words)
+            }
+            risk => risk,
+        };
+        let risky = match risk {
             Risk::Plain => false,
             Risk::Undescribed(refusal) => return Some(mcp::error(refusal)),
             Risk::Risky { prompt } => {

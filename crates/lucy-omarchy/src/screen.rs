@@ -71,6 +71,36 @@ pub struct Combo {
     pub keysym: String,
 }
 
+/// A process ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pid(pub u32);
+
+/// A point in one window's own logical pixels, from its top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowPoint {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// A point inside one window, named by the process that owns it and its title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InWindow {
+    pub pid: Pid,
+    pub title: String,
+    pub at: WindowPoint,
+}
+
+/// The accessible element found at a point: its name, text and role.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Element {
+    pub name: String,
+    pub text: String,
+    pub role: String,
+}
+
+/// What [`Screen::text_at`] returns: the element there, or `None` when none can be read.
+pub type Probed<'a> = Pin<Box<dyn Future<Output = Result<Option<Element>, String>> + Send + 'a>>;
+
 /// What a [`Screen`] call returns once it has finished.
 pub type Captured<'a> = Pin<Box<dyn Future<Output = Result<Image, String>> + Send + 'a>>;
 
@@ -95,10 +125,16 @@ pub trait Screen: Send + Sync {
 
     /// Types `text` as though on a keyboard, a newline as Enter.
     fn type_text(&self, text: String) -> Acted<'_>;
+
+    /// Reads the accessible element at `at`.
+    ///
+    /// `None` means it can't be sure what is there: nothing readable, or
+    /// something drawn over the window that it can't read, such as a menu.
+    fn text_at(&self, at: InWindow) -> Probed<'_>;
 }
 
-/// The real [`Screen`]: captures through `grim`, found on `path`, and acts
-/// through Wayland's virtual pointer and keyboard.
+/// The real [`Screen`]: captures through `grim`, found on `path`, acts
+/// through Wayland's virtual pointer and keyboard, and reads through AT-SPI.
 pub struct Wayland {
     path: OsString,
 }
@@ -124,6 +160,10 @@ impl Screen for Wayland {
 
     fn type_text(&self, text: String) -> Acted<'_> {
         crate::wayland::act(move |input| input.type_text(&text))
+    }
+
+    fn text_at(&self, at: InWindow) -> Probed<'_> {
+        Box::pin(crate::accessible::text_at(at))
     }
 
     fn capture(&self, region: Region, scale: f64) -> Captured<'_> {

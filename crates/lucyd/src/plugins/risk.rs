@@ -1,5 +1,7 @@
-use rmcp::model::JsonObject;
+use rmcp::model::{CallToolResult, JsonObject};
 use serde_json::Value;
+
+use crate::mcp;
 
 use super::manifest::ScreenUse;
 
@@ -19,6 +21,19 @@ pub enum Risk {
 }
 
 pub fn check(screen: Option<ScreenUse>, arguments: Option<&JsonObject>, risky: &[String]) -> Risk {
+    confirmation(screen, arguments, |describe| matches_any(describe, risky))
+}
+
+pub fn under_click(arguments: Option<&JsonObject>, under: Option<&str>, risky: &[String]) -> Risk {
+    let readably_plain = under.is_some_and(|under| !matches_any(under, risky));
+    confirmation(Some(ScreenUse::Click), arguments, |_| !readably_plain)
+}
+
+fn confirmation(
+    screen: Option<ScreenUse>,
+    arguments: Option<&JsonObject>,
+    risky: impl FnOnce(&str) -> bool,
+) -> Risk {
     let argument = |name: &str| {
         arguments
             .and_then(|args| args.get(name))
@@ -32,19 +47,46 @@ pub fn check(screen: Option<ScreenUse>, arguments: Option<&JsonObject>, risky: &
         }
         _ => return Risk::Plain,
     };
-    let Some(describe) = argument("describe")
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-    else {
+    let Some(describe) = described(arguments) else {
         return Risk::Undescribed(undescribed);
     };
-    if matches_any(describe, risky) {
+    if risky(describe) {
         Risk::Risky {
             prompt: format!("{asks} {}?", describe.trim_end_matches(['.', '?', '!'])),
         }
     } else {
         Risk::Plain
     }
+}
+
+pub fn probed(result: &CallToolResult) -> Result<Option<String>, String> {
+    let answer = mcp::result_text(result);
+    if result.is_error == Some(true) {
+        return Err(format!("it answered with an error: {answer}"));
+    }
+    let read: Value = serde_json::from_str(&answer)
+        .map_err(|e| format!("its answer isn't the JSON a probe returns: {e}"))?;
+    let field = |name: &str| {
+        read["found"][name]
+            .as_str()
+            .map_or("", str::trim)
+            .to_owned()
+    };
+    let (name, text) = (field("name"), field("text"));
+    let under = match (name.is_empty(), text.is_empty() || text == name) {
+        (true, _) => text,
+        (false, true) => name,
+        (false, false) => format!("{name}, {text}"),
+    };
+    Ok((!under.is_empty()).then_some(under))
+}
+
+fn described(arguments: Option<&JsonObject>) -> Option<&str> {
+    arguments
+        .and_then(|args| args.get("describe"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
 }
 
 fn matches_any(describe: &str, risky: &[String]) -> bool {

@@ -976,3 +976,137 @@ fn claude_running_out_of_time_with_no_session_open_sends_one_notification() {
     });
     assert!(told.contains("ran out of time"), "{told}");
 }
+
+const REPLY: &str = "yes, go ahead";
+
+fn finished(lucyd: &Harness, folder: &Path) -> Client {
+    let events = handed_off(lucyd, folder);
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    hand_off.answer(CONVERSATION, ANSWER);
+    lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    lucyd.thinking.next_turn();
+    lucyd.thinking.turn_end();
+    events
+}
+
+fn continued(lucyd: &Harness) -> lucyd::adapters::HandOff {
+    let hand_off = &lucyd.thinking.hand_off;
+    wait_until("the Hand-off to be continued", || {
+        Some(hand_off.hand_off()).filter(|opened| opened.resume.is_some())
+    })
+}
+
+#[test]
+fn continue_resumes_the_last_hand_offs_conversation_in_its_folder() {
+    let lucyd = Harness::start();
+    let folder = lucyd.scratch();
+    let _events = finished(&lucyd, &folder);
+
+    lucyd.say("tell Claude yes, go ahead");
+    lucyd.thinking.next_turn();
+    let (failed, said) = hand_to_claude(&lucyd, json!({"request": REPLY, "continue": true}));
+
+    assert!(!failed, "{said}");
+    let opened = continued(&lucyd);
+    assert_eq!(opened.resume.as_deref(), Some(CONVERSATION));
+    assert_eq!(opened.folder, folder);
+    assert_eq!(lucyd.thinking.hand_off.next_turn(), REPLY);
+}
+
+#[test]
+fn with_no_earlier_hand_off_continue_says_theres_nothing_to_continue_and_nothing_starts() {
+    let lucyd = Harness::start();
+    let arguments = json!({"request": REPLY, "continue": true});
+
+    let (_events, (failed, said)) = hand_off(&lucyd, arguments);
+
+    assert!(failed, "{said}");
+    assert!(said.contains("nothing to continue"), "{said}");
+    assert!(lucyd.thinking.hand_off.opened().is_empty());
+}
+
+#[test]
+fn while_one_runs_continue_gets_the_queue_offer_and_carries_on_the_one_that_ran() {
+    let lucyd = Harness::start();
+    let folder = lucyd.scratch();
+    let _events = handed_off(&lucyd, &folder);
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+
+    let (failed, offer) = hand_to_claude(&lucyd, json!({"request": REPLY, "continue": true}));
+    assert!(failed, "nothing starts before the user says to queue it");
+    assert!(offer.contains("want me to queue this?"), "{offer}");
+    let (failed, queued) = hand_to_claude(
+        &lucyd,
+        json!({"request": REPLY, "continue": true, "queue": true}),
+    );
+    assert!(!failed, "{queued}");
+    hand_off.answer(CONVERSATION, ANSWER);
+
+    let opened = continued(&lucyd);
+    assert_eq!(opened.resume.as_deref(), Some(CONVERSATION));
+    assert_eq!(opened.folder, folder);
+    assert_eq!(hand_off.next_turn(), REPLY);
+}
+
+#[test]
+fn nothing_about_the_continued_conversation_reaches_the_public_socket() {
+    let lucyd = Harness::start();
+    let folder = lucyd.scratch().join("linear-work");
+    std::fs::create_dir(&folder).unwrap();
+    let _events = finished(&lucyd, &folder);
+    lucyd.say("tell Claude yes, go ahead");
+    lucyd.thinking.next_turn();
+    let (failed, said) = hand_to_claude(&lucyd, json!({"request": REPLY, "continue": true}));
+    assert!(!failed, "{said}");
+    continued(&lucyd);
+    lucyd.thinking.hand_off.next_turn();
+    lucyd.thinking.turn_end();
+    lucyd.client().end_session().unwrap();
+
+    lucyd.assert_nothing_private_on_bus();
+    lucyd.assert_not_on_bus(&[CONVERSATION, "linear-work", REPLY]);
+}
+
+#[test]
+fn after_a_newer_hand_off_ends_without_a_conversation_theres_nothing_to_continue() {
+    let lucyd = Harness::start();
+    let _events = finished(&lucyd, &lucyd.scratch());
+    lucyd.say(&format!("tell Claude to {REQUEST}"));
+    lucyd.thinking.next_turn();
+    let arguments = json!({"request": REQUEST, "folder": lucyd.scratch().to_str().unwrap()});
+    let (failed, said) = hand_to_claude(&lucyd, arguments);
+    assert!(!failed, "{said}");
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    hand_off.fail("Claude couldn't start");
+    lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    lucyd.thinking.turn_end();
+    lucyd.say("tell Claude yes, go ahead");
+    lucyd.thinking.next_turn();
+
+    let (failed, said) = hand_to_claude(&lucyd, json!({"request": REPLY, "continue": true}));
+
+    assert!(failed, "{said}");
+    assert!(said.contains("nothing to continue"), "{said}");
+}
+
+#[test]
+fn an_unreadable_record_of_the_last_hand_off_says_lucy_couldnt_read_it() {
+    let lucyd = Harness::start();
+    std::fs::create_dir_all(lucyd.state_dir()).unwrap();
+    std::fs::write(lucyd.state_dir().join("hand-off.toml"), "conversation = [").unwrap();
+    let arguments = json!({"request": REPLY, "continue": true});
+
+    let (_events, (failed, said)) = hand_off(&lucyd, arguments);
+
+    assert!(failed, "{said}");
+    assert!(said.contains("couldn't read"), "{said}");
+    assert!(!said.contains("nothing to continue"), "{said}");
+    assert!(lucyd.thinking.hand_off.opened().is_empty());
+}
