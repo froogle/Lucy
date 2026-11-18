@@ -12,10 +12,11 @@ use crate::adapters::{
     Adapters, Clock, Exit, HandOff, Notification, NotificationKind, Notifier, SessionModel,
     Thinking, ThinkingEvent, PERMISSION_TOOL,
 };
+use crate::input;
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
-use crate::runner::{self, Command};
+use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::sync::Locked;
 
@@ -196,7 +197,22 @@ fn permission_tool() -> Tool {
 }
 
 pub fn hand_off_tools() -> Vec<Tool> {
-    vec![permission_tool()]
+    let string = |description: &str| json!({"type": "string", "description": description});
+    vec![
+        tool(
+            "report_progress",
+            "Report what you're doing, in a short line. It is shown to the user, never spoken.",
+            json!({"type": "object", "properties": {"text": string("What you're doing")}, "required": ["text"]}),
+        ),
+        tool(
+            "ask_user",
+            "Ask the user something only they can answer. Lucy asks it aloud once nobody is \
+             speaking and returns their answer.",
+            json!({"type": "object", "properties": {"question": string("One short spoken question")}, "required": ["question"]}),
+        ),
+        input::ask_typed_tool(),
+        permission_tool(),
+    ]
 }
 
 pub struct Job {
@@ -272,10 +288,51 @@ impl Job {
     }
 
     pub async fn call(&self, name: &str, arguments: &JsonObject) -> Option<CallToolResult> {
-        if name != PERMISSION_TOOL {
-            return None;
+        Some(match name {
+            "report_progress" => {
+                self.show("Claude is working", string(arguments, "text"));
+                text("Noted.")
+            }
+            "ask_user" => self.ask_user(string(arguments, "question")).await,
+            "ask_typed" => {
+                let Some(hand_offs) = self.hand_offs.upgrade() else {
+                    return Some(error("Lucy is stopping."));
+                };
+                let commands = hand_offs.commands.clone();
+                drop(hand_offs);
+                let kept = question_kept("Claude wants you to type something");
+                input::ask_typed_at(&commands, arguments, kept).await
+            }
+            PERMISSION_TOOL => text(self.permission(arguments).await.to_string()),
+            _ => return None,
+        })
+    }
+
+    async fn ask_user(&self, question: String) -> CallToolResult {
+        if question.trim().is_empty() {
+            return error("question must be what to ask the user.");
         }
-        Some(text(self.permission(arguments).await.to_string()))
+        let Some(hand_offs) = self.hand_offs.upgrade() else {
+            return error("Lucy is stopping.");
+        };
+        let question = Question {
+            prompt: format!("Claude asks: {question}"),
+            expects: Expects::Words,
+        };
+        let kept = question_kept("Claude has a question");
+        let answer = runner::ask_at(&hand_offs.commands, question, None, kept);
+        drop(hand_offs);
+        match answer.await {
+            Some(Answer::Said(said)) => text(format!("The user answered: \"{said}\"")),
+            Some(_) => text(
+                "The user didn't answer. Carry on with your best judgement, and say in your \
+                 final message what you assumed.",
+            ),
+            None => text(
+                "The user couldn't be asked. Carry on with your best judgement, and say in \
+                 your final message what you assumed.",
+            ),
+        }
     }
 
     async fn permission(&self, arguments: &JsonObject) -> serde_json::Value {
@@ -446,6 +503,15 @@ impl Job {
             hand_offs.finished(self);
         }
     }
+}
+
+fn question_kept(summary: &str) -> When {
+    When::QuietOrNextSession(Notification {
+        summary: summary.to_owned(),
+        body: "Lucy will ask at your next Session.".to_owned(),
+        action: None,
+        kind: NotificationKind::HandOff,
+    })
 }
 
 fn description(tool_name: &str, input: &serde_json::Value) -> String {
