@@ -2,20 +2,17 @@
 //! It keeps only the approved, working ones, and runs each in its sandbox on
 //! first use in a Session, forwarding the model's calls to it over MCP stdio.
 
-mod accessibility;
 mod approval;
 mod authored;
 mod environment;
 mod manage;
 mod manifest;
 mod questions;
-mod risk;
 pub(crate) mod sandbox;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
@@ -33,7 +30,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch};
 
-use crate::adapters::{Clock, CredentialStore, Launcher, Notification, NotificationKind};
+use crate::adapters::{CredentialStore, Notification, NotificationKind};
 use crate::input::{self, Filled, TypedAnswer};
 use crate::mcp;
 use crate::model_text::CALL_FINISHED;
@@ -41,11 +38,9 @@ use crate::runner::{self, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
 use crate::sync::{Locked, POISONED};
-use accessibility::Browser;
 pub use environment::Environment;
 pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
-use manifest::{Manifest, ScreenUse, ToolEntry};
-use risk::{Probed, Risk};
+use manifest::{Manifest, ToolEntry};
 
 const MAX_QUESTIONS: usize = 10;
 
@@ -54,17 +49,16 @@ const SYSTEM_ENV: [&str; 3] = ["PATH", "HOME", "LANG"];
 const DECLINED: &str = "declined: the user didn't say yes, so nothing was done, and you've \
                         already told them so.";
 
-const LOOK_PROMPT: &str = "I need to look at your screen. Okay?";
+const SCREEN_PROMPT: &str =
+    "I need to look at and use your screen. That lasts until Lucy restarts. Okay?";
 
-const LOOK_DECLINED: &str = "declined: the user hasn't let you look at their screen in this \
-                             Session, so nothing was captured. Don't ask to look again until \
-                             their next Session.";
+const SCREEN_DECLINED: &str = "declined: the user didn't let you look at or use their screen, \
+                               so nothing was done, and you've already told them so. Don't try \
+                               the screen again unless they ask you to.";
 
 const CANCELLED: &str = "cancelled: the user cut in, so the call was stopped.";
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
-
-const PROBE_PATIENCE: Duration = Duration::from_secs(3);
 
 /// Where Plugins and Lucy's state live.
 #[derive(Debug, Clone)]
@@ -142,8 +136,7 @@ pub struct Host {
     editing: Mutex<()>,
     credentials: Arc<dyn CredentialStore>,
     environment: Environment,
-    clock: Arc<dyn Clock>,
-    launcher: Arc<dyn Launcher>,
+    screen_allowed: tokio::sync::Mutex<bool>,
 }
 
 struct Contents {
@@ -191,8 +184,6 @@ impl Host {
         changes: ChangeBus,
         credentials: Arc<dyn CredentialStore>,
         environment: Environment,
-        clock: Arc<dyn Clock>,
-        launcher: Arc<dyn Launcher>,
     ) -> Arc<Host> {
         Arc::new(Host {
             paths,
@@ -203,8 +194,7 @@ impl Host {
             editing: Mutex::default(),
             credentials,
             environment,
-            clock,
-            launcher,
+            screen_allowed: tokio::sync::Mutex::new(false),
         })
     }
 
@@ -251,12 +241,22 @@ impl Host {
             barge_ins: watch::Sender::new(0),
             finished: Mutex::default(),
             screen,
-            first_look: tokio::sync::Mutex::new(FirstLook::Unasked),
-            looks: watch::Sender::new(0),
-            offered_accessibility: AtomicBool::new(false),
+            screen_uses: watch::Sender::new(0),
         });
         *self.session.locked() = Arc::downgrade(&tools);
         tools
+    }
+
+    async fn ask_for_screen(&self) -> bool {
+        let mut allowed = self.screen_allowed.lock().await;
+        if !*allowed {
+            let question = Question {
+                prompt: SCREEN_PROMPT.into(),
+                expects: Expects::Yes,
+            };
+            *allowed = runner::ask(&self.commands, question, None).await == Some(Answer::Yes);
+        }
+        *allowed
     }
 
     pub async fn request_approval(&self, name: &str) -> Result<bool, String> {
@@ -797,19 +797,7 @@ pub struct SessionTools {
     barge_ins: watch::Sender<u64>,
     finished: Mutex<Vec<String>>,
     screen: lucy_config::Screen,
-    first_look: tokio::sync::Mutex<FirstLook>,
-    looks: watch::Sender<u64>,
-    offered_accessibility: AtomicBool,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Declined;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FirstLook {
-    Unasked,
-    Allowed,
-    Declined,
+    screen_uses: watch::Sender<u64>,
 }
 
 impl SessionTools {
@@ -817,112 +805,15 @@ impl SessionTools {
         self.barge_ins.send_modify(|count| *count += 1);
     }
 
-    pub fn looks(&self) -> watch::Receiver<u64> {
-        self.looks.subscribe()
+    pub fn screen_uses(&self) -> watch::Receiver<u64> {
+        self.screen_uses.subscribe()
     }
 
     fn offers(&self, tool: &ToolEntry) -> bool {
         match tool.screen {
             None => true,
-            Some(ScreenUse::Probe) => false,
             Some(_) => self.screen.enabled,
         }
-    }
-
-    async fn text_under(
-        &self,
-        plugin: &Usable,
-        arguments: Option<&JsonObject>,
-        read: Option<&Credentials>,
-    ) -> Result<Probed, String> {
-        let Some(probe) = plugin
-            .manifest
-            .tools
-            .iter()
-            .find(|t| t.screen == Some(ScreenUse::Probe))
-        else {
-            return Ok(Probed::default());
-        };
-        let Some(peer) = self.started(plugin, read).await? else {
-            return Ok(Probed::default());
-        };
-        let point: JsonObject = ["x", "y"]
-            .into_iter()
-            .filter_map(|name| Some((name.to_owned(), arguments?.get(name)?.clone())))
-            .collect();
-        let request = CallToolRequestParams::new(probe.name.clone()).with_arguments(point);
-        let mut deadline = self.host.clock.timer();
-        deadline.set(Some(self.host.clock.now() + PROBE_PATIENCE));
-        tokio::select! {
-            answer = peer.call_tool_once(request) => match answer {
-                Ok(CallToolResponse::Complete(result)) => risk::probed(&result),
-                Ok(_) => Err("it answered with a question or a task".into()),
-                Err(e) => Err(format!("its call failed: {e}")),
-            },
-            () = deadline.fired() => Err(format!(
-                "it didn't answer within {} s",
-                PROBE_PATIENCE.as_secs()
-            )),
-        }
-    }
-
-    async fn started(
-        &self,
-        plugin: &Usable,
-        read: Option<&Credentials>,
-    ) -> Result<Option<Peer<RoleClient>>, String> {
-        let mut running = self.running.lock().await;
-        if !running.contains_key(&plugin.name) {
-            let Some(read) = read.filter(|read| read.missing.is_empty()) else {
-                return Ok(None);
-            };
-            let client = self.host.start(plugin, &read.entered).await?;
-            running.insert(plugin.name.clone(), client);
-        }
-        Ok(Some(running[&plugin.name].peer().clone()))
-    }
-
-    async fn offer_accessibility(&self, browser: Browser) {
-        if self.offered_accessibility.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let question = Question {
-            prompt: browser.offer(),
-            expects: Expects::Yes,
-        };
-        if runner::ask(&self.host.commands, question, None).await != Some(Answer::Yes) {
-            return;
-        }
-        let launcher = self.host.launcher.clone();
-        let opened = tokio::task::spawn_blocking(move || {
-            launcher.open_in_browser(browser.program(), browser.settings())
-        })
-        .await;
-        match opened {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => eprintln!("lucyd: {browser:?}'s accessibility settings didn't open: {e}"),
-            Err(e) => eprintln!("lucyd: opening {browser:?}'s accessibility settings failed: {e}"),
-        }
-    }
-
-    async fn look(&self) -> Result<(), Declined> {
-        let mut first = self.first_look.lock().await;
-        if *first == FirstLook::Unasked {
-            let question = Question {
-                prompt: LOOK_PROMPT.into(),
-                expects: Expects::Yes,
-            };
-            *first = match runner::ask(&self.host.commands, question, None).await {
-                Some(Answer::Yes) => FirstLook::Allowed,
-                Some(_) => FirstLook::Declined,
-                None => return Err(Declined),
-            };
-        }
-        if *first == FirstLook::Declined {
-            return Err(Declined);
-        }
-        self.looks.send_modify(|looks| *looks += 1);
-        Ok(())
     }
 
     pub fn take_finished(&self) -> Vec<String> {
@@ -1028,51 +919,13 @@ impl SessionTools {
                 Err(unreadable) => return Some(mcp::error(unreadable)),
             }
         }
-        if entry.screen == Some(ScreenUse::Look) && self.look().await == Err(Declined) {
-            return Some(mcp::text(LOOK_DECLINED));
+        if entry.screen.is_some() {
+            if !self.host.ask_for_screen().await {
+                return Some(mcp::text(SCREEN_DECLINED));
+            }
+            self.screen_uses.send_modify(|uses| *uses += 1);
         }
-        let risky_words = &self.screen.risky_words;
-        let risk = match risk::check(entry.screen, arguments.as_ref(), risky_words) {
-            Risk::Plain if entry.screen == Some(ScreenUse::Click) => {
-                let mut barge_ins = self.barge_ins.subscribe();
-                let probed = tokio::select! {
-                    probed = self.text_under(
-                        &plugin,
-                        arguments.as_ref(),
-                        read_before_confirming.as_ref(),
-                    ) => probed,
-                    _ = barge_ins.changed() => return Some(mcp::error(CANCELLED)),
-                };
-                let probed = probed.unwrap_or_else(|e| {
-                    eprintln!("lucyd: {plugin_name}'s probe couldn't read under a click: {e}");
-                    Probed::default()
-                });
-                if let Some(browser) = probed.accessibility_off {
-                    self.offer_accessibility(browser).await;
-                }
-                risk::under_click(arguments.as_ref(), probed.under.as_deref(), risky_words)
-            }
-            risk => risk,
-        };
-        let risky = match risk {
-            Risk::Plain => false,
-            Risk::Undescribed(refusal) => return Some(mcp::error(refusal)),
-            Risk::Risky { prompt } => {
-                if !self
-                    .confirmed(plugin_name, entry, arguments.as_ref(), Some(prompt))
-                    .await
-                {
-                    return Some(mcp::text(DECLINED));
-                }
-                true
-            }
-        };
-        if entry.confirm
-            && !risky
-            && !self
-                .confirmed(plugin_name, entry, arguments.as_ref(), None)
-                .await
-        {
+        if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));
         }
         let mut entered = match read_before_confirming {
@@ -1132,7 +985,7 @@ impl SessionTools {
                 "it asked more than {MAX_QUESTIONS} questions in one call"
             ))
         };
-        let outcome = if entry.confirm || risky {
+        let outcome = if entry.confirm {
             let outcome = outcome.await;
             if barge_ins.has_changed().unwrap_or(false) {
                 if let Ok(result) = &outcome {
@@ -1233,14 +1086,12 @@ impl SessionTools {
         plugin: &str,
         tool: &ToolEntry,
         arguments: Option<&JsonObject>,
-        prompt: Option<String>,
     ) -> bool {
         let empty = JsonObject::new();
         let arguments = arguments.unwrap_or(&empty);
-        let prompt = match (prompt, &tool.confirm_prompt) {
-            (Some(prompt), _) => prompt,
-            (None, Some(prompt)) => fill(prompt, arguments),
-            (None, None) => format!("Shall I use the {plugin} Plugin to {}?", tool.handles),
+        let prompt = match &tool.confirm_prompt {
+            Some(prompt) => fill(prompt, arguments),
+            None => format!("Shall I use the {plugin} Plugin to {}?", tool.handles),
         };
         let mut body = format!("{plugin}__{}", tool.name);
         for (name, value) in arguments {

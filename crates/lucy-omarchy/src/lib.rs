@@ -2,9 +2,8 @@
 //! manages windows and workspaces by dispatching to Hyprland over its IPC
 //! socket, and changes the tiling layout, theme, bar, night light,
 //! screenshots and screen lock through Omarchy's own commands. It shows the
-//! model the screen and acts on it through a [`Screen`], and its `text_at`
-//! probe reads the element under a point for Lucy's risk check. It runs only
-//! the `omarchy-*` commands named here, never arbitrary ones, and offers no
+//! model the screen and acts on it through a [`Screen`]. It runs only the
+//! `omarchy-*` commands named here, never arbitrary ones, and offers no
 //! logout, reboot or shutdown.
 //!
 //! Its tests drive it through MCP against a fake Hyprland socket and fake
@@ -40,8 +39,8 @@ pub use atspi::Role;
 use hyprland::{lua_string, Address, Hyprland, Window};
 use screen::Wayland;
 pub use screen::{
-    Acted, Button, Captured, Combo, Direction, Element, FocusedWindow, Image, InWindow, Modifier,
-    Page, PageFound, Pid, Point, Probed, Region, RoleFound, Screen, WindowPoint,
+    Acted, Button, Captured, Combo, Direction, FocusedWindow, Image, Modifier, Pid, Point, Region,
+    RoleFound, Screen,
 };
 use settings::Named;
 
@@ -290,37 +289,6 @@ impl Omarchy {
         })
     }
 
-    async fn text_at(&self, args: &JsonObject) -> Result<Value, String> {
-        let at = self.point(args)?;
-        if hyprland::over_windows(&self.hyprland.layers().await?, at) {
-            return Ok(json!({ "found": null }));
-        }
-        let windows = self.hyprland.windows().await?;
-        let readable = hyprland::window_at(&windows, at)
-            .filter(|window| !window.xwayland)
-            .and_then(|window| Some((u32::try_from(window.pid).ok()?, window)));
-        let Some((pid, window)) = readable else {
-            return Ok(json!({ "found": null }));
-        };
-        let inside = InWindow {
-            pid: Pid(pid),
-            title: window.title.clone(),
-            at: WindowPoint {
-                x: (at.x - f64::from(window.at[0])).floor() as i32,
-                y: (at.y - f64::from(window.at[1])).floor() as i32,
-            },
-        };
-        if let Some(e) = self.screen.text_at(inside.clone()).await? {
-            return Ok(json!({ "found": {"name": e.name, "text": e.text, "role": e.role} }));
-        }
-        match Browser::of(&window.class) {
-            Some(browser) if self.screen.page(inside).await == Ok(Page::Empty) => {
-                Ok(json!({ "found": null, "accessibility_off": browser.name() }))
-            }
-            _ => Ok(json!({ "found": null })),
-        }
-    }
-
     fn point(&self, args: &JsonObject) -> Result<Point, String> {
         let look = self.last_look.lock().expect(POISONED).ok_or(LOOK_FIRST)?;
         let coordinate = |name: &str, extent: u32| {
@@ -537,32 +505,6 @@ impl Omarchy {
 
 const POISONED: &str = "no thread panics while holding the last look";
 
-#[derive(Clone, Copy)]
-enum Browser {
-    Brave,
-    Chrome,
-    Chromium,
-}
-
-impl Browser {
-    fn of(class: &str) -> Option<Browser> {
-        match class {
-            "google-chrome" => Some(Browser::Chrome),
-            "chromium" => Some(Browser::Chromium),
-            brave if brave.starts_with("brave-") => Some(Browser::Brave),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Browser::Brave => "brave",
-            Browser::Chrome => "chrome",
-            Browser::Chromium => "chromium",
-        }
-    }
-}
-
 fn described(window: &Window) -> String {
     format!(
         "{} ({}: {}) on workspace {}",
@@ -740,45 +682,31 @@ fn tools() -> Vec<Tool> {
         Tool::new(
             "click",
             "Clicks a point on the screen. x and y are pixels in your last \
-             screenshot_for_model image. describe names what you're clicking in a few plain \
-             words (\"the Play button on the third video\"); Lucy may read it to the user to \
-             ask first. Look again afterwards to check it worked.",
+             screenshot_for_model image. Look again afterwards to check it worked.",
             schema(
                 json!({
                     "x": {"type": "number"},
                     "y": {"type": "number"},
-                    "describe": {"type": "string"},
                     "button": {"type": "string", "enum": ["left", "right", "middle"]},
                 }),
-                &["x", "y", "describe"],
+                &["x", "y"],
             ),
         ),
         Tool::new(
             "type",
             "Types text into whatever has the keyboard focus, as though on a keyboard; a \
-             newline presses Enter. Text with a newline in it needs describe, saying what that \
-             Enter does (\"Enter, to send the message\"). Never type a password or other \
-             secret: ask for it through ask_typed. Look again afterwards to check it worked.",
-            schema(
-                json!({
-                    "text": {"type": "string"},
-                    "describe": {"type": "string"},
-                }),
-                &["text"],
-            ),
+             newline presses Enter. Never type a password or other secret: ask for it through \
+             ask_typed. Look again afterwards to check it worked.",
+            schema(json!({"text": {"type": "string"}}), &["text"]),
         ),
         Tool::new(
             "key",
-            "Presses a key or key combination. describe says what the press does in a few \
-             plain words (\"Enter, to send the message\", \"Ctrl+L, to focus the address \
-             bar\"); Lucy may read it to the user to ask first. Look again afterwards to \
-             check it worked.",
+            "Presses a key or key combination. Look again afterwards to check it worked.",
             schema(
                 json!({
                     "combo": {"type": "string", "description": format!("The keys: {}", keys::COMBO_HELP)},
-                    "describe": {"type": "string"},
                 }),
-                &["combo", "describe"],
+                &["combo"],
             ),
         ),
         Tool::new(
@@ -794,18 +722,6 @@ fn tools() -> Vec<Tool> {
                     "amount": {"type": "integer", "minimum": 1, "maximum": MOST_NOTCHES},
                 }),
                 &["x", "y", "direction", "amount"],
-            ),
-        ),
-        Tool::new(
-            "text_at",
-            "Reads the accessible name, text and role of the element at a point in the last \
-             screenshot_for_model image, through AT-SPI; found is null when nothing there can \
-             be read for sure, and accessibility_off names the browser (brave, chrome or \
-             chromium) when the point is in one whose page isn't in its tree. Lucy calls it \
-             before a click whose describe is plain.",
-            schema(
-                json!({"x": {"type": "number"}, "y": {"type": "number"}}),
-                &["x", "y"],
             ),
         ),
         Tool::new(
@@ -876,7 +792,6 @@ impl ServerHandler for Omarchy {
             "scroll" => self.scroll(&args).await,
             "key" => self.key(&args).await,
             "type" => self.type_text(&args).await,
-            "text_at" => self.text_at(&args).await,
             "idle_lock" => setting(&args, |action| settings::idle_lock(&self.path, action)).await,
             name => return Err(ErrorData::invalid_params(format!("no tool {name}"), None)),
         };

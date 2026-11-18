@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use lucy_config::credentials::CredentialStore;
 use lucy_config::{Config, Provider};
-use lucy_ipc::{Client, Event, StateEvent, Topic};
+use lucy_ipc::{Client, Event, State, StateEvent, Topic};
 use lucyd::adapters::{
     Adapters, Clock, HandOff, Launcher, Notification, NotificationAction, Notifier, RateLimit,
     Relay, SessionModel, Sound, Speaker, SpeakerEvent, SpeechSegment, Stt, SttError, Thinking,
@@ -663,6 +663,25 @@ pub fn next_state(client: &mut Client) -> StateEvent {
     match client.next_event().expect("a state event") {
         Event::State(state) => state,
         other => panic!("expected a state event, got {other:?}"),
+    }
+}
+
+pub const SCREEN_QUESTION: &str =
+    "I need to look at and use your screen. That lasts until Lucy restarts. Okay?";
+
+impl Harness {
+    pub fn asked(&self, events: &mut Client) -> String {
+        loop {
+            let state = next_state(events);
+            match state.state {
+                State::Confirming => break,
+                State::Speaking | State::Thinking => {}
+                _ => panic!("expected Lucy to ask, got {state:?}"),
+            }
+        }
+        let prompt = self.tts.next_sentence();
+        self.tts.finish_playing();
+        prompt
     }
 }
 
@@ -1481,14 +1500,9 @@ pub struct FakeLauncher {
     launched_through: Arc<Mutex<Vec<Option<Vec<String>>>>>,
     terminals: Arc<Mutex<Vec<Vec<String>>>>,
     no_terminal: Arc<AtomicBool>,
-    opened_in_browser: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl FakeLauncher {
-    pub fn opened_in_browser(&self) -> Vec<(String, String)> {
-        self.opened_in_browser.lock().unwrap().clone()
-    }
-
     pub fn opened(&self) -> Vec<String> {
         self.opened.lock().unwrap().clone()
     }
@@ -1549,14 +1563,6 @@ impl Launcher for FakeLauncher {
             ));
         }
         self.terminals.lock().unwrap().push(command.to_vec());
-        Ok(())
-    }
-
-    fn open_in_browser(&self, browser: &str, page: &str) -> std::io::Result<()> {
-        self.opened_in_browser
-            .lock()
-            .unwrap()
-            .push((browser.to_owned(), page.to_owned()));
         Ok(())
     }
 }

@@ -3,13 +3,12 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lucy_omarchy::{
-    Acted, Button, Captured, Combo, Desktop, Direction, Element, FocusedWindow, Image, InWindow,
-    Omarchy, Page, PageFound, Point, Probed, Region, Role, RoleFound, Screen,
+    Acted, Button, Captured, Combo, Desktop, Direction, FocusedWindow, Image, Omarchy, Point,
+    Region, Role, RoleFound, Screen,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResult, ProtocolVersion};
 use rmcp::service::{serve_client_with_lifecycle, ClientLifecycleMode, RunningService};
@@ -21,7 +20,6 @@ struct Answers {
     clients: Value,
     active: Value,
     monitors: Value,
-    layers: Value,
     dispatch: String,
     requests: Vec<String>,
 }
@@ -36,7 +34,6 @@ impl Hyprland {
             clients: json!([]),
             active: json!({}),
             monitors: json!([]),
-            layers: json!({}),
             dispatch: "ok".into(),
             requests: Vec::new(),
         }));
@@ -55,7 +52,6 @@ impl Hyprland {
                         "j/clients" => answers.clients.to_string(),
                         "j/activewindow" => answers.active.to_string(),
                         "j/monitors" => answers.monitors.to_string(),
-                        "j/layers" => answers.layers.to_string(),
                         dispatch if dispatch.starts_with("dispatch ") => answers.dispatch.clone(),
                         _ => "unknown request".into(),
                     }
@@ -69,8 +65,7 @@ impl Hyprland {
     pub fn windows(&self, windows: &[(&str, &str, &str, &str)], focused: Option<&str>) {
         let clients: Vec<Value> = windows
             .iter()
-            .enumerate()
-            .map(|(focus, (address, class, title, workspace))| {
+            .map(|(address, class, title, workspace)| {
                 json!({
                     "address": address,
                     "mapped": true,
@@ -83,8 +78,6 @@ impl Hyprland {
                     "fullscreen": 0,
                     "pid": 4242,
                     "xwayland": false,
-                    "visible": true,
-                    "focusHistoryID": focus,
                     "at": [0, 0],
                     "size": [800, 600],
                     "monitor": 0,
@@ -133,24 +126,6 @@ impl Hyprland {
         self.answers.lock().unwrap().monitors = Value::Array(monitors);
     }
 
-    pub fn layer(&self, monitor: &str, level: u8, at: (i32, i32), size: (i32, i32)) {
-        let mut answers = self.answers.lock().unwrap();
-        let surfaces = &mut answers.layers[monitor]["levels"][level.to_string()];
-        if surfaces.is_null() {
-            *surfaces = json!([]);
-        }
-        let surfaces = surfaces.as_array_mut().unwrap();
-        surfaces.push(json!({
-            "address": format!("0x{}", surfaces.len() + 1),
-            "x": at.0,
-            "y": at.1,
-            "w": size.0,
-            "h": size.1,
-            "namespace": "a layer",
-            "pid": 999,
-        }));
-    }
-
     pub fn answer_dispatches_with(&self, answer: &str) {
         self.answers.lock().unwrap().dispatch = answer.into();
     }
@@ -189,32 +164,17 @@ pub struct FakeScreen {
     captures: Arc<Mutex<Vec<(Region, f64)>>>,
     acts: Arc<Mutex<Vec<Act>>>,
     failure: Arc<Mutex<Option<String>>>,
-    under: Arc<Mutex<Option<Element>>>,
-    probed: Arc<Mutex<Vec<InWindow>>>,
-    empty_page: Arc<AtomicBool>,
     focus: Arc<Mutex<Option<Role>>>,
     focus_asked: Arc<Mutex<Vec<FocusedWindow>>>,
 }
 
 impl FakeScreen {
-    pub fn empty_page(&self) {
-        self.empty_page.store(true, Ordering::SeqCst);
-    }
-
-    pub fn show(&self, under: Element) {
-        *self.under.lock().unwrap() = Some(under);
-    }
-
     pub fn focus_on(&self, role: Role) {
         *self.focus.lock().unwrap() = Some(role);
     }
 
     pub fn focus_asked(&self) -> Vec<FocusedWindow> {
         self.focus_asked.lock().unwrap().clone()
-    }
-
-    pub fn probed(&self) -> Vec<InWindow> {
-        self.probed.lock().unwrap().clone()
     }
 
     pub fn captures(&self) -> Vec<(Region, f64)> {
@@ -253,21 +213,6 @@ impl Screen for FakeScreen {
 
     fn type_text(&self, text: String) -> Acted<'_> {
         self.act(Act::Type(text))
-    }
-
-    fn text_at(&self, at: InWindow) -> Probed<'_> {
-        self.probed.lock().unwrap().push(at);
-        let under = self.under.lock().unwrap().clone();
-        Box::pin(async move { Ok(under) })
-    }
-
-    fn page(&self, _window: InWindow) -> PageFound<'_> {
-        let page = if self.empty_page.load(Ordering::SeqCst) {
-            Page::Empty
-        } else {
-            Page::Filled
-        };
-        Box::pin(async move { Ok(page) })
     }
 
     fn focused_role(&self, window: FocusedWindow) -> RoleFound<'_> {

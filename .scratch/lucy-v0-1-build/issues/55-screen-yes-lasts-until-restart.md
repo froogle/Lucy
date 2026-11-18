@@ -20,7 +20,7 @@ Spec: none; raised by the user on 2026-11-18. Amend ADR 0008 (Privacy and Clicks
 
 **Seams:** changes the screen Confirmation in `crates/lucyd/src/plugins/mod.rs` (`look`, `call`) and removes `crates/lucyd/src/plugins/risk.rs`'s screen checks. Moves the screen yes from Session state to daemon state (`Host`), held for the life of the lucyd process. Changes the `[screen]` config section and the `lucy-omarchy` screen tool schemas.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -30,13 +30,14 @@ Spec: none; raised by the user on 2026-11-18. Amend ADR 0008 (Privacy and Clicks
 
 **Acceptance:**
 
-- [ ] Harness test: the first screen tool call asks for a Confirmation, whether it is a look or a click with no look before it
-- [ ] Harness test: after a yes, clicks, typing and keys run with no Confirmation, including a click whose target says "send"
-- [ ] Harness test: a yes in one Session carries into the next Session in the same lucyd process with no new Confirmation
-- [ ] Harness test: a no, or no answer, means the next screen tool call asks again
-- [ ] Harness test: typing into a password field is still refused
+- [x] Harness test: the first screen tool call asks for a Confirmation, whether it is a look or a click with no look before it
+- [x] Harness test: after a yes, clicks, typing and keys run with no Confirmation, including a click whose target says "send"
+- [x] Harness test: a yes in one Session carries into the next Session in the same lucyd process with no new Confirmation
+- [x] Harness test: a no, or no answer, means the next screen tool call asks again
+- [x] Harness test: typing into a password field is still refused
 - [ ] Once, by hand: say yes once, use the screen in two Sessions without being asked again, restart lucyd, and get asked again
 
 ## Comments
 
 - 2026-11-18, grilling: any screen tool triggers the one question; the question names its reach; delete the risk list, probe, accessibility offer and `describe` outright; a manifest `confirm = true` is still honoured; restart is the only revoke; no answer counts as a no; the Indicator stays as it is. Moved to ready-for-agent.
+- 2026-11-18, built on `screen-yes-until-restart`. The yes lives on `Host` and the question is asked by `Host::ask_for_screen`. The risk list, the probe, the accessibility offer and `describe` are gone, including `describe` on `type`, which only served the risk check. The password refusal is covered by `crates/lucy-omarchy/tests/password.rs`. After review, the "looking" mark shows for any screen tool that runs, not only a look, and Barge-in and Session end during the question have tests. The by-hand check is still open.

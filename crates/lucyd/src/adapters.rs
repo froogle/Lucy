@@ -441,12 +441,6 @@ pub trait Launcher: Send + Sync {
     ///
     /// When no terminal can be started.
     fn open_terminal(&self, command: &[String]) -> io::Result<()>;
-    /// Opens `page` in a new tab of the browser started as `browser`.
-    ///
-    /// # Errors
-    ///
-    /// When the browser can't be started.
-    fn open_in_browser(&self, browser: &str, page: &str) -> io::Result<()>;
 }
 
 pub struct Adapters {
@@ -613,10 +607,6 @@ impl Launcher for Inert {
     }
 
     fn open_terminal(&self, _command: &[String]) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn open_in_browser(&self, _browser: &str, _page: &str) -> io::Result<()> {
         Ok(())
     }
 }
