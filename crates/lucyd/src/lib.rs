@@ -136,6 +136,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         relays.clone(),
         plugin_env.clone(),
         config_path.clone(),
+        &plugin_paths.state,
         sessions.clone(),
     );
     let plugin_host = plugins::Host::new(

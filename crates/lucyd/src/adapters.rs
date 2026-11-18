@@ -234,6 +234,8 @@ pub struct HandOff {
     /// The whole environment, before the subscription guard removes the
     /// billing variables.
     pub env: Vec<(OsString, OsString)>,
+    /// The conversation it carries on, through `--resume`.
+    pub resume: Option<String>,
 }
 
 /// The tool on a Hand-off's relay that its CLI asks before doing anything

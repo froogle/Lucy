@@ -157,6 +157,70 @@ fn the_users_own_claude_runs_with_their_settings_lucys_relay_and_the_permission_
     assert!(finished.body.contains(folder), "{}", finished.body);
 }
 
+fn continue_it(lucyd: &Harness) -> Notification {
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    lucyd.say("tell Claude yes, go ahead");
+    lucyd.thinking.next_turn();
+    let arguments = json!({"request": "yes, go ahead", "continue": true});
+    let result = lucyd
+        .thinking
+        .call_tool_with("hand_to_claude", arguments)
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{result:?}");
+    lucyd.thinking.turn_end();
+    lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff)
+}
+
+fn assert_resumed(dirs: &Dirs) {
+    let argv = dirs.argv();
+    let at = argv.iter().position(|arg| arg == "--resume");
+    let resumed = at.map(|at| argv[at + 1].as_str());
+    assert_eq!(resumed, Some(CONVERSATION), "{argv:?}");
+}
+
+#[test]
+fn continue_runs_claude_with_resume_in_the_folder_at_a_later_session() {
+    let dirs = Dirs::new();
+    let shell = dirs.shell(&format!("printf 'PATH={}\\0'", path()));
+    let lucyd = with_claude(
+        &dirs,
+        &[("SHELL", shell.to_str().unwrap()), ("PATH", &path())],
+    );
+    hand_off(&lucyd, dirs.folder.path());
+    lucyd.thinking.next_turn();
+    lucyd.thinking.turn_end();
+    lucyd.client().end_session().unwrap();
+    std::fs::remove_file(dirs.folder.path().join("argv")).unwrap();
+
+    let finished = continue_it(&lucyd);
+
+    assert_eq!(finished.summary, "Claude has finished");
+    assert_resumed(&dirs);
+}
+
+#[test]
+fn continue_works_after_lucyd_restarts() {
+    let dirs = Dirs::new();
+    let shell = dirs.shell(&format!("printf 'PATH={}\\0'", path()));
+    let env = [("SHELL", shell.to_str().unwrap()), ("PATH", &path())];
+    let lucyd = with_claude(&dirs, &env);
+    hand_off(&lucyd, dirs.folder.path());
+    lucyd.thinking.next_turn();
+    lucyd.thinking.turn_end();
+    lucyd.client().end_session().unwrap();
+    std::fs::remove_file(dirs.folder.path().join("argv")).unwrap();
+
+    let lucyd = lucyd.restart();
+    lucyd.thinking.hand_off.open_on(dirs.claude());
+    continue_it(&lucyd);
+
+    assert_resumed(&dirs);
+}
+
 #[test]
 fn the_hand_off_transcript_is_left_in_place() {
     let dirs = Dirs::new();

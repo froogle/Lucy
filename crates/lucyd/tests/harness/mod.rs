@@ -50,6 +50,7 @@ pub struct Harness {
     config_path: PathBuf,
     plugin_paths: lucyd::plugins::Paths,
     persona_path: PathBuf,
+    env: Environment,
     _dir: tempfile::TempDir,
 }
 
@@ -132,6 +133,27 @@ impl Harness {
         superwhisper: Option<Arc<dyn Stt>>,
     ) -> Harness {
         let dir = tempfile::tempdir().unwrap();
+        Harness::launch_at(dir, env, config, persona, real_thinking, ears, superwhisper)
+    }
+
+    /// Stops lucyd and starts another on the same dirs, with new fakes.
+    pub fn restart(self) -> Harness {
+        let Harness {
+            daemon, env, _dir, ..
+        } = self;
+        drop(daemon);
+        Harness::launch_at(_dir, env, None, None, None, None, None)
+    }
+
+    fn launch_at(
+        dir: tempfile::TempDir,
+        env: Environment,
+        config: Option<&str>,
+        persona: Option<&str>,
+        real_thinking: Option<Arc<dyn Thinking>>,
+        ears: Option<(lucyd::audio::Ears, FakeMic, FakeEchoCanceller)>,
+        superwhisper: Option<Arc<dyn Stt>>,
+    ) -> Harness {
         let socket_path = dir.path().join("lucy").join("lucyd.sock");
         let config_path = dir.path().join("config").join("lucy").join("config.toml");
         let persona_path = dir.path().join("config").join("lucy").join("persona.md");
@@ -188,17 +210,17 @@ impl Harness {
         let clock = FakeClock::new();
         let applications = ["applications", "system-applications"].map(|d| dir.path().join(d));
         for dir in &applications {
-            std::fs::create_dir(dir).unwrap();
+            std::fs::create_dir_all(dir).unwrap();
         }
         let home = dir.path().join("home");
-        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
         let daemon = lucyd::spawn(lucyd::Options {
             socket_path,
             config_path: config_path.clone(),
             persona_path: persona_path.clone(),
             lucy_program: lucy_binary(),
             plugin_paths: plugin_paths.clone(),
-            plugin_env: env,
+            plugin_env: env.clone(),
             adapters: Adapters {
                 speech: speech_rx,
                 wake_word: wake_word_rx,
@@ -239,6 +261,7 @@ impl Harness {
             config_path,
             plugin_paths,
             persona_path,
+            env,
             _dir: dir,
         };
         harness.record_bus();
