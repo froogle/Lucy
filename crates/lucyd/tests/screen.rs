@@ -1,12 +1,14 @@
 //! Screen access (ADR 0008): a Plugin tool marked `screen = "look"` shows the
-//! model the screen. The first look in a Session needs a spoken yes; the image
-//! reaches the model and nothing else.
+//! model the screen. The first screen tool call after lucyd starts needs a
+//! spoken yes, which lasts until lucyd restarts; the image reaches the model
+//! and nothing else.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
 
 use std::path::Path;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use harness::{next_state, Harness};
 use lucy_ipc::{Client, State, StateEvent};
@@ -15,7 +17,7 @@ use serde_json::json;
 
 const SCREEN: &str = "iVBORw0KGgpMdWN5U2NyZWVuU2VjcmV0";
 const SCREEN_TEXT: &str = "LucyScreenSecret";
-const ASKED: &str = "I need to look at your screen. Okay?";
+const ASKED: &str = "I need to look at and use your screen. That lasts until Lucy restarts. Okay?";
 
 const EYES: &str = "name = \"eyes\"\n\
      version = \"0.1.0\"\n\
@@ -74,7 +76,7 @@ fn text(result: &CallToolResult) -> String {
 }
 
 fn asked_and_answered(lucyd: &Harness, events: &mut Client, answer: &str) {
-    assert_eq!(next_state(events).state, State::Confirming);
+    while next_state(events).state != State::Confirming {}
     assert_eq!(lucyd.tts.next_sentence(), ASKED);
     lucyd.tts.finish_playing();
     lucyd.say(answer);
@@ -187,36 +189,73 @@ fn the_image_never_reaches_lucyds_log() {
     assert!(!log.contains(SCREEN_TEXT), "{log}");
 }
 
-#[test]
-fn a_declined_first_look_holds_for_the_session_unasked() {
-    let lucyd = with_eyes("");
-    let mut events = session(&lucyd);
-    let call = model_looks(&lucyd);
-    asked_and_answered(&lucyd, &mut events, "no");
+fn declined_then_heard(lucyd: &Harness, call: Call) {
     let declined = call.join().unwrap().unwrap();
     assert!(text(&declined).starts_with("declined"), "{declined:?}");
     assert!(images(&declined).is_empty());
     lucyd.tts.next_sentence();
     lucyd.tts.finish_playing();
-
-    let again = lucyd.thinking.call_tool("eyes__look").unwrap();
-
-    assert!(text(&again).starts_with("declined"), "{again:?}");
-    assert!(images(&again).is_empty());
-    assert_eq!(times_asked(&lucyd), 1);
 }
 
 #[test]
-fn a_decline_lasts_only_for_its_session() {
+fn a_no_lasts_only_until_the_next_screen_call() {
     let lucyd = with_eyes("");
     let mut events = session(&lucyd);
     let call = model_looks(&lucyd);
     asked_and_answered(&lucyd, &mut events, "no");
-    call.join().unwrap().unwrap();
-    lucyd.tts.next_sentence();
+    declined_then_heard(&lucyd, call);
+
+    let again = model_looks(&lucyd);
+
+    asked_and_answered(&lucyd, &mut events, "yes");
+    assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
+    assert_eq!(times_asked(&lucyd), 2);
+}
+
+#[test]
+fn no_answer_counts_as_a_no_and_is_not_remembered() {
+    let lucyd = with_eyes("");
+    let mut events = session(&lucyd);
+    let call = model_looks(&lucyd);
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    assert_eq!(lucyd.tts.next_sentence(), ASKED);
     lucyd.tts.finish_playing();
+    lucyd.clock.advance_once_set(Duration::from_secs(8));
+    declined_then_heard(&lucyd, call);
+
+    let again = model_looks(&lucyd);
+
+    asked_and_answered(&lucyd, &mut events, "yes");
+    assert_eq!(images(&again.join().unwrap().unwrap()), [SCREEN]);
+}
+
+fn end(lucyd: &Harness, mut events: Client) {
+    lucyd.thinking.turn_end();
     events.end_session().unwrap();
     while next_state(&mut events).state != State::Idle {}
+}
+
+#[test]
+fn a_yes_carries_into_the_next_session_unasked() {
+    let lucyd = with_eyes("");
+    let mut events = session(&lucyd);
+    first_look_allowed(&lucyd, &mut events);
+    end(&lucyd, events);
+
+    let _events = session(&lucyd);
+    let again = lucyd.thinking.call_tool("eyes__look").unwrap();
+
+    assert_eq!(images(&again), [SCREEN]);
+    assert_eq!(times_asked(&lucyd), 1);
+}
+
+#[test]
+fn a_restart_of_lucyd_asks_again() {
+    let lucyd = with_eyes("");
+    let mut events = session(&lucyd);
+    first_look_allowed(&lucyd, &mut events);
+    end(&lucyd, events);
+    let lucyd = lucyd.restart();
 
     let mut events = session(&lucyd);
     let call = model_looks(&lucyd);

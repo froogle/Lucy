@@ -65,10 +65,7 @@ fn at(x: f64, y: f64) -> Point {
 fn a_click_lands_where_the_image_shows_it_on_the_real_screen() {
     let omarchy = looked_at_firefox();
 
-    omarchy.call(
-        "click",
-        json!({"x": 200, "y": 100, "describe": "the third video"}),
-    );
+    omarchy.call("click", json!({"x": 200, "y": 100}));
 
     assert_eq!(
         omarchy.screen.acts(),
@@ -93,10 +90,7 @@ fn a_click_on_a_scaled_down_monitor_look_maps_back_to_logical_pixels() {
         look["height"].as_f64().unwrap(),
     );
 
-    omarchy.call(
-        "click",
-        json!({"x": width / 2.0, "y": height / 2.0, "describe": "the middle"}),
-    );
+    omarchy.call("click", json!({"x": width / 2.0, "y": height / 2.0}));
 
     let [Act::Click(point, Button::Left)] = omarchy.screen.acts()[..] else {
         panic!("{:?}", omarchy.screen.acts());
@@ -109,10 +103,7 @@ fn a_click_on_a_scaled_down_monitor_look_maps_back_to_logical_pixels() {
 fn a_right_click_uses_the_right_button() {
     let omarchy = looked_at_firefox();
 
-    omarchy.call(
-        "click",
-        json!({"x": 0, "y": 0, "describe": "the page", "button": "right"}),
-    );
+    omarchy.call("click", json!({"x": 0, "y": 0, "button": "right"}));
 
     assert_eq!(
         omarchy.screen.acts(),
@@ -124,7 +115,7 @@ fn a_right_click_uses_the_right_button() {
 fn a_click_before_any_look_is_refused() {
     let omarchy = two_monitors();
 
-    let refused = omarchy.refused("click", json!({"x": 1, "y": 1, "describe": "it"}));
+    let refused = omarchy.refused("click", json!({"x": 1, "y": 1}));
 
     assert!(refused.contains("look first"), "{refused}");
     assert!(omarchy.screen.acts().is_empty());
@@ -134,7 +125,7 @@ fn a_click_before_any_look_is_refused() {
 fn a_point_outside_the_last_image_is_refused() {
     let omarchy = looked_at_firefox();
 
-    let refused = omarchy.refused("click", json!({"x": 1201, "y": 1, "describe": "it"}));
+    let refused = omarchy.refused("click", json!({"x": 1201, "y": 1}));
 
     assert!(refused.contains("1200x800"), "{refused}");
     assert!(omarchy.screen.acts().is_empty());
@@ -174,7 +165,7 @@ fn key_presses_a_combination_named_the_usual_ways() {
     let omarchy = two_monitors();
 
     for combo in ["Return", "ctrl+l", "Ctrl+Shift+T", "alt+Left", "ctrl++"] {
-        omarchy.call("key", json!({"combo": combo, "describe": "a key"}));
+        omarchy.call("key", json!({"combo": combo}));
     }
 
     let combo = |modifiers: &[Modifier], keysym: &str| {
@@ -200,7 +191,7 @@ fn an_unknown_key_is_refused_saying_which_keys_there_are() {
     let omarchy = two_monitors();
 
     for combo in ["hyper+x", "Launch5", ""] {
-        let refused = omarchy.refused("key", json!({"combo": combo, "describe": "a key"}));
+        let refused = omarchy.refused("key", json!({"combo": combo}));
         assert!(refused.contains("Page_Down"), "{refused}");
     }
     assert!(omarchy.screen.acts().is_empty());
@@ -210,10 +201,7 @@ fn an_unknown_key_is_refused_saying_which_keys_there_are() {
 fn type_types_the_text_with_its_newline() {
     let omarchy = two_monitors();
 
-    omarchy.call(
-        "type",
-        json!({"text": "Ünïcode café\n", "describe": "Enter, to search"}),
-    );
+    omarchy.call("type", json!({"text": "Ünïcode café\n"}));
 
     assert_eq!(omarchy.screen.acts(), [Act::Type("Ünïcode café\n".into())]);
 }
@@ -235,13 +223,13 @@ fn a_failed_action_says_why() {
         .screen
         .fail("the compositor offers no virtual pointer");
 
-    let refused = omarchy.refused("click", json!({"x": 1, "y": 1, "describe": "it"}));
+    let refused = omarchy.refused("click", json!({"x": 1, "y": 1}));
 
     assert!(refused.contains("no virtual pointer"), "{refused}");
 }
 
 #[test]
-fn the_manifest_marks_each_acting_tool_and_click_and_key_require_describe() {
+fn the_manifest_marks_each_acting_tool_and_none_asks_for_a_describe() {
     let manifest: toml::Table = toml::from_str(
         &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/manifest.toml")).unwrap(),
     )
@@ -260,15 +248,10 @@ fn the_manifest_marks_each_acting_tool_and_click_and_key_require_describe() {
             ("type", "type"),
             ("key", "key"),
             ("scroll", "scroll"),
-            ("text_at", "probe"),
         ]
     );
     let omarchy = Plugin::start();
-    for tool in ["click", "key"] {
-        let required = omarchy.required(tool);
-        assert!(
-            required.contains(&"describe".to_owned()),
-            "{tool}: {required:?}"
-        );
-    }
+    assert_eq!(omarchy.required("click"), ["x", "y"]);
+    assert_eq!(omarchy.required("key"), ["combo"]);
+    assert_eq!(omarchy.required("type"), ["text"]);
 }

@@ -567,22 +567,17 @@ impl Default for Authoring {
     }
 }
 
-/// `[screen]`: screen access, and which screen actions need a Confirmation (ADR 0008).
+/// `[screen]`: screen access (ADR 0008).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Screen {
     /// When false, the Plugins' screen tools are left out of the tool list.
     pub enabled: bool,
-    pub risky_words: Vec<String>,
 }
 
 impl Default for Screen {
     fn default() -> Self {
-        let risky = ["send", "buy", "pay", "delete", "submit", "post", "confirm"];
-        Screen {
-            enabled: true,
-            risky_words: risky.map(String::from).to_vec(),
-        }
+        Screen { enabled: true }
     }
 }
 

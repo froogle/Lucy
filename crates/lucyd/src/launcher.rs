@@ -63,10 +63,6 @@ impl Launcher for SystemLauncher {
         terminal.extend(command.iter().map(String::as_str));
         spawn_detached(&terminal)
     }
-
-    fn open_in_browser(&self, browser: &str, page: &str) -> io::Result<()> {
-        spawn_app(page_command(browser, page))
-    }
 }
 
 const DBUS_WAIT: Duration = Duration::from_secs(5);
@@ -215,7 +211,6 @@ fn spawn_detached(command: &[&str]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -408,31 +403,6 @@ mod tests {
                 "{default:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_named_browser_opens_its_page_in_a_new_window() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("args");
-        let browser = dir.path().join("browser");
-        std::fs::write(
-            &browser,
-            format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}.tmp && mv {0}.tmp {0}\n",
-                out.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-        SystemLauncher
-            .open_in_browser(browser.to_str().unwrap(), "brave://settings/accessibility")
-            .unwrap();
-
-        assert_eq!(
-            read_once_written(&out),
-            "--new-window\nbrave://settings/accessibility\n"
-        );
     }
 
     #[test]

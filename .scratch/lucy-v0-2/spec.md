@@ -16,7 +16,7 @@ The second is anything that needs her to see the screen. She can open YouTube an
 
 **Hand-off.** "Tell Claude to …" becomes a Hand-off: a new kind of Delegate that runs the user's own `claude`, with their own config, MCP servers and permission rules, in the folder they name (or their home folder). Anything their Claude settings already allow runs. Anything else, Claude asks for, and Lucy turns that into a spoken Confirmation she hears herself, with the details on screen. She keeps the Session open while it works, raises Claude's questions aloud (or in the Input dialog when the answer must be typed) and speaks a short summary at the end, with the full answer in a notification. If the Session has ended, the result waits for the next one. The transcript is kept so the user can resume it at a keyboard.
 
-**Seeing and acting on the screen.** The desktop Plugin (the Omarchy Plugin first) gains screen tools: take a screenshot for the model, click, type, press keys, scroll. The Session model, which already reads images, looks, acts and looks again to check. The first look in a Session needs the user's spoken yes, because the image leaves the machine. Clicks on things that read as risky (send, buy, delete …) need a Confirmation, decided by a fixed word list, not by the model. She never types into a password field; secrets go through the Input dialog.
+**Seeing and acting on the screen.** The desktop Plugin (the Omarchy Plugin first) gains screen tools: take a screenshot for the model, click, type, press keys, scroll. The Session model, which already reads images, looks, acts and looks again to check. The first time she uses the screen after lucyd starts, she asks for the user's spoken yes, because the image leaves the machine and she will act on it; the yes lasts until lucyd restarts. She never types into a password field; secrets go through the Input dialog.
 
 ## User Stories
 
@@ -60,20 +60,20 @@ The second is anything that needs her to see the screen. She can open YouTube an
 30. As a user, I want her to follow links, press buttons, scroll and type into fields in any app, so that this isn't limited to one site.
 31. As a user, I want her to look again after acting, to check it worked, so that she notices when a click missed.
 32. As a user, I want her to look only when my request needs it, so that she isn't watching my screen otherwise.
-33. As a user, I want the first look in each Session to need my spoken yes ("I need to look at your screen. Okay?"), so that I know a screenshot is about to leave my machine.
+33. As a user, I want her first use of the screen after lucyd starts to need my spoken yes ("I need to look at and use your screen. That lasts until Lucy restarts. Okay?"), and that yes to cover looking and acting until lucyd restarts, so that I know a screenshot is about to leave my machine without being asked again for every click or Session. (Amended 2026-11-18, ticket 55.)
 34. As a user, I want a "looking" mark on the Indicator whenever she takes another look, so that I always know.
 35. As a user, I want screenshots never logged, written anywhere but the Session transcript or sent over the public socket, and gone when that transcript is deleted at Session end (or at lucyd's next start after a crash), so that what's on my screen doesn't linger.
 36. As a user, I want a setting that turns screen access off entirely, so that I can opt out.
-37. As a user, I want a click on anything that reads as send, buy, pay, delete, submit, post or confirm to need my spoken yes, so that a misclick or a malicious page can't make her do something risky.
-38. As a user, I want that risky-word list editable in config, so that I can add words that matter to me.
-39. As a user, I want her to say what she's about to click ("the Play button on the third video") in the Confirmation, so that I know what I'm agreeing to.
+37. (Withdrawn 2026-11-18, ticket 55: after the screen yes, no click needs another Confirmation.)
+38. (Withdrawn 2026-11-18, ticket 55: there is no risky-word list.)
+39. (Withdrawn 2026-11-18, ticket 55: clicks are no longer confirmed one by one.)
 40. As a user, I want her never to type into a password field, so that secrets go through the Input dialog to the tool that needs them, never through the screen.
 41. As a user, I want her to ask through the Input dialog, rather than guess, when the next step needs something typed, so that she doesn't fill in wrong details.
 42. As a user, I want text on the screen treated as untrusted, so that a web page can't steer her.
 43. As a Plugin author, I want the screen tools to live in the desktop Plugin, so that a GNOME or KDE Plugin can provide them its own way.
-52. As a user, I want a key press that reads as risky (Enter to send, say) checked the same way as a click, so that she can't send something by keyboard without my yes.
-53. As a user, I want the text actually under a click checked against the risky words, not only her description of it, and a click on something she can't read asked about first, so that the check doesn't rest on the model.
-54. As a user, when she can't read a page because the browser's accessibility is off, I want her to tell me and offer to open the browser's accessibility settings, so that I can fix it once.
+52. (Withdrawn 2026-11-18, ticket 55: keys are no longer checked.)
+53. (Withdrawn 2026-11-18, ticket 55: there is no probe under a click.)
+54. (Withdrawn 2026-11-18, ticket 55: there is no browser-accessibility offer.)
 
 ### Finding files
 
@@ -117,22 +117,19 @@ The second is anything that needs her to see the screen. She can open YouTube an
 
 - **Desktop Plugin tools** (added to the Omarchy Plugin):
   - `screenshot_for_model {window?}`: the focused monitor or one window as an MCP image result, scaled down by the Plugin to the model's image size limit.
-  - `click {x, y, describe, button?}`
-  - `type {text, describe?}`: `describe` (what the Enter does) is required when the text holds a newline.
-  - `key {combo, describe}`: `describe` is required for every key, harmless ones included.
+  - `click {x, y, button?}`
+  - `type {text}`
+  - `key {combo}`
   - `scroll {x, y, direction, amount}`
-  - `text_at {x, y}`: the probe (ticket 10). It returns the accessible name, text and role under the point through AT-SPI, or nothing. The core calls it; it is never listed to the model.
 - **How they act:** coordinates are in screenshot pixels, and the Plugin maps them back to real pixels, so the core never deals with scaling. Input goes through Wayland's virtual-pointer and virtual-keyboard protocols, never `ydotool`.
 - **The loop:** the Session model looks, acts and looks again through ordinary tool calls. There is no loop in Lucy's core, and no new Provider kind.
 - **Core: image passthrough.** Proxied Plugin tool results may carry MCP image content through to the Thinking Provider. Images never go to logs, state files, notifications or the public socket. They exist on disk only inside the Session's `claude` transcript, which is deleted at Session end. At start, lucyd sweeps any of its own Session transcripts left behind by a crash.
-- **Core: the first look.** The first screen tool call in a Session needs a Confirmation ("I need to look at your screen. Okay?"). A decline returns `declined` and holds for the rest of the Session. Later calls show a "looking" mark on the Indicator (a `state` flag added within protocol 1).
+- **Core: the screen yes (amended 2026-11-18, ticket 55).** The first screen tool call of any kind after lucyd starts needs a Confirmation ("I need to look at and use your screen. That lasts until Lucy restarts. Okay?"). A yes lets every screen tool run with no further Confirmation, in every Session, until lucyd restarts; it is held in lucyd's memory only, so a restart is the only way to take it back. A no, or no answer, returns `declined` and isn't remembered: the next screen tool call asks again. A look shows a "looking" mark on the Indicator until its Turn ends (a `state` flag added within protocol 1). A screen tool whose Manifest sets `confirm = true` still asks its own Confirmation.
 - **Core: the switch.** `[screen] enabled` (default true). When false, the screen tools are left out of the tool list.
-- **Core: risky clicks and keys.** Before forwarding `click` or `key`, lucyd matches `describe` against `[screen] risky_words` (default send, buy, pay, delete, submit, post, confirm). A `type` whose text has a newline anywhere in it counts as a key press and needs the same check. A match needs a Confirmation spoken from `describe`. The match is local and never asked of the model.
-- **Core: the text under a click (ticket 10).** Before forwarding `click`, lucyd also calls the Plugin's probe and matches its text against `risky_words`. If the probe returns nothing (a terminal, a canvas app, a browser with accessibility off), the click needs a Confirmation spoken from `describe`: an unreadable target fails closed. Until ticket 10 lands, the check covers mistakes, not a hostile model, because `describe` is the model's own words.
-- **Browser accessibility (ticket 14).** Lucy doesn't turn accessibility on herself. At the first click in a Session where the probe finds a browser on the AT-SPI bus with an empty page tree, she says "I can't read the page in {browser}, so I'll ask before each click. Its accessibility switch turns off when {browser} restarts; the force-renderer-accessibility flag in {flags file} keeps it on. Want me to open {browser}'s accessibility settings?". On a yes she opens `brave://accessibility` (or `chrome://accessibility`) in a new tab of that browser. She offers at most once per Session.
+- **Risky clicks and keys, the probe and the browser-accessibility offer (tickets 07, 10 and 14): removed 2026-11-18 (ticket 55).** After the screen yes nothing is left for them to gate. ADR 0008 records the tradeoff: a page carrying a prompt injection could get a send or a purchase through with no check.
 - **Plugin: password fields (ticket 13).** The desktop Plugin refuses `type` when the focused element is a password field, by AT-SPI role. The refusal tells the model to use `ask_typed` or the Plugin's credential path. When the focused element can't be found, `type` goes ahead and the Plugin logs that the check couldn't run. The model never holds the user's secrets (they go through the Input dialog), so this stops a mistake, not a leak.
-- **How AT-SPI finds the point:** on Wayland, apps report AT-SPI positions relative to their own window, so the Plugin subtracts the window's origin (from `hyprctl clients -j`) and hit-tests in window coordinates, one level at a time. It follows focus events to know the focused element. Coverage is GTK3, Qt, Electron and Chromium-family browsers with accessibility on; GTK4 is unreliable; terminals, canvas and Xwayland apps return nothing.
-- **How Plugins mark these tools:** one new hash-covered field per tool in the Manifest, `screen = "look" | "click" | "key" | "type" | "scroll" | "probe"`, owned by ticket 06 (`type` and `scroll` added by 07, so `[screen] enabled = false` drops them too). A `look` tool triggers the first-look Confirmation and the "looking" mark. A `click` or `key` tool must carry `describe` and gets the risk check. A `probe` tool is called by the core and never listed to the model.
+- **How AT-SPI finds the focus:** the Plugin follows AT-SPI focus events to know the focused element. Coverage is GTK3, Qt, Electron and Chromium-family browsers with accessibility on; GTK4 is unreliable; terminals, canvas and Xwayland apps return nothing.
+- **How Plugins mark these tools:** one new hash-covered field per tool in the Manifest, `screen = "look" | "click" | "key" | "type" | "scroll"`, owned by ticket 06 (`type` and `scroll` added by 07, so `[screen] enabled = false` drops them too). Any marked tool triggers the screen yes; a `look` tool also shows the "looking" mark.
 
 ### Finding files
 
@@ -165,10 +162,9 @@ The second is anything that needs her to see the screen. She can open YouTube an
 - **Screen tools, in the Omarchy Plugin:** a new `Screen` trait inside the Plugin (capture, pointer, keyboard) with a fake in its MCP tests, since Wayland's virtual-input protocols can't be faked from outside. A manual check on real Hyprland covers the protocols.
 - **Screen core, in the lucyd harness:** the fixture Plugin gains an image-returning tool and a click tool. The tests cover:
   - The image reaches the model, and never the logs, state dir or bus.
-  - The first-look Confirmation, its decline holding for the Session, and the "looking" flag.
-  - `describe` against the risk list for `click`, `key` and a `type` with a newline in it, including a custom list.
+  - The screen yes: asked at the first screen tool call of any kind, carried into later Sessions, asked again after a restart, a no or no answer not remembered, and the "looking" flag.
+  - After the yes, clicks, keys and typing run unasked; a `confirm = true` screen tool still asks.
   - `[screen] enabled = false`.
-  - The probe's text matched against the list; an empty probe asks; the probe is never listed to the model.
   - A leftover Session transcript swept at start.
 - **Prior art:** `tests/authoring.rs` (scripted Delegate, parked questions, budget, cancel); `tests/confirmation.rs`; `tests/subscription_guard.rs` (real adapter against the fake `claude`); the news Plugin's MCP support harness.
 

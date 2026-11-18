@@ -46,7 +46,6 @@ pub enum ScreenUse {
     Key,
     Type,
     Scroll,
-    Probe,
 }
 
 #[derive(Debug, Default, Deserialize)]
