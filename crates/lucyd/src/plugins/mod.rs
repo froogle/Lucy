@@ -809,7 +809,48 @@ impl SessionTools {
     }
 
     fn offers(&self, tool: &ToolEntry) -> bool {
-        tool.screen.is_none() || self.screen.enabled
+        match tool.screen {
+            None => true,
+            Some(ScreenUse::Probe) => false,
+            Some(_) => self.screen.enabled,
+        }
+    }
+
+    async fn text_under(
+        &self,
+        plugin: &Usable,
+        arguments: Option<&JsonObject>,
+        read: Option<&Credentials>,
+    ) -> Option<String> {
+        let probe = plugin
+            .manifest
+            .tools
+            .iter()
+            .find(|t| t.screen == Some(ScreenUse::Probe))?;
+        let peer = self.started(plugin, read).await?;
+        let point: JsonObject = ["x", "y"]
+            .into_iter()
+            .filter_map(|name| Some((name.to_owned(), arguments?.get(name)?.clone())))
+            .collect();
+        let request = CallToolRequestParams::new(probe.name.clone()).with_arguments(point);
+        match peer.call_tool_once(request).await {
+            Ok(CallToolResponse::Complete(result)) => risk::probed(&result),
+            _ => None,
+        }
+    }
+
+    async fn started(
+        &self,
+        plugin: &Usable,
+        read: Option<&Credentials>,
+    ) -> Option<Peer<RoleClient>> {
+        let mut running = self.running.lock().await;
+        if !running.contains_key(&plugin.name) {
+            let read = read.filter(|read| read.missing.is_empty())?;
+            let client = self.host.start(plugin, &read.entered).await.ok()?;
+            running.insert(plugin.name.clone(), client);
+        }
+        Some(running[&plugin.name].peer().clone())
     }
 
     async fn look(&self) -> Result<(), Declined> {
@@ -938,7 +979,17 @@ impl SessionTools {
         if entry.screen == Some(ScreenUse::Look) && self.look().await == Err(Declined) {
             return Some(mcp::text(LOOK_DECLINED));
         }
-        let risky = match risk::check(entry.screen, arguments.as_ref(), &self.screen.risky_words) {
+        let risky_words = &self.screen.risky_words;
+        let risk = match risk::check(entry.screen, arguments.as_ref(), risky_words) {
+            Risk::Plain if entry.screen == Some(ScreenUse::Click) => {
+                let under = self
+                    .text_under(&plugin, arguments.as_ref(), read_before_confirming.as_ref())
+                    .await;
+                risk::under_click(arguments.as_ref(), under.as_deref(), risky_words)
+            }
+            risk => risk,
+        };
+        let risky = match risk {
             Risk::Plain => false,
             Risk::Undescribed(refusal) => return Some(mcp::error(refusal)),
             Risk::Risky { prompt } => {

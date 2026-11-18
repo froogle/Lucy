@@ -38,6 +38,14 @@ pub struct Window {
     pub at: [i32; 2],
     pub size: [i32; 2],
     pub monitor: i64,
+    #[serde(default)]
+    pub pid: i64,
+    #[serde(default)]
+    pub xwayland: bool,
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default, rename = "focusHistoryID")]
+    pub focus_history: i64,
 }
 
 #[derive(Deserialize)]
@@ -115,6 +123,19 @@ impl Hyprland {
             .map_err(unreachable)?;
         Ok(answer)
     }
+}
+
+pub fn window_at(windows: &[Window], x: f64, y: f64) -> Option<&Window> {
+    let contains = |w: &&Window| {
+        let (left, top) = (f64::from(w.at[0]), f64::from(w.at[1]));
+        let (right, bottom) = (left + f64::from(w.size[0]), top + f64::from(w.size[1]));
+        (left..right).contains(&x) && (top..bottom).contains(&y)
+    };
+    windows
+        .iter()
+        .filter(|w| w.visible)
+        .filter(contains)
+        .min_by_key(|w| (w.fullscreen == 0, !w.floating, w.focus_history))
 }
 
 pub(crate) fn lua_string(text: &str) -> String {

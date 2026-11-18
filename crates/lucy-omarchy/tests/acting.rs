@@ -260,6 +260,7 @@ fn the_manifest_marks_each_acting_tool_and_click_and_key_require_describe() {
             ("type", "type"),
             ("key", "key"),
             ("scroll", "scroll"),
+            ("text_at", "probe"),
         ]
     );
     let omarchy = Plugin::start();
