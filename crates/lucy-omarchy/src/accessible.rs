@@ -88,9 +88,16 @@ async fn follow(last: &Mutex<Option<ObjectRefOwned>>) -> Reading<()> {
     Ok(())
 }
 
-enum Looked<N> {
-    Focused,
+enum Seen<N> {
+    Sought,
     Inside(Vec<N>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Walked<N> {
+    Found(N),
+    Absent,
+    Unfinished,
 }
 
 struct Top<N> {
@@ -128,31 +135,20 @@ async fn find_page(window: InWindow) -> Reading<Page> {
     let Some(frame) = frame(&tops, &window.title) else {
         return Ok(Page::Unknown);
     };
-    let mut unsearched = std::collections::VecDeque::from([frame.clone()]);
-    for _ in 0..MOST_SEARCHED {
-        let Some(node) = unsearched.pop_front() else {
-            return Ok(Page::Empty);
-        };
-        let proxy = node.as_accessible_proxy(bus).await?;
-        if proxy.get_role().await? == Role::DocumentWeb {
-            return Ok(Page::Filled);
-        }
-        unsearched.extend(proxy.get_children().await?);
-    }
-    Ok(Page::Filled)
+    Ok(
+        match walk(vec![frame.clone()], |node| document_in(bus, node)).await? {
+            Walked::Found(_) => Page::Filled,
+            Walked::Absent => Page::Empty,
+            Walked::Unfinished => Page::Unknown,
+        },
+    )
 }
 
-pub async fn focused_role(events: &FocusEvents, window: FocusedWindow) -> Result<String, String> {
-    match tokio::time::timeout(PATIENCE, find_focused(events.last(), window)).await {
-        Ok(found) => found.map_err(|e| format!("the focus can't be found through AT-SPI: {e}")),
-        Err(_) => Err(format!(
-            "AT-SPI didn't answer within {} s",
-            PATIENCE.as_secs()
-        )),
-    }
+pub async fn focused_role(events: &FocusEvents, window: FocusedWindow) -> Result<Role, String> {
+    patiently(find_focused(events.last(), window)).await
 }
 
-async fn find_focused(last: Option<ObjectRefOwned>, window: FocusedWindow) -> Reading<String> {
+async fn find_focused(last: Option<ObjectRefOwned>, window: FocusedWindow) -> Reading<Role> {
     let a11y = AccessibilityConnection::new().await?;
     let bus = a11y.connection();
     let app = app(&a11y, window.pid)
@@ -173,10 +169,11 @@ async fn find_focused(last: Option<ObjectRefOwned>, window: FocusedWindow) -> Re
             return role(bus, last).await;
         }
     }
-    let found = search(frames, |node| look(bus, node))
-        .await?
-        .ok_or("nothing in the focused window has the focus")?;
-    role(bus, found).await
+    match walk(frames, |node| focus_in(bus, node)).await? {
+        Walked::Found(found) => role(bus, found).await,
+        Walked::Absent => Err("nothing in the focused window has the focus".into()),
+        Walked::Unfinished => Err(format!("more than {MOST_SEARCHED} elements to search").into()),
+    }
 }
 
 async fn focused(bus: &zbus::Connection, node: &ObjectRefOwned) -> bool {
@@ -213,40 +210,50 @@ where
     Ok(false)
 }
 
-async fn role(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<String> {
-    let role = node.as_accessible_proxy(bus).await?.get_role().await?;
-    Ok(role.name().to_owned())
+async fn role(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<Role> {
+    Ok(node.as_accessible_proxy(bus).await?.get_role().await?)
 }
 
-async fn look(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<Looked<ObjectRefOwned>> {
+async fn focus_in(bus: &zbus::Connection, node: ObjectRefOwned) -> Reading<Seen<ObjectRefOwned>> {
     let proxy = node.as_accessible_proxy(bus).await?;
     let state = proxy.get_state().await?;
     if state.contains(State::Focused) {
-        return Ok(Looked::Focused);
+        return Ok(Seen::Sought);
     }
     if !state.contains(State::Showing) || state.contains(State::ManagesDescendants) {
-        return Ok(Looked::Inside(Vec::new()));
+        return Ok(Seen::Inside(Vec::new()));
     }
-    Ok(Looked::Inside(proxy.get_children().await?))
+    Ok(Seen::Inside(proxy.get_children().await?))
 }
 
-async fn search<N, F, H>(tops: Vec<N>, mut look: F) -> Reading<Option<N>>
+async fn document_in(
+    bus: &zbus::Connection,
+    node: ObjectRefOwned,
+) -> Reading<Seen<ObjectRefOwned>> {
+    let proxy = node.as_accessible_proxy(bus).await?;
+    if proxy.get_role().await? == Role::DocumentWeb {
+        return Ok(Seen::Sought);
+    }
+    Ok(Seen::Inside(proxy.get_children().await?))
+}
+
+async fn walk<N, F, H>(tops: Vec<N>, mut see: F) -> Reading<Walked<N>>
 where
     N: Clone,
     F: FnMut(N) -> H,
-    H: Future<Output = Reading<Looked<N>>>,
+    H: Future<Output = Reading<Seen<N>>>,
 {
     let mut left: Vec<N> = tops.into_iter().rev().collect();
     for _ in 0..MOST_SEARCHED {
         let Some(node) = left.pop() else {
-            return Ok(None);
+            return Ok(Walked::Absent);
         };
-        match look(node.clone()).await? {
-            Looked::Focused => return Ok(Some(node)),
-            Looked::Inside(children) => left.extend(children.into_iter().rev()),
+        match see(node.clone()).await? {
+            Seen::Sought => return Ok(Walked::Found(node)),
+            Seen::Inside(children) => left.extend(children.into_iter().rev()),
         }
     }
-    Err(format!("more than {MOST_SEARCHED} elements to search").into())
+    Ok(Walked::Unfinished)
 }
 
 async fn read(at: InWindow) -> Reading<Option<Element>> {
@@ -555,20 +562,21 @@ mod tests {
         assert_eq!(asked.len(), 4);
     }
 
-    fn searched(tree: &[(&str, &[&str])], focused: &str) -> (Reading<Option<String>>, Vec<String>) {
-        let looked = RefCell::new(Vec::new());
-        let found = reading(search(vec!["frame".to_owned()], |node: String| {
-            looked.borrow_mut().push(node.clone());
-            let answer = if node == focused {
-                Looked::Focused
+    fn walked(tree: &[(&str, &[&str])], sought: &str) -> (Walked<String>, Vec<String>) {
+        let seen = RefCell::new(Vec::new());
+        let found = reading(walk(vec!["frame".to_owned()], |node: String| {
+            seen.borrow_mut().push(node.clone());
+            let answer = if node == sought {
+                Seen::Sought
             } else {
                 let children = tree.iter().find(|(at, _)| *at == node);
                 let children = children.map_or(&[][..], |(_, children)| children);
-                Looked::Inside(children.iter().map(|child| (*child).to_owned()).collect())
+                Seen::Inside(children.iter().map(|child| (*child).to_owned()).collect())
             };
             async move { Ok(answer) }
-        }));
-        (found, looked.into_inner())
+        }))
+        .expect("the fake tree reads");
+        (found, seen.into_inner())
     }
 
     const FORM: [(&str, &[&str]); 3] = [
@@ -578,25 +586,22 @@ mod tests {
     ];
 
     #[test]
-    fn the_search_finds_the_focused_element_looking_in_tree_order() {
-        let (found, looked) = searched(&FORM, "password");
+    fn the_walk_finds_the_sought_element_looking_in_tree_order() {
+        let (found, seen) = walked(&FORM, "password");
 
+        assert_eq!(found, Walked::Found("password".to_owned()));
         assert_eq!(
-            found.expect("the fake tree reads"),
-            Some("password".to_owned())
-        );
-        assert_eq!(
-            looked,
+            seen,
             ["frame", "toolbar", "address", "document", "user", "password"]
         );
     }
 
     #[test]
-    fn a_window_with_nothing_focused_has_no_focused_element() {
-        let (found, looked) = searched(&FORM, "elsewhere");
+    fn a_tree_without_the_sought_element_is_walked_whole() {
+        let (found, seen) = walked(&FORM, "elsewhere");
 
-        assert_eq!(found.expect("the fake tree reads"), None);
-        assert_eq!(looked.len(), 6);
+        assert_eq!(found, Walked::Absent);
+        assert_eq!(seen.len(), 6);
     }
 
     fn inside(parents: &[(&str, &str)], node: &str, frames: &[&str]) -> bool {
@@ -629,13 +634,13 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_too_big_to_search_is_an_error() {
+    fn a_tree_too_big_to_walk_is_unfinished() {
         let many: Vec<String> = (0..MOST_SEARCHED).map(|n| n.to_string()).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
 
-        let (found, looked) = searched(&[("frame", &many)], "elsewhere");
+        let (found, seen) = walked(&[("frame", &many)], "elsewhere");
 
-        assert!(found.is_err());
-        assert_eq!(looked.len(), MOST_SEARCHED);
+        assert_eq!(found, Walked::Unfinished);
+        assert_eq!(seen.len(), MOST_SEARCHED);
     }
 }

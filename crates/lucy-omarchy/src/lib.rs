@@ -34,10 +34,11 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{json, Value};
 
+pub use atspi::Role;
 use hyprland::{lua_string, Address, Hyprland, Window};
 pub use screen::{
-    Acted, Button, Captured, Combo, Direction, Element, Focus, FocusedWindow, Image, InWindow,
-    Modifier, Page, Paged, Pid, Point, Probed, Region, Screen, Wayland, WindowPoint,
+    Acted, Button, Captured, Combo, Direction, Element, FocusedWindow, Image, InWindow, Modifier,
+    Page, PageFound, Pid, Point, Probed, Region, RoleFound, Screen, Wayland, WindowPoint,
 };
 use settings::Named;
 
@@ -88,8 +89,6 @@ struct Look {
 const MOST_NOTCHES: u64 = 25;
 
 const MOST_TYPED: usize = 4000;
-
-const PASSWORD_ROLE: &str = "password text";
 
 const INTO_A_PASSWORD: &str = "The focused field is a password field, and I never type into \
      one. Never put a password or other secret on the screen: a Plugin that needs one asks \
@@ -248,15 +247,14 @@ impl Omarchy {
                 "{c:?} can't be typed; for keys like Escape or arrows use the key tool"
             ));
         }
-        if self.focused_role().await.as_deref() == Ok(PASSWORD_ROLE) {
+        if self.focused_role().await == Ok(Role::PasswordText) {
             return Err(INTO_A_PASSWORD.into());
         }
         self.screen.type_text(text.to_owned()).await?;
         Ok(json!({"done": "typed"}))
     }
 
-    /// The focused element's role, or why it can't be found, which is logged.
-    async fn focused_role(&self) -> Result<String, String> {
+    async fn focused_role(&self) -> Result<Role, String> {
         let found = match self.focused_window().await {
             Ok(window) => self.screen.focused_role(window).await,
             Err(e) => Err(e),
@@ -281,7 +279,8 @@ impl Omarchy {
         if window.xwayland {
             return Err("the focused window is an Xwayland one, outside AT-SPI's reach".into());
         }
-        let pid = u32::try_from(window.pid).map_err(|_| "the focused window has no PID")?;
+        let pid =
+            u32::try_from(window.pid).map_err(|e| format!("the focused window has no PID: {e}"))?;
         Ok(FocusedWindow {
             pid: Pid(pid),
             title: window.title,
@@ -311,9 +310,9 @@ impl Omarchy {
         if let Some(e) = self.screen.text_at(inside.clone()).await? {
             return Ok(json!({ "found": {"name": e.name, "text": e.text, "role": e.role} }));
         }
-        match browser(&window.class) {
+        match Browser::of(&window.class) {
             Some(browser) if self.screen.page(inside).await == Ok(Page::Empty) => {
-                Ok(json!({ "found": null, "accessibility_off": browser }))
+                Ok(json!({ "found": null, "accessibility_off": browser.name() }))
             }
             _ => Ok(json!({ "found": null })),
         }
@@ -535,12 +534,29 @@ impl Omarchy {
 
 const POISONED: &str = "no thread panics while holding the last look";
 
-fn browser(class: &str) -> Option<&'static str> {
-    match class {
-        "google-chrome" => Some("chrome"),
-        "chromium" => Some("chromium"),
-        brave if brave.starts_with("brave-") => Some("brave"),
-        _ => None,
+#[derive(Clone, Copy)]
+enum Browser {
+    Brave,
+    Chrome,
+    Chromium,
+}
+
+impl Browser {
+    fn of(class: &str) -> Option<Browser> {
+        match class {
+            "google-chrome" => Some(Browser::Chrome),
+            "chromium" => Some(Browser::Chromium),
+            brave if brave.starts_with("brave-") => Some(Browser::Brave),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Browser::Brave => "brave",
+            Browser::Chrome => "chrome",
+            Browser::Chromium => "chromium",
+        }
     }
 }
 
