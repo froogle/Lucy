@@ -13,8 +13,6 @@ const UNDESCRIBED_ENTER: &str = "refused: a newline in the text presses Enter, s
                                  is required, in a few plain words saying what that Enter does \
                                  (\"Enter, to send the message\"), so nothing was done.";
 
-const MOST_SPOKEN: usize = 60;
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Risk {
     Plain,
@@ -23,6 +21,19 @@ pub enum Risk {
 }
 
 pub fn check(screen: Option<ScreenUse>, arguments: Option<&JsonObject>, risky: &[String]) -> Risk {
+    confirmation(screen, arguments, |describe| matches_any(describe, risky))
+}
+
+pub fn under_click(arguments: Option<&JsonObject>, under: Option<&str>, risky: &[String]) -> Risk {
+    let readably_plain = under.is_some_and(|under| !matches_any(under, risky));
+    confirmation(Some(ScreenUse::Click), arguments, |_| !readably_plain)
+}
+
+fn confirmation(
+    screen: Option<ScreenUse>,
+    arguments: Option<&JsonObject>,
+    risky: impl FnOnce(&str) -> bool,
+) -> Risk {
     let argument = |name: &str| {
         arguments
             .and_then(|args| args.get(name))
@@ -39,37 +50,22 @@ pub fn check(screen: Option<ScreenUse>, arguments: Option<&JsonObject>, risky: &
     let Some(describe) = described(arguments) else {
         return Risk::Undescribed(undescribed);
     };
-    if matches_any(describe, risky) {
+    if risky(describe) {
         Risk::Risky {
-            prompt: asking(asks, describe),
+            prompt: format!("{asks} {}?", describe.trim_end_matches(['.', '?', '!'])),
         }
     } else {
         Risk::Plain
     }
 }
 
-pub fn under_click(arguments: Option<&JsonObject>, under: Option<&str>, risky: &[String]) -> Risk {
-    let Some(describe) = described(arguments) else {
-        return Risk::Undescribed(UNDESCRIBED);
-    };
-    let prompt = asking("Shall I click", describe);
-    match under {
-        None => Risk::Risky { prompt },
-        Some(under) if matches_any(under, risky) => {
-            let spoken: String = under.chars().take(MOST_SPOKEN).collect();
-            Risk::Risky {
-                prompt: format!("{prompt} On screen it says {}.", spoken.trim_end()),
-            }
-        }
-        Some(_) => Risk::Plain,
-    }
-}
-
-pub fn probed(result: &CallToolResult) -> Option<String> {
+pub fn probed(result: &CallToolResult) -> Result<Option<String>, String> {
+    let answer = mcp::result_text(result);
     if result.is_error == Some(true) {
-        return None;
+        return Err(format!("it answered with an error: {answer}"));
     }
-    let read: Value = serde_json::from_str(&mcp::result_text(result)).ok()?;
+    let read: Value = serde_json::from_str(&answer)
+        .map_err(|e| format!("its answer isn't the JSON a probe returns: {e}"))?;
     let field = |name: &str| {
         read["found"][name]
             .as_str()
@@ -82,7 +78,7 @@ pub fn probed(result: &CallToolResult) -> Option<String> {
         (false, true) => name,
         (false, false) => format!("{name}, {text}"),
     };
-    (!under.is_empty()).then_some(under)
+    Ok((!under.is_empty()).then_some(under))
 }
 
 fn described(arguments: Option<&JsonObject>) -> Option<&str> {
@@ -91,10 +87,6 @@ fn described(arguments: Option<&JsonObject>) -> Option<&str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|d| !d.is_empty())
-}
-
-fn asking(asks: &str, describe: &str) -> String {
-    format!("{asks} {}?", describe.trim_end_matches(['.', '?', '!']))
 }
 
 fn matches_any(describe: &str, risky: &[String]) -> bool {

@@ -8,6 +8,7 @@
 mod harness;
 
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use harness::{next_state, Harness};
 use lucy_ipc::{Client, State};
@@ -352,10 +353,7 @@ fn the_text_under_a_click_matching_a_risky_word_asks_even_when_describe_is_plain
     let click = json!({"x": 10, "y": 20, "describe": "the Play button"});
     let call = model_calls(&lucyd, "click", click.clone());
 
-    assert_eq!(
-        asked(&lucyd, &mut events),
-        "Shall I click the Play button? On screen it says Send."
-    );
+    assert_eq!(asked(&lucyd, &mut events), "Shall I click the Play button?");
     lucyd.say("yes");
 
     let result = call.join().unwrap().unwrap();
@@ -381,6 +379,47 @@ fn a_click_on_nothing_readable_asks_in_its_own_words() {
         let result = call.join().unwrap().unwrap();
         assert!(text(&result).starts_with("declined"), "{}", text(&result));
     }
+}
+
+fn probe_hangs(lucyd: &Harness) -> Call {
+    show(lucyd, "hang");
+    let call = model_calls(
+        lucyd,
+        "click",
+        json!({"x": 10, "y": 20, "describe": "the Play button"}),
+    );
+    harness::wait_until("the probe never ran", || {
+        (!probed(lucyd).is_empty()).then_some(())
+    });
+    call
+}
+
+#[test]
+fn a_probe_that_doesnt_answer_in_time_counts_as_unreadable_and_asks() {
+    let lucyd = with_hands("");
+    let mut events = session(&lucyd);
+    let call = probe_hangs(&lucyd);
+
+    lucyd.clock.advance_once_set(Duration::from_secs(3));
+
+    assert_eq!(asked(&lucyd, &mut events), "Shall I click the Play button?");
+    lucyd.say("no");
+    let result = call.join().unwrap().unwrap();
+    assert!(text(&result).starts_with("declined"), "{}", text(&result));
+}
+
+#[test]
+fn a_barge_in_cuts_off_a_probe_that_doesnt_answer() {
+    let lucyd = with_hands("");
+    let mut events = session(&lucyd);
+    let call = probe_hangs(&lucyd);
+
+    lucyd.start_speaking();
+
+    assert_eq!(next_state(&mut events).state, State::Listening);
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(true), "{}", text(&result));
+    assert!(text(&result).contains("cut in"), "{}", text(&result));
 }
 
 #[test]

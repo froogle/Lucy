@@ -79,9 +79,13 @@ struct Last {
     folder: PathBuf,
 }
 
-const NOTHING_TO_CONTINUE: &str = "There's nothing to continue: Claude hasn't finished a \
-                                   Hand-off yet, so nothing has started. Tell the user \
-                                   there's nothing to continue.";
+const NOTHING_TO_CONTINUE: &str = "There's nothing to continue: Claude's last Hand-off left \
+                                   no conversation to carry on, so nothing has started. Tell \
+                                   the user there's nothing to continue.";
+
+const UNREADABLE_LAST: &str = "Nothing has started: Lucy couldn't read her record of Claude's \
+                               last Hand-off, so it can't be continued. Tell the user Lucy \
+                               couldn't read it, and that a new request starts afresh.";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Working {
@@ -204,8 +208,9 @@ impl HandOffs {
             let running = running.request.clone();
             return self.queue(&mut jobs, &running, request, arguments);
         }
-        let Some(job) = self.start(request) else {
-            return error(NOTHING_TO_CONTINUE);
+        let job = match self.start(request) {
+            Ok(job) => job,
+            Err(refused) => return error(refused),
         };
         jobs.current = Some(job);
         drop(jobs);
@@ -246,11 +251,11 @@ impl HandOffs {
         )
     }
 
-    fn start(self: &Arc<Self>, request: Request) -> Option<Arc<Job>> {
+    fn start(self: &Arc<Self>, request: Request) -> Result<Arc<Job>, &'static str> {
         let (folder, resume) = match request.start {
             Start::Fresh(folder) => (folder, None),
             Start::Continue => {
-                let last = self.last()?;
+                let last = self.last()?.ok_or(NOTHING_TO_CONTINUE)?;
                 (last.folder, Some(last.conversation))
             }
         };
@@ -268,25 +273,44 @@ impl HandOffs {
             ended: watch::Sender::new(false),
         });
         tokio::spawn(job.clone().run());
-        Some(job)
+        Ok(job)
     }
 
     fn last_path(&self) -> PathBuf {
         self.state_dir.join("hand-off.toml")
     }
 
-    fn last(&self) -> Option<Last> {
-        let text = std::fs::read_to_string(self.last_path()).ok()?;
-        toml::from_str(&text).ok()
+    fn last(&self) -> Result<Option<Last>, &'static str> {
+        let text = match std::fs::read_to_string(self.last_path()) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                eprintln!(
+                    "lucyd: the last Hand-off's record can't be read: {}",
+                    e.kind()
+                );
+                return Err(UNREADABLE_LAST);
+            }
+        };
+        toml::from_str(&text).map(Some).map_err(|_| {
+            eprintln!("lucyd: the last Hand-off's record doesn't read as one");
+            UNREADABLE_LAST
+        })
     }
 
-    fn remember(&self, last: &Last) {
-        let saved = toml::to_string(last)
-            .map_err(|e| e.to_string())
-            .and_then(|text| {
-                plugins::save_state(&self.state_dir, &self.last_path(), &text)
-                    .map_err(|e| e.to_string())
-            });
+    fn save_last(&self, last: Option<&Last>) {
+        let saved = match last {
+            Some(last) => toml::to_string(last)
+                .map_err(|e| e.to_string())
+                .and_then(|text| {
+                    plugins::save_state(&self.state_dir, &self.last_path(), &text)
+                        .map_err(|e| e.to_string())
+                }),
+            None => match std::fs::remove_file(self.last_path()) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.kind().to_string()),
+                _ => Ok(()),
+            },
+        };
         if let Err(e) = saved {
             eprintln!("lucyd: the last Hand-off couldn't be saved, so it can't be continued: {e}");
         }
@@ -398,7 +422,7 @@ impl HandOffs {
             return;
         }
         jobs.current = jobs.queued.take().and_then(|next| {
-            let started = self.start(next);
+            let started = self.start(next).ok();
             if started.is_none() {
                 self.show(Notification {
                     summary: "Claude didn't start".to_owned(),
@@ -698,7 +722,7 @@ impl Job {
 
     fn answered(&self) {
         let answer = self.state.locked().answer.clone();
-        let conversation = self.remembered();
+        let conversation = self.save_last_conversation();
         let resume = self.resume(conversation.as_deref());
         let summary = "Claude has finished";
         match answer.filter(|answer| !answer.trim().is_empty()) {
@@ -737,7 +761,7 @@ impl Job {
     }
 
     fn failed(&self, reason: &str) {
-        let conversation = self.remembered();
+        let conversation = self.save_last_conversation();
         self.show(
             "Claude couldn't finish",
             format!("{reason}{}", self.resume(conversation.as_deref())),
@@ -763,7 +787,7 @@ impl Job {
     }
 
     fn stopped(&self) {
-        let conversation = self.remembered();
+        let conversation = self.save_last_conversation();
         self.show(
             "Lucy stopped Claude",
             format!(
@@ -775,7 +799,7 @@ impl Job {
     }
 
     fn out_of_time(&self) {
-        let conversation = self.remembered();
+        let conversation = self.save_last_conversation();
         let budget = spoken_duration(self.budget);
         self.show(
             "Claude ran out of time",
@@ -797,15 +821,16 @@ impl Job {
         self.finish();
     }
 
-    fn remembered(&self) -> Option<String> {
-        let conversation = self.state.locked().conversation.clone()?;
+    fn save_last_conversation(&self) -> Option<String> {
+        let conversation = self.state.locked().conversation.clone();
+        let last = conversation.clone().map(|conversation| Last {
+            conversation,
+            folder: self.folder.clone(),
+        });
         if let Some(hand_offs) = self.hand_offs.upgrade() {
-            hand_offs.remember(&Last {
-                conversation: conversation.clone(),
-                folder: self.folder.clone(),
-            });
+            hand_offs.save_last(last.as_ref());
         }
-        Some(conversation)
+        conversation
     }
 
     fn resume(&self, conversation: Option<&str>) -> String {

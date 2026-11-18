@@ -1070,3 +1070,43 @@ fn nothing_about_the_continued_conversation_reaches_the_public_socket() {
     lucyd.assert_nothing_private_on_bus();
     lucyd.assert_not_on_bus(&[CONVERSATION, "linear-work", REPLY]);
 }
+
+#[test]
+fn after_a_newer_hand_off_ends_without_a_conversation_theres_nothing_to_continue() {
+    let lucyd = Harness::start();
+    let _events = finished(&lucyd, &lucyd.scratch());
+    lucyd.say(&format!("tell Claude to {REQUEST}"));
+    lucyd.thinking.next_turn();
+    let arguments = json!({"request": REQUEST, "folder": lucyd.scratch().to_str().unwrap()});
+    let (failed, said) = hand_to_claude(&lucyd, arguments);
+    assert!(!failed, "{said}");
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    hand_off.fail("Claude couldn't start");
+    lucyd
+        .notifier
+        .next_notification_of(NotificationKind::HandOff);
+    lucyd.thinking.turn_end();
+    lucyd.say("tell Claude yes, go ahead");
+    lucyd.thinking.next_turn();
+
+    let (failed, said) = hand_to_claude(&lucyd, json!({"request": REPLY, "continue": true}));
+
+    assert!(failed, "{said}");
+    assert!(said.contains("nothing to continue"), "{said}");
+}
+
+#[test]
+fn an_unreadable_record_of_the_last_hand_off_says_lucy_couldnt_read_it() {
+    let lucyd = Harness::start();
+    std::fs::create_dir_all(lucyd.state_dir()).unwrap();
+    std::fs::write(lucyd.state_dir().join("hand-off.toml"), "conversation = [").unwrap();
+    let arguments = json!({"request": REPLY, "continue": true});
+
+    let (_events, (failed, said)) = hand_off(&lucyd, arguments);
+
+    assert!(failed, "{said}");
+    assert!(said.contains("couldn't read"), "{said}");
+    assert!(!said.contains("nothing to continue"), "{said}");
+    assert!(lucyd.thinking.hand_off.opened().is_empty());
+}

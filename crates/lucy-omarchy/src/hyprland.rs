@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use std::fmt;
@@ -5,6 +6,12 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+
+use crate::screen::Point;
+
+const TOP: &str = "2";
+
+const OVERLAY: &str = "3";
 
 pub struct Hyprland {
     socket: PathBuf,
@@ -66,6 +73,19 @@ pub struct Workspace {
 }
 
 #[derive(Deserialize)]
+pub struct Layers {
+    levels: HashMap<String, Vec<Layer>>,
+}
+
+#[derive(Deserialize)]
+struct Layer {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+}
+
+#[derive(Deserialize)]
 struct Active {
     address: Option<Address>,
 }
@@ -81,6 +101,11 @@ impl Hyprland {
 
     pub async fn monitors(&self) -> Result<Vec<Monitor>, String> {
         self.query("monitors").await
+    }
+
+    pub async fn layers(&self) -> Result<Vec<Layers>, String> {
+        let monitors: HashMap<String, Layers> = self.query("layers").await?;
+        Ok(monitors.into_values().collect())
     }
 
     pub async fn active_window(&self) -> Result<Option<Address>, String> {
@@ -125,17 +150,27 @@ impl Hyprland {
     }
 }
 
-pub fn window_at(windows: &[Window], x: f64, y: f64) -> Option<&Window> {
-    let contains = |w: &&Window| {
-        let (left, top) = (f64::from(w.at[0]), f64::from(w.at[1]));
-        let (right, bottom) = (left + f64::from(w.size[0]), top + f64::from(w.size[1]));
-        (left..right).contains(&x) && (top..bottom).contains(&y)
-    };
+pub fn window_at(windows: &[Window], at: Point) -> Option<&Window> {
     windows
         .iter()
         .filter(|w| w.visible)
-        .filter(contains)
+        .filter(|w| contains(w.at, w.size, at))
         .min_by_key(|w| (w.fullscreen == 0, !w.floating, w.focus_history))
+}
+
+pub fn over_windows(layers: &[Layers], at: Point) -> bool {
+    layers
+        .iter()
+        .flat_map(|monitor| [TOP, OVERLAY].map(|level| monitor.levels.get(level)))
+        .flatten()
+        .flatten()
+        .any(|layer| contains([layer.x, layer.y], [layer.w, layer.h], at))
+}
+
+fn contains(origin: [i32; 2], size: [i32; 2], at: Point) -> bool {
+    let (left, top) = (f64::from(origin[0]), f64::from(origin[1]));
+    let (right, bottom) = (left + f64::from(size[0]), top + f64::from(size[1]));
+    (left..right).contains(&at.x) && (top..bottom).contains(&at.y)
 }
 
 pub(crate) fn lua_string(text: &str) -> String {

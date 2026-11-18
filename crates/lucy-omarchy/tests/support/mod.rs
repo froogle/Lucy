@@ -20,6 +20,7 @@ struct Answers {
     clients: Value,
     active: Value,
     monitors: Value,
+    layers: Value,
     dispatch: String,
     requests: Vec<String>,
 }
@@ -34,6 +35,7 @@ impl Hyprland {
             clients: json!([]),
             active: json!({}),
             monitors: json!([]),
+            layers: json!({}),
             dispatch: "ok".into(),
             requests: Vec::new(),
         }));
@@ -52,6 +54,7 @@ impl Hyprland {
                         "j/clients" => answers.clients.to_string(),
                         "j/activewindow" => answers.active.to_string(),
                         "j/monitors" => answers.monitors.to_string(),
+                        "j/layers" => answers.layers.to_string(),
                         dispatch if dispatch.starts_with("dispatch ") => answers.dispatch.clone(),
                         _ => "unknown request".into(),
                     }
@@ -127,6 +130,24 @@ impl Hyprland {
             })
             .collect();
         self.answers.lock().unwrap().monitors = Value::Array(monitors);
+    }
+
+    pub fn layer(&self, monitor: &str, level: u8, at: (i32, i32), size: (i32, i32)) {
+        let mut answers = self.answers.lock().unwrap();
+        let surfaces = &mut answers.layers[monitor]["levels"][level.to_string()];
+        if surfaces.is_null() {
+            *surfaces = json!([]);
+        }
+        let surfaces = surfaces.as_array_mut().unwrap();
+        surfaces.push(json!({
+            "address": format!("0x{}", surfaces.len() + 1),
+            "x": at.0,
+            "y": at.1,
+            "w": size.0,
+            "h": size.1,
+            "namespace": "a layer",
+            "pid": 999,
+        }));
     }
 
     pub fn answer_dispatches_with(&self, answer: &str) {
