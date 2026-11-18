@@ -5,7 +5,7 @@
 
 mod support;
 
-use lucy_omarchy::{Element, InWindow};
+use lucy_omarchy::{Element, InWindow, Pid, WindowPoint};
 use serde_json::json;
 use support::{Monitor, Plugin};
 
@@ -61,10 +61,9 @@ fn the_probe_reads_the_element_at_the_point_in_its_windows_own_coordinates() {
     assert_eq!(
         omarchy.screen.probed(),
         [InWindow {
-            pid: 5150,
+            pid: Pid(5150),
             title: "Inbox - Mozilla Firefox".into(),
-            x: 200,
-            y: 200,
+            at: WindowPoint { x: 200, y: 200 },
         }]
     );
 }
@@ -104,7 +103,10 @@ fn a_floating_window_over_a_tiled_one_is_the_one_probed() {
     let [probed] = &omarchy.screen.probed()[..] else {
         panic!("{:?}", omarchy.screen.probed());
     };
-    assert_eq!((probed.pid, probed.x, probed.y), (77, 100, 140));
+    assert_eq!(
+        (probed.pid, probed.at),
+        (Pid(77), WindowPoint { x: 100, y: 140 })
+    );
 }
 
 #[test]
@@ -116,6 +118,35 @@ fn a_window_on_a_hidden_workspace_is_never_probed() {
 
     assert_eq!(read["found"], json!(null));
     assert!(omarchy.screen.probed().is_empty());
+}
+
+#[test]
+fn a_point_on_a_top_or_overlay_layer_surface_is_found_null_unprobed() {
+    for level in [2, 3] {
+        let omarchy = desktop();
+        omarchy.screen.show(send_button());
+        omarchy
+            .hyprland
+            .layer("DP-1", level, (250, 200), (200, 100));
+
+        let read = omarchy.call("text_at", json!({"x": 300, "y": 240}));
+
+        assert_eq!(read["found"], json!(null));
+        assert!(omarchy.screen.probed().is_empty());
+    }
+}
+
+#[test]
+fn a_layer_surface_under_the_windows_or_away_from_the_point_leaves_the_window_probed() {
+    let omarchy = desktop();
+    omarchy.screen.show(send_button());
+    omarchy.hyprland.layer("DP-1", 0, (0, 0), (1280, 800));
+    omarchy.hyprland.layer("DP-1", 1, (0, 0), (1280, 800));
+    omarchy.hyprland.layer("DP-1", 2, (0, 0), (1280, 30));
+
+    let read = omarchy.call("text_at", json!({"x": 300, "y": 240}));
+
+    assert_eq!(read["found"]["name"], json!("Send"));
 }
 
 #[test]

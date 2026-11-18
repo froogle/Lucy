@@ -71,14 +71,23 @@ pub struct Combo {
     pub keysym: String,
 }
 
-/// A point inside one window, in that window's own logical pixels.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InWindow {
-    /// The process that owns the window.
-    pub pid: u32,
-    pub title: String,
+/// A process ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pid(pub u32);
+
+/// A point in one window's own logical pixels, from its top-left corner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowPoint {
     pub x: i32,
     pub y: i32,
+}
+
+/// A point inside one window, named by the process that owns it and its title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InWindow {
+    pub pid: Pid,
+    pub title: String,
+    pub at: WindowPoint,
 }
 
 /// The accessible element found at a point: its name, text and role.
@@ -117,7 +126,10 @@ pub trait Screen: Send + Sync {
     /// Types `text` as though on a keyboard, a newline as Enter.
     fn type_text(&self, text: String) -> Acted<'_>;
 
-    /// Reads the accessible element at `at`, through AT-SPI for real.
+    /// Reads the accessible element at `at`.
+    ///
+    /// `None` means it can't be sure what is there: nothing readable, or
+    /// something drawn over the window that it can't read, such as a menu.
     fn text_at(&self, at: InWindow) -> Probed<'_>;
 }
 

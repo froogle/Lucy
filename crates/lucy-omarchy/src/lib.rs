@@ -36,8 +36,8 @@ use serde_json::{json, Value};
 
 use hyprland::{lua_string, Address, Hyprland, Window};
 pub use screen::{
-    Acted, Button, Captured, Combo, Direction, Element, Image, InWindow, Modifier, Point, Probed,
-    Region, Screen, Wayland,
+    Acted, Button, Captured, Combo, Direction, Element, Image, InWindow, Modifier, Pid, Point,
+    Probed, Region, Screen, Wayland, WindowPoint,
 };
 use settings::Named;
 
@@ -247,17 +247,22 @@ impl Omarchy {
 
     async fn text_at(&self, args: &JsonObject) -> Result<Value, String> {
         let at = self.point(args)?;
+        if hyprland::over_windows(&self.hyprland.layers().await?, at) {
+            return Ok(json!({ "found": null }));
+        }
         let windows = self.hyprland.windows().await?;
-        let readable = hyprland::window_at(&windows, at.x, at.y)
+        let readable = hyprland::window_at(&windows, at)
             .filter(|window| !window.xwayland)
             .and_then(|window| Some((u32::try_from(window.pid).ok()?, window)));
         let found = match readable {
             Some((pid, window)) => {
                 let inside = InWindow {
-                    pid,
+                    pid: Pid(pid),
                     title: window.title.clone(),
-                    x: (at.x - f64::from(window.at[0])).floor() as i32,
-                    y: (at.y - f64::from(window.at[1])).floor() as i32,
+                    at: WindowPoint {
+                        x: (at.x - f64::from(window.at[0])).floor() as i32,
+                        y: (at.y - f64::from(window.at[1])).floor() as i32,
+                    },
                 };
                 self.screen.text_at(inside).await?
             }
@@ -720,7 +725,7 @@ fn tools() -> Vec<Tool> {
             "text_at",
             "Reads the accessible name, text and role of the element at a point in the last \
              screenshot_for_model image, through AT-SPI; found is null when nothing there can \
-             be read. Lucy calls it before each click.",
+             be read for sure. Lucy calls it before a click whose describe is plain.",
             schema(
                 json!({"x": {"type": "number"}, "y": {"type": "number"}}),
                 &["x", "y"],
