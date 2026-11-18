@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Hand-off (Delegate tools). Stories 14, 15.
 
 **Seams:** none new. Exposes `ask_user` and `report_progress` (Authoring) and `ask_typed` (owned by lucy-v0-1-build 34) to the Hand-off caller.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -21,3 +21,5 @@ Spec: [v0.2](../spec.md), Hand-off (Delegate tools). Stories 14, 15.
 - [ ] `report_progress` notifies and is never spoken
 
 ## Comments
+
+2026-11-18: built in slice 2 (`lucy-v0-2-slice-2`). The tool call waits for the answer, since a Hand-off ends when Claude's Turn ends. `ask_user` is spoken as "Claude asks: …"; `ask_typed` also waits until nobody is speaking. Progress notifications always show and are never logged. A stopped Hand-off drops its waiting asks (review fix).

@@ -118,7 +118,7 @@ The second is anything that needs her to see the screen. She can open YouTube an
 - **Desktop Plugin tools** (added to the Omarchy Plugin):
   - `screenshot_for_model {window?}`: the focused monitor or one window as an MCP image result, scaled down by the Plugin to the model's image size limit.
   - `click {x, y, describe, button?}`
-  - `type {text}`
+  - `type {text, describe?}`: `describe` (what the Enter does) is required when the text holds a newline.
   - `key {combo, describe}`: `describe` is required for every key, harmless ones included.
   - `scroll {x, y, direction, amount}`
   - `text_at {x, y}`: the probe (ticket 10). It returns the accessible name, text and role under the point through AT-SPI, or nothing. The core calls it; it is never listed to the model.
@@ -132,7 +132,7 @@ The second is anything that needs her to see the screen. She can open YouTube an
 - **Browser accessibility (ticket 14).** Lucy doesn't turn accessibility on herself. At the first click in a Session where the probe finds a browser on the AT-SPI bus with an empty page tree, she says "I can't read the page in {browser}, so I'll ask before each click. Want me to open {browser}'s accessibility settings?". On a yes she opens `brave://accessibility` (or `chrome://accessibility`) in a new tab of that browser. She offers at most once per Session.
 - **Plugin: password fields (ticket 13).** The desktop Plugin refuses `type` when the focused element is a password field, by AT-SPI role. The refusal tells the model to use `ask_typed` or the Plugin's credential path. When the focused element can't be found, `type` goes ahead and the Plugin logs that the check couldn't run. The model never holds the user's secrets (they go through the Input dialog), so this stops a mistake, not a leak.
 - **How AT-SPI finds the point:** on Wayland, apps report AT-SPI positions relative to their own window, so the Plugin subtracts the window's origin (from `hyprctl clients -j`) and hit-tests in window coordinates, one level at a time. It follows focus events to know the focused element. Coverage is GTK3, Qt, Electron and Chromium-family browsers with accessibility on; GTK4 is unreliable; terminals, canvas and Xwayland apps return nothing.
-- **How Plugins mark these tools:** one new hash-covered field per tool in the Manifest, `screen = "look" | "click" | "key" | "probe"`, owned by ticket 06. A `look` tool triggers the first-look Confirmation and the "looking" mark. A `click` or `key` tool must carry `describe` and gets the risk check. A `probe` tool is called by the core and never listed to the model.
+- **How Plugins mark these tools:** one new hash-covered field per tool in the Manifest, `screen = "look" | "click" | "key" | "type" | "scroll" | "probe"`, owned by ticket 06 (`type` and `scroll` added by 07, so `[screen] enabled = false` drops them too). A `look` tool triggers the first-look Confirmation and the "looking" mark. A `click` or `key` tool must carry `describe` and gets the risk check. A `probe` tool is called by the core and never listed to the model.
 
 ### Finding files
 

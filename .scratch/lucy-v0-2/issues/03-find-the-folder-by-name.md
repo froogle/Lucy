@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Hand-off (folder resolution). Stories 4, 5.
 
 **Seams:** owns `[handoff] roots`. Uses `hand_to_claude` (owned by 01).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -21,3 +21,5 @@ Spec: [v0.2](../spec.md), Hand-off (folder resolution). Stories 4, 5.
 - [ ] Once, by hand: "tell Claude to … in lucy" runs in `~/develops/lucy`
 
 ## Comments
+
+2026-11-18: built in slice 2 (`lucy-v0-2-slice-2`), on 08's walker. Only folders count; an exact name match (ignoring case) wins over looser ones, and a single loose match is used without asking. The search skips `[files] skip`. With several matches, git repos are listed first and Lucy always asks. Hand check left: "tell Claude to … in lucy" runs in `~/develops/lucy`.

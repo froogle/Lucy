@@ -8,7 +8,7 @@ Spec: [v0.2](../spec.md), Hand-off (permission tool). ADR 0007. Stories 9–11.
 
 **Seams:** none new. Makes the permission tool (owned by 01) ask through `runner::ask`, as every Confirmation does.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 **Notes:**
 
@@ -22,3 +22,5 @@ Spec: [v0.2](../spec.md), Hand-off (permission tool). ADR 0007. Stories 9–11.
 - [ ] Once, by hand: "tell Claude to fix the failing test in ~/develops/lucy", and approve one command it asks to run
 
 ## Comments
+
+2026-11-18: built in slice 2 (`lucy-v0-2-slice-2`). Claude's own description is used when it sends one (first letter lowercased, trailing period dropped); otherwise the tool name (`mcp__linear__create_issue` → "use linear create issue"). The notification is titled "Claude needs your yes" with the input as formatted JSON. Hand check left: "tell Claude to fix the failing test in ~/develops/lucy", and approve one command it asks to run.
