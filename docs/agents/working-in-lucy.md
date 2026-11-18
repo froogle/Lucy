@@ -8,6 +8,8 @@ Facts about the codebase that aren't obvious from reading it.
 
 `target/` only grows (108 GB by slice 6). When a ticket is done and merged, with no agents running, run `scripts/clean.sh`: it clears the shared `target/` and the prototypes' own `target/` folders, prunes stale worktrees and says how much it freed. It refuses while another worktree exists. The next build is cold. Run it after removing a worktree too: its test binaries stay in the shared `target/` and still look for fixtures and the schema under the removed worktree's path.
 
+`scripts/install.sh` puts this checkout on the machine: it builds the five binaries, stops `lucyd` and `lucy-indicator`, installs them into `~/.cargo/bin`, copies the shipped Plugins into `/usr/share/lucy/plugins/` with sudo when they differ, starts both again and reloads the bar. The systemd units come from `lucy setup`, not from it.
+
 ## lucyd test harness
 
 - **Where it is:** `crates/lucyd/tests/harness/mod.rs` starts lucyd in-process through `lucyd::spawn(Options { .. })` and connects through the real `lucy-ipc` client.
