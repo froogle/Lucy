@@ -11,9 +11,13 @@ pub struct SystemLauncher;
 
 impl Launcher for SystemLauncher {
     fn open_url(&self, url: &str) -> io::Result<()> {
-        let dirs = desktop_entries::xdg_dirs();
-        let default = default_browser(&dirs);
-        let command = browser_command(url, default.as_deref(), &dirs);
+        let default = stdout_of("xdg-settings", &["get", "default-web-browser"]);
+        let command = browser_command(
+            url,
+            default.as_deref(),
+            &desktop_entries::xdg_dirs(),
+            || stdout_of("omarchy-cmd-default-browser", &[]),
+        );
         spawn_app(command.iter().map(String::as_str))
     }
 
@@ -120,11 +124,13 @@ fn spawn_app<'a>(command: impl IntoIterator<Item = &'a str>) -> io::Result<()> {
 
 const OMARCHY_WRAPPER: &str = "omarchy-launch-browser";
 
-fn browser_command(url: &str, default: Option<&str>, dirs: &[PathBuf]) -> Vec<String> {
-    let browser = default
-        .and_then(|entry| program(entry, dirs))
-        .filter(|program| program != OMARCHY_WRAPPER);
-    match browser {
+fn browser_command(
+    url: &str,
+    default: Option<&str>,
+    dirs: &[PathBuf],
+    omarchy_default: impl FnOnce() -> Option<String>,
+) -> Vec<String> {
+    match default.and_then(|entry| browser_program(entry, dirs, omarchy_default)) {
         Some(browser) => page_command(&browser, url).map(str::to_owned).to_vec(),
         None => {
             log::debug!("no program found for the default browser {default:?}");
@@ -137,15 +143,27 @@ fn page_command<'a>(browser: &'a str, page: &'a str) -> [&'a str; 3] {
     [browser, "--new-window", page]
 }
 
-fn default_browser(dirs: &[PathBuf]) -> Option<String> {
-    let default = answer("xdg-settings", &["get", "default-web-browser"])?;
-    if program(&default, dirs).as_deref() == Some(OMARCHY_WRAPPER) {
-        return answer("omarchy-cmd-default-browser", &[]);
+fn browser_program(
+    entry: &str,
+    dirs: &[PathBuf],
+    omarchy_default: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let mut program = desktop_entries::exec_program(entry, dirs)?;
+    if file_name(&program) == OMARCHY_WRAPPER {
+        program = desktop_entries::exec_program(&omarchy_default()?, dirs)?;
     }
-    Some(default)
+    let runs_another_program = [OMARCHY_WRAPPER, "flatpak", "env"].contains(&file_name(&program));
+    (!runs_another_program).then_some(program)
 }
 
-fn answer(program: &str, args: &[&str]) -> Option<String> {
+fn file_name(program: &str) -> &str {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+}
+
+fn stdout_of(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -153,8 +171,8 @@ fn answer(program: &str, args: &[&str]) -> Option<String> {
         .output();
     match output {
         Ok(output) if output.status.success() => {
-            let answer = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            (!answer.is_empty()).then_some(answer)
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            (!stdout.is_empty()).then_some(stdout)
         }
         Ok(output) => {
             log::debug!("{program} found no default browser: {}", output.status);
@@ -165,21 +183,6 @@ fn answer(program: &str, args: &[&str]) -> Option<String> {
             None
         }
     }
-}
-
-fn program(entry: &str, dirs: &[PathBuf]) -> Option<String> {
-    let text = dirs
-        .iter()
-        .find_map(|dir| std::fs::read_to_string(dir.join(entry)).ok())?;
-    let mut in_entry = false;
-    for line in text.lines().map(str::trim) {
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-        } else if let Some(exec) = line.strip_prefix("Exec=").filter(|_| in_entry) {
-            return exec.split_whitespace().next().map(str::to_owned);
-        }
-    }
-    None
 }
 
 fn uwsm_is_running() -> bool {
@@ -283,7 +286,8 @@ mod tests {
             browser_command(
                 PAGE,
                 Some("brave-browser.desktop"),
-                &[apps.path().to_owned()]
+                &[apps.path().to_owned()],
+                || None
             ),
             ["brave", "--new-window", PAGE]
         );
@@ -301,13 +305,70 @@ mod tests {
         let dirs = [apps.path().to_owned()];
 
         assert_eq!(
-            browser_command(PAGE, Some("brave-browser.desktop"), &dirs),
+            browser_command(PAGE, Some("brave-browser.desktop"), &dirs, || None),
             ["brave", "--new-window", PAGE]
         );
         assert_eq!(
-            browser_command(PAGE, Some("omarchy-browser.desktop"), &dirs),
+            browser_command(PAGE, Some("omarchy-browser.desktop"), &dirs, || None),
             ["xdg-open", PAGE]
         );
+        assert_eq!(
+            browser_command(PAGE, Some("omarchy-browser.desktop"), &dirs, || Some(
+                "brave-browser.desktop".to_owned()
+            )),
+            ["brave", "--new-window", PAGE]
+        );
+        assert_eq!(
+            browser_command(PAGE, Some("omarchy-browser.desktop"), &dirs, || Some(
+                "omarchy-browser.desktop".to_owned()
+            )),
+            ["xdg-open", PAGE]
+        );
+    }
+
+    #[test]
+    fn omarchys_wrapper_is_recognised_by_its_file_name() {
+        let apps = applications(&[(
+            "omarchy-browser.desktop",
+            "[Desktop Entry]\nExec=/some/path/omarchy-launch-browser %U\n",
+        )]);
+
+        assert_eq!(
+            browser_command(
+                PAGE,
+                Some("omarchy-browser.desktop"),
+                &[apps.path().to_owned()],
+                || None
+            ),
+            ["xdg-open", PAGE]
+        );
+    }
+
+    #[test]
+    fn an_exec_that_isnt_plainly_the_browser_falls_back_to_xdg_open() {
+        let apps = applications(&[
+            (
+                "flatpak.desktop",
+                "[Desktop Entry]\nExec=flatpak run com.brave.Browser %U\n",
+            ),
+            (
+                "env.desktop",
+                "[Desktop Entry]\nExec=env GDK_BACKEND=x11 brave %U\n",
+            ),
+            (
+                "quoted.desktop",
+                "[Desktop Entry]\nExec=\"/opt/My Browser/brave\" %U\n",
+            ),
+        ]);
+        let dirs = [apps.path().to_owned()];
+
+        for default in ["flatpak.desktop", "env.desktop", "quoted.desktop"] {
+            assert_eq!(
+                browser_command(PAGE, Some(default), &dirs, || None),
+                ["xdg-open", PAGE],
+                "{default}"
+            );
+        }
     }
 
     #[test]
@@ -323,11 +384,11 @@ mod tests {
         let dirs = [home.path().to_owned(), system.path().to_owned()];
 
         assert_eq!(
-            browser_command(PAGE, Some("brave-browser.desktop"), &dirs),
+            browser_command(PAGE, Some("brave-browser.desktop"), &dirs, || None),
             ["/home/me/bin/brave", "--new-window", PAGE]
         );
         assert_eq!(
-            browser_command(PAGE, Some("firefox.desktop"), &dirs),
+            browser_command(PAGE, Some("firefox.desktop"), &dirs, || None),
             ["firefox", "--new-window", PAGE]
         );
     }
@@ -342,7 +403,7 @@ mod tests {
 
         for default in [None, Some("missing.desktop"), Some("broken.desktop")] {
             assert_eq!(
-                browser_command(PAGE, default, &dirs),
+                browser_command(PAGE, default, &dirs, || None),
                 ["xdg-open", PAGE],
                 "{default:?}"
             );

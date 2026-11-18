@@ -46,27 +46,40 @@ pub fn read_all(dirs: &[PathBuf]) -> Vec<DesktopEntry> {
     entries
 }
 
+/// The program the entry `name` runs, from the first of `dirs` holding it.
+/// `None` when it has no `Exec` or its program is quoted.
+pub fn exec_program(name: &str, dirs: &[PathBuf]) -> Option<String> {
+    let text = dirs
+        .iter()
+        .find_map(|dir| std::fs::read_to_string(dir.join(name)).ok())?;
+    let exec = entry_keys(&text).find_map(|(key, value)| (key == "Exec").then_some(value))?;
+    exec.split_whitespace()
+        .next()
+        .filter(|program| !program.starts_with('"'))
+        .map(str::to_owned)
+}
+
+fn entry_keys(text: &str) -> impl Iterator<Item = (&str, &str)> {
+    let mut in_entry = false;
+    text.lines().map(str::trim).filter_map(move |line| {
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            return None;
+        }
+        let (key, value) = line.split_once('=').filter(|_| in_entry)?;
+        Some((key.trim_end(), value.trim_start()))
+    })
+}
+
 fn parse(path: &Path) -> Option<DesktopEntry> {
     let text = std::fs::read_to_string(path).ok()?;
-    let mut in_entry = false;
     let mut name = None;
     let mut generic_name = None;
     let mut keywords = Vec::new();
     let mut app = false;
     let mut hidden = false;
-    for line in text.lines().map(str::trim) {
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-            continue;
-        }
-        if !in_entry {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim_start();
-        match key.trim_end() {
+    for (key, value) in entry_keys(&text) {
+        match key {
             "Type" => app = value == "Application",
             "Hidden" | "NoDisplay" => hidden |= value == "true",
             "Name" => name = Some(value.to_owned()),
