@@ -6,6 +6,7 @@
 mod harness;
 
 use std::path::Path;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use harness::{next_state, Harness};
@@ -102,99 +103,134 @@ fn when_claude_finishes_the_fast_tier_sums_it_up_and_the_whole_answer_is_notifie
     );
 }
 
-const BASH: &str = "Bash";
-const COMMAND: &str = "rm -rf build";
-
-fn permission_decision(result: Result<CallToolResult, String>) -> serde_json::Value {
-    let (failed, decision) = called(result);
-    assert!(!failed, "{decision}");
-    serde_json::from_str(&decision).unwrap()
+fn asks_permission(
+    lucyd: &Harness,
+    request: serde_json::Value,
+) -> JoinHandle<Result<CallToolResult, String>> {
+    let hand_off = lucyd.thinking.hand_off.clone();
+    std::thread::spawn(move || hand_off.call_tool_with("permission", request))
 }
 
-fn permission_request() -> serde_json::Value {
+fn run_the_tests() -> serde_json::Value {
     json!({
-        "tool_name": BASH,
-        "input": {"command": COMMAND, "description": "Remove the build folder"},
+        "tool_name": "Bash",
+        "input": {"command": "cargo test -p lucyd", "description": "Run lucyd's tests."},
         "tool_use_id": "toolu_1",
     })
 }
 
-#[test]
-fn the_permission_tool_is_all_claude_sees_and_a_yes_allows_the_request() {
-    let lucyd = Harness::start();
-    let _events = handed_off(&lucyd, &lucyd.scratch());
-    let hand_off = &lucyd.thinking.hand_off;
-    assert_eq!(hand_off.tool_names(), ["permission"]);
+fn decision(call: JoinHandle<Result<CallToolResult, String>>) -> serde_json::Value {
+    let (failed, decision) = called(call.join().unwrap());
+    assert!(!failed, "{decision}");
+    serde_json::from_str(&decision).unwrap()
+}
 
-    let decision = std::thread::scope(|scope| {
-        let asked = scope.spawn(|| hand_off.call_tool_with("permission", permission_request()));
-        assert_eq!(
-            lucyd.tts.next_sentence(),
-            "Claude wants to remove the build folder. Okay?"
-        );
-        lucyd.tts.finish_playing();
-        lucyd.say("yes");
-        permission_decision(asked.join().unwrap())
-    });
-
-    assert_eq!(decision["behavior"], "allow");
-    assert_eq!(decision["updatedInput"]["command"], COMMAND);
+fn assert_denied(decision: &serde_json::Value) {
+    assert_eq!(decision["behavior"], "deny", "{decision}");
+    assert!(
+        decision["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "{decision}"
+    );
 }
 
 #[test]
-fn a_permission_request_with_no_session_open_is_notified_at_once_and_asked_at_the_next_session() {
+fn a_permission_request_is_asked_with_claudes_description_and_the_full_input_notified() {
     let lucyd = Harness::start();
     let mut events = handed_off(&lucyd, &lucyd.scratch());
-    let hand_off = &lucyd.thinking.hand_off;
-    hand_off.next_turn();
-    lucyd.client().end_session().unwrap();
-    until_state(&mut events, State::Idle);
+    lucyd.thinking.hand_off.next_turn();
 
-    let decision = std::thread::scope(|scope| {
-        let asked = scope.spawn(|| hand_off.call_tool_with("permission", permission_request()));
-        let kept = loop {
-            let shown = lucyd
-                .notifier
-                .next_notification_of(NotificationKind::HandOff);
-            if shown.summary == "Claude is waiting for your permission" {
-                break shown;
-            }
-        };
-        assert!(kept.body.contains(BASH), "{}", kept.body);
-        assert!(kept.body.contains(COMMAND), "{}", kept.body);
-        assert!(kept.body.contains("next Session"), "{}", kept.body);
-        assert!(lucyd.tts.sentences().is_empty(), "nothing was asked aloud");
+    let call = asks_permission(&lucyd, run_the_tests());
 
-        lucyd.client().start_session().unwrap();
-        until_state(&mut events, State::Confirming);
-        assert_eq!(
-            lucyd.tts.next_sentence(),
-            "Claude wants to remove the build folder. Okay?"
-        );
-        lucyd.tts.finish_playing();
-        lucyd.say("yes");
-        permission_decision(asked.join().unwrap())
-    });
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Claude wants to run lucyd's tests. Okay?"
+    );
+    let shown = lucyd
+        .notifier
+        .next_notification_of(NotificationKind::Details);
+    assert!(
+        shown.body.contains("Bash") && shown.body.contains("cargo test -p lucyd"),
+        "{}",
+        shown.body
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("Yes.");
 
-    assert_eq!(decision["behavior"], "allow");
+    let decision = decision(call);
+    assert_eq!(decision["behavior"], "allow", "{decision}");
+    assert_eq!(
+        decision["updatedInput"],
+        json!({"command": "cargo test -p lucyd", "description": "Run lucyd's tests."})
+    );
 }
 
 #[test]
-fn anything_but_a_yes_to_a_permission_request_denies_it() {
+fn a_request_with_no_description_names_the_tool() {
     let lucyd = Harness::start();
     let _events = handed_off(&lucyd, &lucyd.scratch());
-    let hand_off = &lucyd.thinking.hand_off;
+    lucyd.thinking.hand_off.next_turn();
 
-    let decision = std::thread::scope(|scope| {
-        let asked = scope.spawn(|| hand_off.call_tool_with("permission", permission_request()));
-        lucyd.tts.next_sentence();
-        lucyd.tts.finish_playing();
-        lucyd.say("no, leave it");
-        permission_decision(asked.join().unwrap())
-    });
+    let call = asks_permission(
+        &lucyd,
+        json!({"tool_name": "mcp__linear__create_issue", "input": {"title": "Fix it"}}),
+    );
 
-    assert_eq!(decision["behavior"], "deny");
-    assert!(decision["message"].as_str().is_some_and(|m| !m.is_empty()));
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Claude wants to use linear create issue. Okay?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("no");
+    assert_denied(&decision(call));
+}
+
+#[test]
+fn a_no_denies_the_request() {
+    let lucyd = Harness::start();
+    let _events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    let call = asks_permission(&lucyd, run_the_tests());
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+
+    lucyd.say("no, don't");
+
+    assert_denied(&decision(call));
+    assert_eq!(lucyd.tts.next_sentence(), "Okay, I won't.");
+}
+
+#[test]
+fn silence_denies_the_request() {
+    let lucyd = Harness::with_config("[confirmation]\ntimeout_secs = 2\n");
+    let _events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    let call = asks_permission(&lucyd, run_the_tests());
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.barrier();
+
+    lucyd.clock.advance(Duration::from_secs(2));
+
+    assert_denied(&decision(call));
+}
+
+#[test]
+fn an_indicator_click_while_asked_denies_and_ends_the_session() {
+    let lucyd = Harness::start();
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    let call = asks_permission(&lucyd, run_the_tests());
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+
+    lucyd.client().end_session().unwrap();
+
+    assert_eq!(next_state(&mut events).state, State::Idle);
+    let unless_the_relay_was_cut_off = call.join().unwrap();
+    if let Ok(result) = unless_the_relay_was_cut_off {
+        let decision: serde_json::Value = serde_json::from_str(&text(&result)).unwrap();
+        assert_denied(&decision);
+    }
 }
 
 #[test]
@@ -323,6 +359,79 @@ fn the_state_carries_a_working_mark_while_claude_works_even_after_the_session_en
 }
 
 #[test]
+fn a_permission_request_with_no_session_open_is_notified_at_once_and_asked_at_the_next_session() {
+    let lucyd = Harness::start();
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    lucyd.client().end_session().unwrap();
+    until_state(&mut events, State::Idle);
+
+    let call = asks_permission(&lucyd, run_the_tests());
+    let kept = loop {
+        let shown = lucyd
+            .notifier
+            .next_notification_of(NotificationKind::HandOff);
+        if shown.summary == "Claude is waiting for your permission" {
+            break shown;
+        }
+    };
+    assert!(
+        kept.body.contains("Bash") && kept.body.contains("cargo test -p lucyd"),
+        "{}",
+        kept.body
+    );
+    assert!(kept.body.contains("next Session"), "{}", kept.body);
+    assert!(lucyd.tts.sentences().is_empty(), "nothing was asked aloud");
+
+    lucyd.client().start_session().unwrap();
+    until_state(&mut events, State::Confirming);
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Claude wants to run lucyd's tests. Okay?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+
+    assert_eq!(decision(call)["behavior"], "allow");
+}
+
+#[test]
+fn a_question_with_no_session_open_is_notified_at_once_and_asked_at_the_next_session() {
+    let lucyd = Harness::start();
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    lucyd.thinking.hand_off.next_turn();
+    lucyd.client().end_session().unwrap();
+    until_state(&mut events, State::Idle);
+
+    let hand_off = lucyd.thinking.hand_off.clone();
+    let call = std::thread::spawn(move || {
+        hand_off.call_tool_with("ask_user", json!({"question": "Which team, LUC or OPS?"}))
+    });
+    let kept = loop {
+        let shown = lucyd
+            .notifier
+            .next_notification_of(NotificationKind::HandOff);
+        if shown.summary == "Claude has a question" {
+            break shown;
+        }
+    };
+    assert!(kept.body.contains("next Session"), "{}", kept.body);
+
+    lucyd.client().start_session().unwrap();
+    until_state(&mut events, State::Confirming);
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Claude asks: Which team, LUC or OPS?"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("LUC");
+
+    let (failed, answer) = called(call.join().unwrap());
+    assert!(!failed, "{answer}");
+    assert!(answer.contains("LUC"), "{answer}");
+}
+
+#[test]
 fn nothing_about_the_hand_off_reaches_the_public_socket() {
     let lucyd = Harness::start();
     let folder = lucyd.scratch().join("linear-work");
@@ -330,20 +439,14 @@ fn nothing_about_the_hand_off_reaches_the_public_socket() {
     let _events = handed_off(&lucyd, &folder);
     let hand_off = &lucyd.thinking.hand_off;
     hand_off.next_turn();
-    std::thread::scope(|scope| {
-        let asked = scope.spawn(|| {
-            hand_off.call_tool_with(
-                "permission",
-                json!({"tool_name": "mcp__linear__list_issues", "input": {"team": "LUC"}}),
-            )
-        });
-        lucyd.tts.next_sentence();
-        lucyd.tts.finish_playing();
-        lucyd.say("no");
-        called(asked.join().unwrap());
-        lucyd.tts.next_sentence();
-        lucyd.tts.finish_playing();
-    });
+    let call = asks_permission(
+        &lucyd,
+        json!({"tool_name": "mcp__linear__list_issues", "input": {"team": "LUC"}}),
+    );
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    decision(call);
     hand_off.answer(CONVERSATION, ANSWER);
     lucyd.thinking.next_turn();
     lucyd.thinking.delta("Claude found three tickets.");
