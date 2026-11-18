@@ -703,7 +703,7 @@ impl Runner {
             session_id: session_id.map(|id| id.to_string()),
             building: *self.building.borrow() == Building::Working,
             looking: self.looking && session_id.is_some(),
-            working: *self.working.borrow() == Working::Yes,
+            working: *self.working.borrow() != Working::No,
         });
     }
 }

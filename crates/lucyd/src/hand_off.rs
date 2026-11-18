@@ -22,8 +22,7 @@ use crate::model_text::HAND_OFF;
 use crate::plugins::Environment;
 use crate::runner::{self, Command, When};
 use crate::session::{
-    which_to_cancel, Answer, Cancel, Expects, Question, BOTH_RUNNING, BOTH_STOPPED, BUILD_STOPPED,
-    HAND_OFF_STOPPED, WHICH_TO_CANCEL,
+    self, Answer, Expects, Question, BUILD_STOPPED, HAND_OFF_STOPPED, QUEUED_DROPPED,
 };
 use crate::sync::Locked;
 
@@ -72,6 +71,52 @@ pub enum Working {
     #[default]
     No,
     Yes,
+    YesAndQueued,
+}
+
+const BOTH_STOPPED: &str = "Okay, I've stopped them both.";
+
+const BOTH_RUNNING: &str = "Okay, I'll leave them both running.";
+
+const WHICH_TO_CANCEL: &str = "Do you mean the Plugin build, or Claude?";
+
+const ALREADY_FINISHED: &str = "Claude had already finished.";
+
+#[derive(Debug, PartialEq, Eq)]
+enum Cancel {
+    Build,
+    HandOff,
+    Both,
+    Unclear,
+}
+
+fn which_to_cancel(said: &str) -> Cancel {
+    let said = session::words(said);
+    let named = |names: &[&str]| said.iter().any(|word| names.contains(&word.as_str()));
+    let both = named(&["both", "all"]);
+    let build = both || named(&["build", "plugin"]);
+    let hand_off = both || named(&["claude", "hand", "handoff"]);
+    match (build, hand_off) {
+        (true, true) => Cancel::Both,
+        (true, false) => Cancel::Build,
+        (false, true) => Cancel::HandOff,
+        (false, false) => Cancel::Unclear,
+    }
+}
+
+enum Stopped {
+    Ended,
+    Alone,
+    AndQueued,
+}
+
+impl Stopped {
+    fn said(&self, stopped: &str) -> String {
+        match self {
+            Stopped::AndQueued => format!("{stopped} {QUEUED_DROPPED}"),
+            _ => stopped.to_owned(),
+        }
+    }
 }
 
 impl HandOffs {
@@ -130,7 +175,7 @@ impl HandOffs {
         let mut jobs = self.jobs.locked();
         if let Some(running) = &jobs.current {
             let running = running.request.clone();
-            return Self::queue(&mut jobs, &running, request, arguments);
+            return self.queue(&mut jobs, &running, request, arguments);
         }
         jobs.current = Some(self.start(request));
         drop(jobs);
@@ -142,6 +187,7 @@ impl HandOffs {
     }
 
     fn queue(
+        &self,
         jobs: &mut Jobs,
         running: &str,
         request: Request,
@@ -163,6 +209,7 @@ impl HandOffs {
             ));
         }
         jobs.queued = Some(request);
+        self.working.send_replace(Working::YesAndQueued);
         text(
             "It's queued: Claude starts on it once it has finished the one it's on. Tell the \
              user so in a few words.",
@@ -216,18 +263,28 @@ impl HandOffs {
     }
 
     pub fn cancel(&self) {
-        let current = {
-            let mut jobs = self.jobs.locked();
-            jobs.queued = None;
-            jobs.current.clone()
-        };
+        let current = self.jobs.locked().current.clone();
         if let Some(job) = current {
-            job.cancelled.notify_one();
+            self.stop(&job);
         }
+    }
+
+    fn stop(&self, job: &Arc<Job>) -> Stopped {
+        let mut jobs = self.jobs.locked();
+        if !jobs.current.as_ref().is_some_and(|c| Arc::ptr_eq(c, job)) {
+            return Stopped::Ended;
+        }
+        job.cancelled.notify_one();
+        if jobs.queued.take().is_none() {
+            return Stopped::Alone;
+        }
+        self.working.send_replace(Working::Yes);
+        Stopped::AndQueued
     }
 
     pub fn ask_which_to_cancel(self: &Arc<Self>, authoring: Arc<Authoring>) {
         let hand_offs = self.clone();
+        let asked_about = self.jobs.locked().current.clone();
         tokio::spawn(async move {
             let question = Question {
                 prompt: WHICH_TO_CANCEL.to_owned(),
@@ -236,25 +293,31 @@ impl HandOffs {
             let answer = runner::ask(&hand_offs.commands, question, None).await;
             let choice = match answer {
                 Some(Answer::Said(said)) => which_to_cancel(&said),
-                _ => Cancel::Neither,
+                _ => Cancel::Unclear,
+            };
+            let stop = || match &asked_about {
+                Some(job) => hand_offs.stop(job),
+                None => Stopped::Ended,
             };
             let said = match choice {
                 Cancel::Build => {
                     authoring.cancel();
-                    BUILD_STOPPED
+                    BUILD_STOPPED.to_owned()
                 }
-                Cancel::HandOff => {
-                    hand_offs.cancel();
-                    HAND_OFF_STOPPED
-                }
+                Cancel::HandOff => match stop() {
+                    Stopped::Ended => ALREADY_FINISHED.to_owned(),
+                    stopped => stopped.said(HAND_OFF_STOPPED),
+                },
                 Cancel::Both => {
                     authoring.cancel();
-                    hand_offs.cancel();
-                    BOTH_STOPPED
+                    match stop() {
+                        Stopped::Ended => format!("{BUILD_STOPPED} {ALREADY_FINISHED}"),
+                        stopped => stopped.said(BOTH_STOPPED),
+                    }
                 }
-                Cancel::Neither => BOTH_RUNNING,
+                Cancel::Unclear => BOTH_RUNNING.to_owned(),
             };
-            let _ = hand_offs.commands.send(Command::Say(said.to_owned()));
+            let _ = hand_offs.commands.send(Command::Say(said));
         });
     }
 
@@ -273,9 +336,11 @@ impl HandOffs {
             return;
         }
         jobs.current = jobs.queued.take().map(|next| self.start(next));
-        if jobs.current.is_none() {
-            self.working.send_replace(Working::No);
-        }
+        let working = match jobs.current {
+            Some(_) => Working::Yes,
+            None => Working::No,
+        };
+        self.working.send_replace(working);
     }
 
     async fn environment(&self) -> Vec<(OsString, OsString)> {
@@ -793,4 +858,18 @@ fn parse_env(printed: &[u8]) -> Vec<(OsString, OsString)> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_answer_to_which_one_names_the_build_claude_or_both() {
+        assert_eq!(which_to_cancel("The Plugin build."), Cancel::Build);
+        assert_eq!(which_to_cancel("claude"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("the hand-off"), Cancel::HandOff);
+        assert_eq!(which_to_cancel("both of them"), Cancel::Both);
+        assert_eq!(which_to_cancel("neither"), Cancel::Unclear);
+    }
 }

@@ -863,3 +863,61 @@ fn a_hand_off_out_of_time_drops_its_permission_request_kept_for_the_next_session
         "Claude is waiting for your permission",
     );
 }
+
+const QUEUED: &str = "check my email";
+
+fn queue_another(lucyd: &Harness) {
+    let (failed, queued) = hand_to_claude(lucyd, json!({"request": QUEUED, "queue": true}));
+    assert!(!failed, "{queued}");
+}
+
+#[test]
+fn cancel_it_says_the_queued_request_is_dropped_too() {
+    let lucyd = Harness::start();
+    let _events = handed_off(&lucyd, &lucyd.scratch());
+    let hand_off = &lucyd.thinking.hand_off;
+    hand_off.next_turn();
+    queue_another(&lucyd);
+    lucyd.barrier();
+
+    lucyd.say("cancel it");
+
+    let said = lucyd.tts.next_sentence();
+    assert!(said.starts_with(HAND_OFF_STOPPED), "{said}");
+    assert!(said.contains("queued"), "{said}");
+    lucyd.barrier();
+    hand_off.assert_no_turn();
+    assert_eq!(hand_off.opened().len(), 1);
+}
+
+#[test]
+fn which_one_answered_after_claude_finished_leaves_the_queued_hand_off_running() {
+    let lucyd = Harness::start();
+    let mut events = handed_off(&lucyd, &lucyd.scratch());
+    let hand_off = &lucyd.thinking.hand_off;
+    assert_eq!(hand_off.next_turn(), REQUEST);
+    queue_another(&lucyd);
+    lucyd.say("make a Plugin to find my photos");
+    lucyd.thinking.next_turn();
+    request_a_build(&lucyd);
+    lucyd.thinking.turn_end();
+    until_state(&mut events, State::Listening);
+    lucyd.thinking.delegate.next_turn();
+    lucyd.say("cancel it");
+    assert_eq!(
+        lucyd.tts.next_sentence(),
+        "Do you mean the Plugin build, or Claude?"
+    );
+
+    hand_off.answer(CONVERSATION, ANSWER);
+    assert_eq!(hand_off.next_turn(), QUEUED);
+    lucyd.tts.finish_playing();
+    lucyd.say("Claude");
+
+    let said = lucyd.tts.next_sentence();
+    assert!(said.contains("already finished"), "{said}");
+    assert!(hand_off
+        .call_tool_with("report_progress", json!({"text": "still going"}))
+        .is_ok());
+    assert!(lucyd.client().status().unwrap().working);
+}
