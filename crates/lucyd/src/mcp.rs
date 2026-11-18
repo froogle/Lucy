@@ -17,6 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::adapters::Relay;
 use crate::authoring::{self, Authoring, Build};
 use crate::desktop::Desktop;
+use crate::files::Search;
 use crate::hand_off::{self, HandOffs, Job};
 use crate::input;
 use crate::persona::Persona;
@@ -29,6 +30,7 @@ pub enum Caller {
     SessionModel {
         plugins: Arc<SessionTools>,
         desktop: Desktop,
+        folders: Arc<Search>,
     },
     Delegate(Weak<Build>),
     HandOff(Weak<Job>),
@@ -327,8 +329,12 @@ impl ServerHandler for Tools {
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let arguments = request.arguments.clone().unwrap_or_default();
-        let (plugins, desktop) = match self.grant()? {
-            Caller::SessionModel { plugins, desktop } => (plugins, desktop),
+        let (plugins, desktop, folders) = match self.grant()? {
+            Caller::SessionModel {
+                plugins,
+                desktop,
+                folders,
+            } => (plugins, desktop, folders),
             Caller::Delegate(build) => {
                 let build = build.upgrade().ok_or_else(revoked)?;
                 let result = build.call(&request.name, &arguments).await;
@@ -346,7 +352,7 @@ impl ServerHandler for Tools {
             "manage_plugin" => Ok(plugins.manage(&arguments).await.into()),
             "approve_plugin" => Ok(plugins.approve(&arguments).await.into()),
             "request_plugin" => Ok(self.authoring.request(&arguments).into()),
-            "hand_to_claude" => Ok(self.hand_offs.request(&arguments).into()),
+            "hand_to_claude" => Ok(self.hand_offs.request(&arguments, &folders).await.into()),
             "ask_typed" => Ok(input::ask_typed(&self.commands, &arguments).await.into()),
             name => {
                 if let Some(result) = desktop.call(name, &arguments).await {

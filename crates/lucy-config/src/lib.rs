@@ -32,8 +32,8 @@ pub struct Config {
     pub input: Input,
     pub barge_in: BargeIn,
     pub authoring: Authoring,
-    pub handoff: HandOff,
     pub screen: Screen,
+    pub handoff: HandOff,
 }
 
 impl Default for Config {
@@ -63,8 +63,8 @@ impl Default for Config {
             input: Input::default(),
             barge_in: BargeIn::default(),
             authoring: Authoring::default(),
-            handoff: HandOff::default(),
             screen: Screen::default(),
+            handoff: HandOff::default(),
         }
     }
 }
@@ -566,20 +566,6 @@ impl Default for Authoring {
     }
 }
 
-/// `[handoff]`: how a Hand-off to the user's own Claude runs.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(default)]
-pub struct HandOff {
-    /// Minutes a Hand-off may run before Lucy stops it.
-    pub budget_mins: f64,
-}
-
-impl Default for HandOff {
-    fn default() -> Self {
-        HandOff { budget_mins: 60.0 }
-    }
-}
-
 /// `[screen]`: screen access, and which screen actions need a Confirmation (ADR 0008).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -634,6 +620,25 @@ impl Default for Files {
             ]
             .map(str::to_owned)
             .to_vec(),
+        }
+    }
+}
+
+/// `[handoff]`: how a Hand-off to the user's own Claude runs.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct HandOff {
+    /// Where a folder named by name is searched for, three levels deep; `~` is the user's home.
+    pub roots: Vec<PathBuf>,
+    /// Minutes a Hand-off may run before Lucy stops it.
+    pub budget_mins: f64,
+}
+
+impl Default for HandOff {
+    fn default() -> Self {
+        HandOff {
+            roots: vec![PathBuf::from("~")],
+            budget_mins: 60.0,
         }
     }
 }

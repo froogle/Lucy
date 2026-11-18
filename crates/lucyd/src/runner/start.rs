@@ -74,9 +74,15 @@ impl Runner {
         if let Some(report) = plugin_tools.scan_report() {
             instructions = format!("{instructions}\n\n{report}");
         }
+        let folders = Arc::new(Search::new(
+            &settings.handoff.roots,
+            &self.adapters.home,
+            &settings.files.skip,
+        ));
         let (relay, token) = self.relays.issue(Caller::SessionModel {
             plugins: plugin_tools,
             desktop,
+            folders,
         });
         let provider = match &config {
             Ok(config) => config.provider(Tier::Fast),

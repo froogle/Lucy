@@ -62,10 +62,6 @@ impl Search {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "the Hand-off folder search (v0.2 ticket 03) walks three levels deep"
-    )]
     pub fn depth(self, depth: usize) -> Search {
         Search {
             depth: Some(depth),
