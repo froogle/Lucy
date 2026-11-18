@@ -40,7 +40,7 @@ use crate::status::ChangeBus;
 use crate::sync::{Locked, POISONED};
 pub use environment::Environment;
 pub use manage::{approve_plugin_tool, manage_plugin_tool, Refusal};
-use manifest::{Manifest, ScreenUse, ToolEntry};
+use manifest::{Manifest, ToolEntry};
 
 const MAX_QUESTIONS: usize = 10;
 
@@ -241,7 +241,7 @@ impl Host {
             barge_ins: watch::Sender::new(0),
             finished: Mutex::default(),
             screen,
-            looks: watch::Sender::new(0),
+            screen_uses: watch::Sender::new(0),
         });
         *self.session.locked() = Arc::downgrade(&tools);
         tools
@@ -785,7 +785,7 @@ pub struct SessionTools {
     barge_ins: watch::Sender<u64>,
     finished: Mutex<Vec<String>>,
     screen: lucy_config::Screen,
-    looks: watch::Sender<u64>,
+    screen_uses: watch::Sender<u64>,
 }
 
 impl SessionTools {
@@ -793,8 +793,8 @@ impl SessionTools {
         self.barge_ins.send_modify(|count| *count += 1);
     }
 
-    pub fn looks(&self) -> watch::Receiver<u64> {
-        self.looks.subscribe()
+    pub fn screen_uses(&self) -> watch::Receiver<u64> {
+        self.screen_uses.subscribe()
     }
 
     fn offers(&self, tool: &ToolEntry) -> bool {
@@ -919,13 +919,11 @@ impl SessionTools {
                 Err(unreadable) => return Some(mcp::error(unreadable)),
             }
         }
-        if let Some(screen) = entry.screen {
+        if entry.screen.is_some() {
             if !self.screen_allowed().await {
                 return Some(mcp::text(SCREEN_DECLINED));
             }
-            if screen == ScreenUse::Look {
-                self.looks.send_modify(|looks| *looks += 1);
-            }
+            self.screen_uses.send_modify(|uses| *uses += 1);
         }
         if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
             return Some(mcp::text(DECLINED));

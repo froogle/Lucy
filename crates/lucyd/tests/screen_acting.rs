@@ -201,3 +201,28 @@ fn a_screen_tool_that_always_confirms_still_asks_after_the_screen_yes() {
         [SCREEN_QUESTION, "Shall I click there?"]
     );
 }
+
+#[test]
+fn a_later_session_that_only_clicks_shows_the_looking_mark() {
+    let lucyd = with_hands("");
+    let mut events = session(&lucyd);
+    screen_allowed(&lucyd, &mut events);
+    lucyd.thinking.turn_end();
+    events.end_session().unwrap();
+    while next_state(&mut events).state != State::Idle {}
+    let mut events = session(&lucyd);
+
+    let click: Value = serde_json::from_str(POINT).unwrap();
+    assert_eq!(unasked(&lucyd, "click", click.clone()), click);
+
+    lucyd.thinking.turn_end();
+    let mut marked = false;
+    loop {
+        let state = next_state(&mut events);
+        marked |= state.looking && state.state == State::Thinking;
+        if state.state == State::Listening {
+            break;
+        }
+    }
+    assert!(marked, "the click never showed the looking mark");
+}
