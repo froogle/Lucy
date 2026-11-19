@@ -101,7 +101,9 @@ pub struct Provider {
     /// Turns the subscription guard off, so the CLI may bill an API key.
     #[serde(default)]
     pub allow_api_key: bool,
-    /// The CLI to run, used as given; `None` finds it on `PATH`, past a mise shim.
+    /// The CLI to run, used as given.
+    ///
+    /// `None` finds it on `PATH`, past a mise shim.
     #[serde(default)]
     pub program: Option<PathBuf>,
 }

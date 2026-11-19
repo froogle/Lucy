@@ -10,7 +10,7 @@
 - **Region:** a monitor look captures the monitor. A window look captures the window's own monitor (the one `hyprctl` names, whose scale the look already uses) and crops the window's rectangle out of it, mapping layout coordinates to buffer pixels at the monitor's scale. That shows what is drawn there, overlapping windows included, so click coordinates stay true. Any part of the window on another monitor is clipped.
 - **Scale and encode:** to the `scale` that `screenshot_for_model` passes, with `image`'s Triangle filter, then encoded as PNG. Add `image` with only its PNG feature (MIT/Apache, ADR 0003). `Screen::capture`'s signature and `Image` don't change.
 - **Remove grim:** take `grim` out of the manifest's `commands` and rewrite that `[access]` comment to say capture uses a memfd over the Wayland socket. Remove `Plugin::with_grim` and its fake `grim` from the tests. The manifest's hash changes, so the Omarchy Plugin needs approving again after the redeploy (ADR 0004).
-- **Docs:** update the screen section of `docs/agents/working-in-lucy.md` ("`grim` for capture"), and add a comment to 06 pointing here.
+- **Docs:** update the screen section of `docs/agents/working-in-lucy/plugins.md` ("`grim` for capture"), and add a comment to 06 pointing here.
 
 Spec: [v0.2](../spec.md), Screen access. ADR 0008. Fixes [06](06-look-at-the-screen.md).
 

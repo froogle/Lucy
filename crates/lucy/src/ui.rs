@@ -200,8 +200,9 @@ impl Script {
         self
     }
 
-    /// Runs `run` while a question waits for the next key, as something
-    /// outside the terminal would.
+    /// Runs `run` while a question waits for the next key.
+    ///
+    /// It stands in for something outside the terminal.
     pub fn then(mut self, run: impl FnOnce() + 'static) -> Script {
         self.0.push_back(Step::Run(Box::new(run)));
         self

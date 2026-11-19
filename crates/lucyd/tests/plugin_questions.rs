@@ -1,6 +1,8 @@
-//! A Plugin's mid-call question: one plain string field is asked aloud; a
-//! `uri` field, more than one field or Lucy's `secret` field opens the Input
-//! dialog. A secret goes to the Secret Service, never to the Plugin or model.
+//! A Plugin's mid-call question, asked aloud or in the Input dialog.
+//!
+//! One plain string field is asked aloud; a `uri` field, more than one field or
+//! Lucy's `secret` field opens the Input dialog. A secret goes to the Secret
+//! Service, never to the Plugin or model.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;

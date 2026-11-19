@@ -1,5 +1,6 @@
-//! The Omarchy Plugin acting on the screen through MCP, with a fake `Screen`:
-//! clicks, scrolls, keys and typing, at points in the last look's image.
+//! The Omarchy Plugin acting on the screen through MCP, with a fake `Screen`.
+//!
+//! Clicks, scrolls, keys and typing land at points in the last look's image.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;

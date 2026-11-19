@@ -74,7 +74,7 @@ pub struct Combo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pid(pub u32);
 
-/// The window with the keyboard focus, named by the process that owns it and its title.
+/// The window with the keyboard focus, named by its process and title.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FocusedWindow {
     pub pid: Pid,

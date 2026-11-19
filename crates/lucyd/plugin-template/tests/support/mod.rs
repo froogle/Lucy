@@ -71,8 +71,9 @@ impl Plugin {
         Plugin::launch(web, Arc::new(tempfile::tempdir().unwrap()))
     }
 
-    /// A new run of the Plugin with this one's state dir, as the next
-    /// Session would start it.
+    /// A new run of the Plugin with this one's state dir.
+    ///
+    /// It starts as the next Session would start it.
     pub fn restart(&self) -> Plugin {
         Plugin::launch(Arc::new(Recorded::new()), self.state.clone())
     }

@@ -1,6 +1,7 @@
-//! A Hand-off through the real `claude` adapter, against the fake `claude`
-//! (`fixtures/claude/fake-claude`) and a fake login shell. The Session's own
-//! model is the harness's scripted one.
+//! A Hand-off through the real `claude` adapter and the fake `claude`.
+//!
+//! The fake is `fixtures/claude/fake-claude`, with a fake login shell. The
+//! Session's own model is the harness's scripted one.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;

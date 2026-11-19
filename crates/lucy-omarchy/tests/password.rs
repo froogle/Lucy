@@ -1,6 +1,8 @@
 //! The Omarchy Plugin's password check on `type`, through MCP with a fake
-//! `Screen`: it refuses to type into a password field, and types when it
-//! can't tell what has the focus, logging that the check couldn't run.
+//! `Screen`.
+//!
+//! It refuses to type into a password field, and types when it can't tell what
+//! has the focus, logging that the check couldn't run.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod support;

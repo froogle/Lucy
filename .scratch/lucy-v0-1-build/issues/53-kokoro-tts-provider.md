@@ -76,7 +76,7 @@ The user is happy with Kokoro's extra 0.15–0.7 s before a sentence, so the lat
 
 ### 2026-11-19: built on `ticket-53-kokoro`, not merged; hand tests below
 
-**What was built** (design in ADR 0013, operating notes under "Real Kokoro" in `docs/agents/working-in-lucy.md`):
+**What was built** (design in ADR 0013, operating notes under "Real Kokoro" in `docs/agents/working-in-lucy/providers.md`):
 
 - `tts::Engine` is the swappable seam: start in a voice, turn a sentence into samples. `tts::Engines` holds one per `TtsKind` and owns everything shared once: playback, levels, ducking and the echo reference. `local_server::LocalServer` supervises any engine that runs as a localhost server (find on first use, free loopback port, restart on exit, look again next Session if not found). Piper and Kokoro each supply only a small `local_server::Server`.
 - Kokoro: Lucy's own `server.py` (embedded in lucyd) runs in `$XDG_DATA_HOME/lucy/kokoro/venv` with `PYTHONPATH` cleared. The fp16 model and voices are fetched on first use, sha256-pinned.

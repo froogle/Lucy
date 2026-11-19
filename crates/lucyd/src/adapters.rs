@@ -186,10 +186,11 @@ pub trait Thinking: Send + Sync {
         Box::new(InertSessionModel::new(events))
     }
 
-    /// Starts a Hand-off: the user's own CLI, with their own settings and
-    /// MCP servers plus `relay`, working in `hand_off.folder` with
-    /// `hand_off.env`. It is not sandboxed. Whatever its settings don't
-    /// allow goes to `relay`'s `PERMISSION_TOOL`. Its conversation is kept.
+    /// Starts a Hand-off: the user's own CLI, unsandboxed, in `hand_off.folder`.
+    ///
+    /// It runs with `hand_off.env` and the user's own settings and MCP
+    /// servers, plus `relay`. Whatever its settings don't allow goes to
+    /// `relay`'s `PERMISSION_TOOL`. Its conversation is kept.
     /// A Provider that can't take a Hand-off sends `Unavailable`.
     fn open_hand_off(
         &self,
@@ -238,8 +239,7 @@ pub struct HandOff {
     pub resume: Option<String>,
 }
 
-/// The tool on a Hand-off's relay that its CLI asks before doing anything
-/// the user's settings don't allow.
+/// The Hand-off relay's tool for permission the user's settings don't give.
 pub const PERMISSION_TOOL: &str = "permission";
 
 pub(crate) struct Role {

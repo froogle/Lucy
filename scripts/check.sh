@@ -12,4 +12,5 @@ scripts/check-glossary-terms.sh
 scripts/check-lint-allows.sh
 scripts/check-test-sleeps.sh
 scripts/check-comments.sh
+scripts/check-doc-summaries.sh
 cargo deny check licenses

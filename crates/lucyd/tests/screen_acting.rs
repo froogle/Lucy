@@ -1,6 +1,8 @@
-//! Acting on the screen (ADR 0008): the first screen tool call after lucyd
-//! starts, whatever its kind, asks the one spoken question; after a yes every
-//! click, key, typing and scroll reaches the Plugin unasked.
+//! Acting on the screen (ADR 0008), asked about once until lucyd restarts.
+//!
+//! The first screen tool call after lucyd starts, whatever its kind, asks the
+//! one spoken question; after a yes every click, key, typing and scroll reaches
+//! the Plugin unasked.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;

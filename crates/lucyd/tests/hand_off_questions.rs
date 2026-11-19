@@ -1,7 +1,9 @@
-//! Claude's questions during a Hand-off: `ask_user` is spoken once nobody is
-//! speaking, `ask_typed` opens the Input dialog, and `report_progress` is only
-//! shown. The scripted Hand-off calls them through its real relay; each answer
-//! comes back as the tool's result, and Claude carries on.
+//! Claude's questions during a Hand-off, answered as the tool's result.
+//!
+//! `ask_user` is spoken once nobody is speaking, `ask_typed` opens the Input
+//! dialog, and `report_progress` is only shown. The scripted Hand-off calls
+//! them through its real relay; each answer comes back as the tool's result,
+//! and Claude carries on.
 #![expect(clippy::unwrap_used, reason = "test helpers unwrap")]
 
 mod harness;
