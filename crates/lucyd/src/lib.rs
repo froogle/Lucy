@@ -13,8 +13,10 @@ mod files;
 mod hand_off;
 mod input;
 mod ipc;
+pub mod kokoro;
 pub mod launcher;
 mod limits;
+pub mod local_server;
 mod mcp;
 pub mod model_text;
 mod notifications;
@@ -31,6 +33,7 @@ mod status;
 pub mod superwhisper;
 mod sync;
 mod system_status;
+pub mod tts;
 mod wake;
 pub mod whisper;
 

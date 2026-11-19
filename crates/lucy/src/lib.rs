@@ -8,6 +8,7 @@
 mod credentials;
 mod devices;
 pub mod input;
+mod kokoro;
 pub mod menu;
 pub mod panel;
 mod piper;
@@ -39,6 +40,8 @@ pub struct Env {
     pub bin: PathBuf,
     /// Where to read the distro from, for installing Piper.
     pub os_release: PathBuf,
+    /// Where Kokoro is installed: its venv, model and voices.
+    pub kokoro: PathBuf,
 }
 
 impl Env {
@@ -53,6 +56,7 @@ impl Env {
             omarchy: config.join("omarchy"),
             bin: here.parent().unwrap_or(Path::new("/")).to_owned(),
             os_release: os_release.to_owned(),
+            kokoro: lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share").join("lucy/kokoro"),
         }
     }
 

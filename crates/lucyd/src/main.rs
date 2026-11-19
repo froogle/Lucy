@@ -5,7 +5,11 @@ use std::sync::Arc;
 
 use lucyd::adapters::Adapters;
 use lucyd::audio::{self, Cpal, EchoCanceller, LiveKit, Silero, Sonora, WakeWord};
+use lucyd::kokoro::Kokoro;
+use lucyd::local_server::LocalServer;
+use lucyd::piper::Piper;
 use lucyd::superwhisper::Superwhisper;
+use lucyd::tts::Engines;
 use lucyd::whisper::Whisper;
 
 fn main() -> ExitCode {
@@ -38,17 +42,16 @@ fn main() -> ExitCode {
         claude: Arc::new(lucyd::claude::Claude::new("claude".into(), work.clone())),
         codex: Arc::new(lucyd::codex::Codex::new("codex".into(), work)),
     });
-    let piper = lucyd::piper::Piper::start(
-        None,
-        lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share")
-            .join("lucy")
-            .join("voices"),
-        &startup_config.piper.voice,
+    let data = lucy_config::xdg_dir("XDG_DATA_HOME", ".local/share").join("lucy");
+    let tts = Engines::new(
+        Arc::new(LocalServer::new(Piper::new(data.join("voices")))),
+        Arc::new(LocalServer::new(Kokoro::new(data.join("kokoro")))),
     );
-    let echo = piper
+    tts.start(&startup_config.voice());
+    let echo = tts
         .take_reference()
         .map(|played| Box::new(Sonora::new(played)) as Box<dyn EchoCanceller>);
-    adapters.tts = Box::new(piper);
+    adapters.tts = Box::new(tts);
     adapters.notifier =
         std::sync::Arc::new(lucyd::notify_send::NotifySend::new("notify-send".into()));
     adapters.launcher = std::sync::Arc::new(lucyd::launcher::SystemLauncher);

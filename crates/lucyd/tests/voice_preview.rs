@@ -9,7 +9,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use harness::{next_state, Harness, Queued, FAKE_TTS_FAILURE};
-use lucy_ipc::{error_code, Event, State, Topic};
+use lucy_config::Voice;
+use lucy_ipc::{error_code, Event, State, Topic, TtsKind};
 use lucyd::adapters::Sound;
 
 fn preview(lucyd: &Harness, text: &str) -> JoinHandle<Result<(), lucy_ipc::Error>> {
@@ -97,20 +98,51 @@ fn a_second_voice_preview_is_refused_as_busy_while_one_plays() {
 fn a_voice_preview_can_speak_in_a_voice_that_is_not_running() {
     let lucyd = Harness::start();
     let mut client = lucyd.client();
-    let previewed =
-        std::thread::spawn(move || client.voice_preview_in("hello", Some("en_GB-alba-medium")));
+    let previewed = std::thread::spawn(move || {
+        client.voice_preview_in("hello", TtsKind::Piper, "en_GB-alba-medium")
+    });
 
     assert_eq!(lucyd.tts.next_sentence(), "hello");
-    assert_eq!(lucyd.tts.voice().as_deref(), Some("en_GB-alba-medium"));
+    assert_eq!(lucyd.tts.voice(), Some(piper("en_GB-alba-medium")));
     lucyd.tts.finish_playing();
     previewed.join().unwrap().unwrap();
 
     lucyd.client().start_session().unwrap();
     assert_eq!(
-        lucyd.tts.voice().as_deref(),
-        Some("en_GB-cori-medium"),
+        lucyd.tts.voice(),
+        Some(piper("en_GB-cori-medium")),
         "a Session speaks in the configured voice"
     );
+    lucyd.client().end_session().unwrap();
+}
+
+fn piper(name: &str) -> Voice {
+    Voice {
+        kind: lucy_config::TtsKind::Piper,
+        name: name.to_owned(),
+    }
+}
+
+#[test]
+fn a_voice_preview_can_speak_through_kokoro_while_lucy_still_speaks_through_piper() {
+    let lucyd = Harness::start();
+    let mut client = lucyd.client();
+    let previewed =
+        std::thread::spawn(move || client.voice_preview_in("hello", TtsKind::Kokoro, "bm_george"));
+
+    assert_eq!(lucyd.tts.next_sentence(), "hello");
+    assert_eq!(
+        lucyd.tts.voice(),
+        Some(Voice {
+            kind: lucy_config::TtsKind::Kokoro,
+            name: "bm_george".to_owned(),
+        })
+    );
+    lucyd.tts.finish_playing();
+    previewed.join().unwrap().unwrap();
+
+    lucyd.client().start_session().unwrap();
+    assert_eq!(lucyd.tts.voice(), Some(piper("en_GB-cori-medium")));
     lucyd.client().end_session().unwrap();
 }
 
@@ -125,12 +157,12 @@ fn a_voice_picked_while_lucyd_runs_is_spoken_in_from_the_next_session_and_previe
     .unwrap();
 
     lucyd.client().start_session().unwrap();
-    assert_eq!(lucyd.tts.voice().as_deref(), Some("en_GB-alba-medium"));
+    assert_eq!(lucyd.tts.voice(), Some(piper("en_GB-alba-medium")));
     lucyd.client().end_session().unwrap();
 
     let previewed = preview(&lucyd, "hello");
     assert_eq!(lucyd.tts.next_sentence(), "hello");
-    assert_eq!(lucyd.tts.voice().as_deref(), Some("en_GB-alba-medium"));
+    assert_eq!(lucyd.tts.voice(), Some(piper("en_GB-alba-medium")));
     lucyd.tts.finish_playing();
     previewed.join().unwrap().unwrap();
 }

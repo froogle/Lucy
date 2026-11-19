@@ -185,6 +185,7 @@ impl Home {
                 .unwrap()
                 .to_owned(),
             os_release: "/etc/os-release".into(),
+            kokoro: self.dir.path().join("data/lucy/kokoro"),
         }
     }
 

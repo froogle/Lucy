@@ -40,8 +40,12 @@ pub enum Key {
     Stt,
     /// Whisper's model; unset, lucyd sizes it to the computer.
     WhisperModel,
+    /// The TTS Provider.
+    Tts,
     /// Piper's voice.
-    Voice,
+    PiperVoice,
+    /// Kokoro's voice.
+    KokoroVoice,
     Mic,
     Speaker,
 }
@@ -54,7 +58,9 @@ impl Key {
             | Key::ProviderModel(_)
             | Key::Tier(_)
             | Key::Stt
-            | Key::Voice
+            | Key::Tts
+            | Key::PiperVoice
+            | Key::KokoroVoice
             | Key::Mic
             | Key::Speaker => Applies::NextSession,
         }
@@ -67,7 +73,9 @@ impl Key {
             Key::Tier(tier) => vec!["tiers".into(), tier.to_string()],
             Key::Stt => vec!["stt".into(), "kind".into()],
             Key::WhisperModel => vec!["whisper".into(), "model".into()],
-            Key::Voice => vec!["piper".into(), "voice".into()],
+            Key::Tts => vec!["tts".into(), "kind".into()],
+            Key::PiperVoice => vec!["piper".into(), "voice".into()],
+            Key::KokoroVoice => vec!["kokoro".into(), "voice".into()],
             Key::Mic => vec!["audio".into(), "mic".into()],
             Key::Speaker => vec!["audio".into(), "speaker".into()],
         }
@@ -92,7 +100,9 @@ impl FromStr for Key {
             ["tiers", "advanced"] => Key::Tier(Tier::Advanced),
             ["stt", "kind"] => Key::Stt,
             ["whisper", "model"] => Key::WhisperModel,
-            ["piper", "voice"] => Key::Voice,
+            ["tts", "kind"] => Key::Tts,
+            ["piper", "voice"] => Key::PiperVoice,
+            ["kokoro", "voice"] => Key::KokoroVoice,
             ["audio", "mic"] => Key::Mic,
             ["audio", "speaker"] => Key::Speaker,
             _ => return Err(format!("lucy doesn't set {name}; edit config.toml for it")),

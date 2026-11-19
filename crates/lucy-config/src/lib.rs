@@ -27,7 +27,9 @@ pub struct Config {
     pub endpointing: Endpointing,
     pub stt: Stt,
     pub whisper: Whisper,
+    pub tts: Tts,
     pub piper: Piper,
+    pub kokoro: Kokoro,
     pub wake_word: WakeWord,
     pub confirmation: Confirmation,
     pub input: Input,
@@ -58,7 +60,9 @@ impl Default for Config {
             endpointing: Endpointing::default(),
             stt: Stt::default(),
             whisper: Whisper::default(),
+            tts: Tts::default(),
             piper: Piper::default(),
+            kokoro: Kokoro::default(),
             wake_word: WakeWord::default(),
             confirmation: Confirmation::default(),
             input: Input::default(),
@@ -432,7 +436,59 @@ pub struct Whisper {
     pub model: Option<String>,
 }
 
-/// `[piper]`: the Piper TTS Provider. Read when lucyd starts.
+/// `[tts]`: which TTS Provider Lucy speaks through. Read at each Session.
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Tts {
+    pub kind: TtsKind,
+}
+
+/// A TTS Provider.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TtsKind {
+    /// Piper, set up by `[piper]`.
+    #[default]
+    Piper,
+    /// Kokoro, set up by `[kokoro]`.
+    Kokoro,
+}
+
+impl TtsKind {
+    /// What `config.toml` calls it.
+    pub fn config_name(self) -> String {
+        config_name(self)
+    }
+}
+
+/// A voice of one TTS Provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Voice {
+    pub kind: TtsKind,
+    /// The voice's name in that Provider, such as `bf_emma` in Kokoro.
+    pub name: String,
+}
+
+impl Config {
+    /// The voice Lucy speaks in: the chosen TTS Provider's own voice.
+    pub fn voice(&self) -> Voice {
+        self.voice_of(self.tts.kind)
+    }
+
+    /// The voice configured for the TTS Provider `kind`.
+    pub fn voice_of(&self, kind: TtsKind) -> Voice {
+        let name = match kind {
+            TtsKind::Piper => &self.piper.voice,
+            TtsKind::Kokoro => &self.kokoro.voice,
+        };
+        Voice {
+            kind,
+            name: name.clone(),
+        }
+    }
+}
+
+/// `[piper]`: the Piper TTS Provider. Read at each Session.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Piper {
@@ -445,6 +501,22 @@ impl Default for Piper {
     fn default() -> Self {
         Piper {
             voice: "en_GB-cori-medium".to_owned(),
+        }
+    }
+}
+
+/// `[kokoro]`: the Kokoro TTS Provider.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Kokoro {
+    /// The Kokoro voice Lucy speaks in, such as `bf_emma`.
+    pub voice: String,
+}
+
+impl Default for Kokoro {
+    fn default() -> Self {
+        Kokoro {
+            voice: "bf_emma".to_owned(),
         }
     }
 }
@@ -1004,6 +1076,8 @@ mod tests {
         assert_eq!(Kind::Codex.config_name(), "codex");
         assert_eq!(SttKind::Whisper.config_name(), "whisper");
         assert_eq!(SttKind::Superwhisper.config_name(), "superwhisper");
+        assert_eq!(TtsKind::Piper.config_name(), "piper");
+        assert_eq!(TtsKind::Kokoro.config_name(), "kokoro");
     }
 
     #[test]
@@ -1050,6 +1124,38 @@ mod tests {
         let config = parse("[piper]\nvoice = \"en_GB-alba-medium\"\n");
 
         assert_eq!(config.piper.voice, "en_GB-alba-medium");
+    }
+
+    #[test]
+    fn lucy_speaks_through_piper_unless_config_chooses_kokoro() {
+        let piper = Voice {
+            kind: TtsKind::Piper,
+            name: "en_GB-cori-medium".to_owned(),
+        };
+        assert_eq!(Config::default().voice(), piper);
+
+        let config = parse("[tts]\nkind = \"kokoro\"\n");
+
+        assert_eq!(
+            config.voice(),
+            Voice {
+                kind: TtsKind::Kokoro,
+                name: "bf_emma".to_owned(),
+            }
+        );
+        let config = parse("[tts]\nkind = \"kokoro\"\n[kokoro]\nvoice = \"bm_george\"\n");
+        assert_eq!(config.voice().name, "bm_george");
+        let config = parse("[tts]\nkind = \"piper\"\n[kokoro]\nvoice = \"bm_george\"\n");
+        assert_eq!(config.voice(), piper);
+    }
+
+    #[test]
+    fn a_tts_kind_lucy_has_no_engine_for_is_a_config_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[tts]\nkind = \"espeak\"\n").unwrap();
+
+        assert!(load(&path).is_err());
     }
 
     #[test]

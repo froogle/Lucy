@@ -216,7 +216,7 @@ fn declining_piper_means_text_only_replies_and_no_voice_to_pick() {
     let home = Home::with_lucyd();
     configured(&home);
 
-    let tui = home.tui(Open::Lucy, leave(open(VOICE).enter().typed("n")));
+    let tui = home.tui(Open::Lucy, leave(open(VOICE).enter().enter().typed("n")));
 
     assert!(tui.shown.contains("Install Piper now?"), "{}", tui.shown);
     assert!(tui.shown.contains("as text"), "{}", tui.shown);
@@ -237,7 +237,7 @@ fn piper_is_installed_after_a_yes_with_uv_then_lucyd_restarts_to_use_it() {
         ..home.env()
     };
 
-    let install_and_restart = Script::new().enter().typed("yy");
+    let install_and_restart = Script::new().enter().enter().typed("yy");
     let voice_row = Script::new().press(KeyCode::Up);
     let keys = open(VOICE).chain(install_and_restart).chain(voice_row);
     let store = support::FakeStore::default();
@@ -265,7 +265,7 @@ fn a_non_commercial_voice_shows_its_licence_and_is_kept_after_its_preview() {
     home.fake("python3", "exit 0");
     configured(&home);
 
-    let third_voice = Script::new().enter().down(2).enter();
+    let third_voice = Script::new().enter().enter().down(2).enter();
     let despite_licence = Script::new().typed("y");
     let keep_it = Script::new().enter();
     let keys = open(VOICE)
@@ -282,6 +282,108 @@ fn a_non_commercial_voice_shows_its_licence_and_is_kept_after_its_preview() {
     );
     assert!(
         tui.shown.contains("Applies at the next Session."),
+        "{}",
+        tui.shown
+    );
+}
+
+fn piper_or_kokoro(kokoro: bool) -> Script {
+    match kokoro {
+        true => Script::new().enter().down(1).enter(),
+        false => Script::new().enter().enter(),
+    }
+}
+
+#[test]
+fn kokoro_is_installed_into_lucys_own_venv_with_uv_then_previewed_and_kept() {
+    let home = Home::with_lucyd();
+    home.fake(
+        "uv",
+        r#"[ "$1" = pip ] && /bin/mkdir -p "${4%/*}" && printf '#!/bin/sh\n' > "$4" && /bin/chmod +x "$4"
+exit 0"#,
+    );
+    configured(&home);
+
+    let install = Script::new().typed("y");
+    let first_voice_kept = Script::new().enter().enter();
+    let keys = open(VOICE)
+        .chain(piper_or_kokoro(true))
+        .chain(install)
+        .chain(first_voice_kept);
+    let tui = home.tui(Open::Lucy, leave(keys));
+
+    let venv = home.env().kokoro.join("venv");
+    assert_eq!(
+        home.calls("uv"),
+        [
+            format!("venv --clear --python 3.13 {}", venv.display()),
+            format!(
+                "pip install --python {}/bin/python kokoro-onnx==0.6.1",
+                venv.display()
+            ),
+        ]
+    );
+    assert!(tui.shown.contains("about 360 MB"), "{}", tui.shown);
+    assert!(tui.shown.contains("Kokoro is installed."), "{}", tui.shown);
+    assert!(tui.shown.contains("Keep this voice?"), "{}", tui.shown);
+    let config = lucy_config::load(&home.config_path()).unwrap();
+    assert_eq!(config.tts.kind, lucy_config::TtsKind::Kokoro);
+    assert_eq!(config.kokoro.voice, "bf_emma");
+    assert!(
+        tui.shown.contains("Voice: bf_emma (Kokoro)"),
+        "{}",
+        tui.shown
+    );
+    assert!(
+        tui.shown.contains("Applies at the next Session."),
+        "{}",
+        tui.shown
+    );
+}
+
+#[test]
+fn declining_to_install_kokoro_keeps_lucy_speaking_as_she_does() {
+    let home = Home::with_lucyd();
+    home.fake("uv", "exit 0");
+    configured(&home);
+
+    let keys = open(VOICE).chain(piper_or_kokoro(true)).typed("n");
+    let tui = home.tui(Open::Lucy, leave(keys));
+
+    assert!(home.calls("uv").is_empty());
+    assert!(
+        tui.shown.contains("Lucy keeps speaking as she does now."),
+        "{}",
+        tui.shown
+    );
+    assert!(!tui.shown.contains("bf_emma"), "{}", tui.shown);
+    let config = lucy_config::load(&home.config_path()).unwrap();
+    assert_eq!(config.tts.kind, lucy_config::TtsKind::Piper);
+}
+
+#[test]
+fn switching_back_from_kokoro_to_piper_speaks_through_piper_again() {
+    let home = Home::with_lucyd();
+    home.fake("python3", "exit 0");
+    configured(&home);
+    lucy_config::set(&home.config_path(), &["tts", "kind"], "kokoro").unwrap();
+    lucy_config::set(&home.config_path(), &["kokoro", "voice"], "bm_george").unwrap();
+
+    let first_voice_kept = Script::new().enter().enter();
+    let keys = open(VOICE)
+        .chain(piper_or_kokoro(false))
+        .chain(first_voice_kept);
+    let tui = home.tui(Open::Lucy, leave(keys));
+
+    let config = lucy_config::load(&home.config_path()).unwrap();
+    assert_eq!(config.tts.kind, lucy_config::TtsKind::Piper);
+    assert_eq!(config.piper.voice, "en_GB-cori-medium");
+    assert_eq!(
+        config.kokoro.voice, "bm_george",
+        "Kokoro's voice is kept for later"
+    );
+    assert!(
+        tui.shown.contains("Voice: en_GB-cori-medium (Piper)"),
         "{}",
         tui.shown
     );

@@ -74,3 +74,51 @@ fn when_tts_fails_the_reply_becomes_notification_text_and_the_session_continues(
     events.end_session().unwrap();
     lucyd.assert_nothing_private_on_bus();
 }
+
+const KOKORO: &str = "[tts]\nkind = \"kokoro\"\n[kokoro]\nvoice = \"bm_george\"\n";
+
+#[test]
+fn once_config_chooses_kokoro_a_session_speaks_through_it_in_its_voice() {
+    let lucyd = Harness::with_config(KOKORO);
+
+    lucyd.client().start_session().unwrap();
+
+    assert_eq!(
+        lucyd.tts.voice(),
+        Some(lucy_config::Voice {
+            kind: lucy_config::TtsKind::Kokoro,
+            name: "bm_george".to_owned(),
+        })
+    );
+    lucyd.client().end_session().unwrap();
+}
+
+#[test]
+fn when_kokoro_fails_the_reply_becomes_notification_text_and_the_session_continues() {
+    let lucyd = Harness::with_config(KOKORO);
+    let _keeps_notifications_quiet = lucyd.indicator("lucy-indicator");
+    let mut events = lucyd.state_client();
+    events.start_session().unwrap();
+    next_state(&mut events);
+    assert_eq!(
+        lucyd.tts.voice().map(|voice| voice.kind),
+        Some(lucy_config::TtsKind::Kokoro)
+    );
+    lucyd.tts.fail();
+
+    lucyd.say("what time is it");
+    lucyd.thinking.next_turn();
+    lucyd.thinking.delta("It's three o'clock.");
+    lucyd.thinking.turn_end();
+
+    assert_eq!(
+        lucyd.notifier.next_notification().body,
+        "It's three o'clock."
+    );
+    while next_state(&mut events).state != State::Listening {}
+
+    lucyd.say("thanks");
+    assert_eq!(lucyd.thinking.next_turn(), "thanks");
+    events.end_session().unwrap();
+    lucyd.assert_nothing_private_on_bus();
+}

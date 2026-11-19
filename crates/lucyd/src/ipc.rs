@@ -242,8 +242,12 @@ impl Connection {
                 Ok(json!({}))
             }
             "test.voice_preview" => {
-                let VoicePreview { text, voice } = parse_params(params)?;
-                self.voice_preview(text, voice).await?;
+                let VoicePreview { text, kind, voice } = parse_params(params)?;
+                let kind = kind.map(|kind| match kind {
+                    lucy_ipc::TtsKind::Piper => lucy_config::TtsKind::Piper,
+                    lucy_ipc::TtsKind::Kokoro => lucy_config::TtsKind::Kokoro,
+                });
+                self.voice_preview(text, kind, voice).await?;
                 Ok(json!({}))
             }
             "test.mic_level" => {
@@ -299,7 +303,12 @@ impl Connection {
         answer.await.map_err(|_| gone())
     }
 
-    async fn voice_preview(&self, text: String, voice: Option<String>) -> Result<(), RpcError> {
+    async fn voice_preview(
+        &self,
+        text: String,
+        kind: Option<lucy_config::TtsKind>,
+        voice: Option<String>,
+    ) -> Result<(), RpcError> {
         if text.trim().is_empty() {
             return Err(RpcError::new(
                 error_code::INVALID_PARAMS,
@@ -307,7 +316,14 @@ impl Connection {
             ));
         }
         let outcome = self
-            .ask(|reply| Command::VoicePreview(runner::VoicePreview { text, voice, reply }))
+            .ask(|reply| {
+                Command::VoicePreview(runner::VoicePreview {
+                    text,
+                    kind,
+                    voice,
+                    reply,
+                })
+            })
             .await?;
         outcome.map_err(|e| match e {
             PreviewError::SessionOpen => RpcError::new(

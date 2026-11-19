@@ -418,7 +418,7 @@ pub struct RevokeApproval {
 }
 
 /// Params of `test.voice_preview`: Lucy speaks `text` outside any Session.
-/// She uses her running voice on the configured speaker, between the Start
+/// She uses her configured voice on the configured speaker, between the Start
 /// and Closing sounds. It replies once playback has finished. Refused while a
 /// Session is open or another Voice preview plays; a Session that opens
 /// cuts it short.
@@ -426,10 +426,22 @@ pub struct RevokeApproval {
 pub struct VoicePreview {
     /// The sentence to say. Not empty.
     pub text: String,
-    /// A Piper voice to say it in, such as `en_GB-cori-medium`. It replaces
-    /// the running one. lucyd downloads it first if it must.
+    /// The TTS Provider to say it through. Unset means the configured one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<TtsKind>,
+    /// A voice of that Provider to say it in, such as `en_GB-cori-medium`
+    /// in Piper or `bf_emma` in Kokoro. Unset means the one configured for
+    /// that Provider. lucyd fetches it first if it must.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
+}
+
+/// A TTS Provider, as `[tts] kind` names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TtsKind {
+    Piper,
+    Kokoro,
 }
 
 /// Result of `test.mic_level`. lucyd first switches to the microphone

@@ -1273,7 +1273,7 @@ pub struct FakeTts {
     ducks: Arc<Mutex<Vec<bool>>>,
     events: Arc<Mutex<Option<mpsc::UnboundedSender<SpeakerEvent>>>>,
     device: Arc<Mutex<Option<String>>>,
-    voice: Arc<Mutex<Option<String>>>,
+    voice: Arc<Mutex<Option<lucy_config::Voice>>>,
 }
 
 impl FakeTts {
@@ -1294,7 +1294,7 @@ impl FakeTts {
         }
     }
 
-    pub fn voice(&self) -> Option<String> {
+    pub fn voice(&self) -> Option<lucy_config::Voice> {
         self.voice.lock().unwrap().clone()
     }
 
@@ -1353,12 +1353,12 @@ impl Tts for FakeTts {
     fn open(
         &self,
         speaker: &str,
-        voice: &str,
+        voice: &lucy_config::Voice,
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker> {
         *self.events.lock().unwrap() = Some(events);
         *self.device.lock().unwrap() = Some(speaker.to_owned());
-        *self.voice.lock().unwrap() = Some(voice.to_owned());
+        *self.voice.lock().unwrap() = Some(voice.clone());
         Box::new(FakeSpeaker { tts: self.clone() })
     }
 }

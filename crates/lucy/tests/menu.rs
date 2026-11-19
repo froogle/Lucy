@@ -152,7 +152,7 @@ const FAST_TIER_CLI_AND_MODEL: usize = 3;
 fn every_suggestion() -> Script {
     let thinking_each_tier = 7;
     let speech_whisper_and_restart = 6;
-    let voice_heard_and_kept = 4;
+    let voice_engine_heard_and_kept = 5;
     let mic_and_speaker = 7;
     let wake_word_test = 2;
     let plugins_next = 1;
@@ -161,7 +161,7 @@ fn every_suggestion() -> Script {
     Script::new()
         .enters(thinking_each_tier)
         .enters(speech_whisper_and_restart)
-        .enters(voice_heard_and_kept)
+        .enters(voice_engine_heard_and_kept)
         .enters(mic_and_speaker)
         .enters(wake_word_test)
         .enters(plugins_next)
@@ -218,7 +218,16 @@ fn the_walk_writes_only_the_settings_it_shows() {
     let config: toml_edit::DocumentMut = read(&home.config_path()).parse().unwrap();
     for (table, _) in config.iter() {
         assert!(
-            ["providers", "tiers", "stt", "whisper", "piper", "audio"].contains(&table),
+            [
+                "providers",
+                "tiers",
+                "stt",
+                "whisper",
+                "tts",
+                "piper",
+                "audio"
+            ]
+            .contains(&table),
             "the walk wrote [{table}], which is file-only"
         );
     }

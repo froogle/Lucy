@@ -1,5 +1,5 @@
 //! The seams between the Session and the outside world. Real adapters
-//! (microphone, Whisper, `claude`, Piper) and the harness fakes both sit
+//! (microphone, Whisper, `claude`, Piper, Kokoro) and the harness fakes both sit
 //! behind these.
 //!
 //! An adapter keeps the sender it was handed alive for as long as the handle
@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 pub use lucy_config::credentials::CredentialStore;
-use lucy_config::Provider;
+use lucy_config::{Provider, Voice};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 
@@ -265,9 +265,10 @@ pub trait SessionModel: Send {
     fn interrupt(&mut self);
 }
 
-/// A TTS Provider together with playback.
+/// The TTS Providers together with playback.
 pub trait Tts: Send + Sync {
-    /// Opens playback on `speaker` in `voice`, for a new Session or a Voice preview.
+    /// Opens playback on `speaker` in `voice`, through `voice`'s Provider,
+    /// for a new Session or a Voice preview.
     /// `speaker` is `"default"` or a pinned node name. A voice that isn't
     /// there yet is fetched first. Each sentence sends one `Played` or
     /// `Failed` on `events`, in order, and `Level` about 30 times a second
@@ -276,7 +277,7 @@ pub trait Tts: Send + Sync {
     fn open(
         &self,
         speaker: &str,
-        voice: &str,
+        voice: &Voice,
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker>;
 }
@@ -557,7 +558,7 @@ impl Tts for Inert {
     fn open(
         &self,
         _speaker: &str,
-        _voice: &str,
+        _voice: &Voice,
         events: mpsc::UnboundedSender<SpeakerEvent>,
     ) -> Box<dyn Speaker> {
         Box::new(InertSpeaker { events })

@@ -26,7 +26,7 @@ fn set(key: Key, value: &str) -> Change {
 fn a_change_is_written_with_every_comment_kept() {
     let (_dir, path) = config(COMMENTED);
 
-    settings::write(&path, &[set(Key::Voice, "en_GB-cori-high")]).unwrap();
+    settings::write(&path, &[set(Key::PiperVoice, "en_GB-cori-high")]).unwrap();
 
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("# My Lucy, tuned by hand."), "{text}");
@@ -45,7 +45,9 @@ fn providers_tiers_speech_voice_and_devices_apply_at_the_next_session() {
         set(Key::ProviderModel("codex-fast".into()), "gpt-5"),
         set(Key::Tier(Tier::Fast), "codex-fast"),
         set(Key::Stt, "superwhisper"),
-        set(Key::Voice, "en_GB-cori-high"),
+        set(Key::PiperVoice, "en_GB-cori-high"),
+        set(Key::Tts, "kokoro"),
+        set(Key::KokoroVoice, "bm_george"),
         set(Key::Mic, "alsa_input.usb-Yeti"),
         set(Key::Speaker, "alsa_output.hdmi"),
     ];

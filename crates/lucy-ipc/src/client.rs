@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 use crate::{
     ApprovalsList, Event, Hello, HelloResult, InputAnswer, InputCancel, MicLevel, PluginsList,
     ProviderCheck, ProviderCheckResult, ProvidersStatus, RevokeApproval, Role, SessionStarted,
-    SetPluginEnabled, Status, Subscribe, Topic, VoicePreview, WakeWordTest, WakeWordTestResult,
-    PROTOCOL,
+    SetPluginEnabled, Status, Subscribe, Topic, TtsKind, VoicePreview, WakeWordTest,
+    WakeWordTestResult, PROTOCOL,
 };
 
 pub struct Client {
@@ -153,19 +153,31 @@ impl Client {
     ///
     /// When the connection fails or lucyd refuses the request.
     pub fn voice_preview(&mut self, text: &str) -> Result<(), Error> {
-        self.voice_preview_in(text, None)
+        let params = VoicePreview {
+            text: text.to_owned(),
+            kind: None,
+            voice: None,
+        };
+        let _: Value = self.call("test.voice_preview", json!(params))?;
+        Ok(())
     }
 
-    /// Has Lucy say `text` in the Piper voice `voice`, and waits until she has.
-    /// `None` is her running voice.
+    /// Has Lucy say `text` through the TTS Provider `kind` in its voice
+    /// `voice`, and waits until she has.
     ///
     /// # Errors
     ///
     /// When the connection fails or lucyd refuses the request.
-    pub fn voice_preview_in(&mut self, text: &str, voice: Option<&str>) -> Result<(), Error> {
+    pub fn voice_preview_in(
+        &mut self,
+        text: &str,
+        kind: TtsKind,
+        voice: &str,
+    ) -> Result<(), Error> {
         let params = VoicePreview {
             text: text.to_owned(),
-            voice: voice.map(str::to_owned),
+            kind: Some(kind),
+            voice: Some(voice.to_owned()),
         };
         let _: Value = self.call("test.voice_preview", json!(params))?;
         Ok(())

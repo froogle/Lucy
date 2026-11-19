@@ -1,3 +1,4 @@
+use lucy_config::{TtsKind, Voice};
 use tokio::sync::{mpsc, oneshot};
 
 use super::{Runner, SessionId, StartError};
@@ -6,6 +7,7 @@ use crate::adapters::{Sound, SpeakerEvent};
 /// A `test.voice_preview` request.
 pub struct VoicePreview {
     pub text: String,
+    pub kind: Option<TtsKind>,
     pub voice: Option<String>,
     pub reply: oneshot::Sender<Result<(), PreviewError>>,
 }
@@ -27,11 +29,17 @@ impl Runner {
     pub(super) async fn preview(&mut self, preview: VoicePreview) {
         let settings = lucy_config::load(&self.files.config_path).unwrap_or_default();
         let (events_tx, mut events) = mpsc::unbounded_channel();
-        let voice = preview.voice.as_ref().unwrap_or(&settings.piper.voice);
+        let kind = preview.kind.unwrap_or(settings.tts.kind);
+        let voice = Voice {
+            kind,
+            name: preview
+                .voice
+                .unwrap_or_else(|| settings.voice_of(kind).name),
+        };
         let mut speaker = self
             .adapters
             .tts
-            .open(&settings.audio.speaker, voice, events_tx);
+            .open(&settings.audio.speaker, &voice, events_tx);
         speaker.sound(Sound::Start);
         speaker.speak(preview.text);
         let ending = loop {

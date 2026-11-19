@@ -311,15 +311,13 @@ impl Runner {
             SttKind::Whisper => self.adapters.stt.clone(),
             SttKind::Superwhisper => self.adapters.superwhisper.clone(),
         };
+        let voice = settings.voice();
         let silence_timeout = settings.session.silence_timeout_secs;
         let wake_word = settings.wake_word.word();
         let confirmation = settings.confirmation;
         let typing_timeout = Duration::from_secs_f64(settings.input.timeout_secs);
         let (speaker_tx, mut speaker_events) = mpsc::unbounded_channel();
-        let mut speaker =
-            self.adapters
-                .tts
-                .open(&devices.speaker, &settings.piper.voice, speaker_tx);
+        let mut speaker = self.adapters.tts.open(&devices.speaker, &voice, speaker_tx);
         speaker.sound(Sound::Start);
         let (transcripts_tx, mut transcripts) =
             mpsc::unbounded_channel::<Result<String, SttError>>();
