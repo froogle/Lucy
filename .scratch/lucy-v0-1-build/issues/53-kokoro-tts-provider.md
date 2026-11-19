@@ -8,7 +8,7 @@ Spec: none; raised by the user on 2026-11-18 because cori sounds robotic.
 
 **Seams:** extends the `Tts` adapter (`crates/lucyd/src/adapters.rs`) with a second implementation; adds a TTS Provider choice to the config (`crates/lucy-config`) and the `Key::Voice` setting.
 
-**Status:** needs-info
+**Status:** ready-for-human
 
 **Notes:**
 
@@ -67,4 +67,35 @@ Release asset sha256s, for whenever this is picked up again: `kokoro-v1.0.fp16.o
 Also found: the venv's Python only imports `kokoro_onnx` with `PYTHONPATH` cleared (system numpy for 3.14 shadows the venv's), the same trap as Piper. The shim's launch would need `env_remove("PYTHONPATH")`.
 
 **Decision needed from the user:** (a) relax the gate to an absolute limit, e.g. ≤ 0.7 s for a typical first sentence, and build as specced; (b) build it but split the first sentence into shorter pieces to hide the latency (more scope); or (c) wontfix, and try a better Piper voice instead (e.g. `en_GB-cori-high`, already in the voices dir) or another engine.
+
+### 2026-11-19: user accepts the delay; build it
+
+The user is happy with Kokoro's extra 0.15–0.7 s before a sentence, so the latency gate in triage decision 1 is waived and the spike counts as done. Build the rest of the triage decisions as written, with one addition:
+
+- **Swappable engines.** Shape the TTS Provider seam so Piper, Kokoro or a future engine can be swapped in or out easily. The engine-specific part (how to find and start the engine, fetch a voice, synthesise a sentence) sits behind one small interface. Everything shared (supervision of the local server, playback, the echo reference, levels, events) is written once and reused. Adding an engine should mean one new module plus a config value, without touching the Session or playback code.
+
+### 2026-11-19: built on `ticket-53-kokoro`, not merged; hand tests below
+
+**What was built** (design in ADR 0013, operating notes under "Real Kokoro" in `docs/agents/working-in-lucy.md`):
+
+- `tts::Engine` is the swappable seam: start in a voice, turn a sentence into samples. `tts::Engines` holds one per `TtsKind` and owns everything shared once: playback, levels, ducking and the echo reference. `local_server::LocalServer` supervises any engine that runs as a localhost server (find on first use, free loopback port, restart on exit, look again next Session if not found). Piper and Kokoro each supply only a small `local_server::Server`.
+- Kokoro: Lucy's own `server.py` (embedded in lucyd) runs in `$XDG_DATA_HOME/lucy/kokoro/venv` with `PYTHONPATH` cleared. The fp16 model and voices are fetched on first use, sha256-pinned.
+- Setup: the voice section asks Piper or Kokoro first, then that Provider's voices (Kokoro: 6 British, then 4 American, `bf_emma` recommended). Installing Kokoro asks first, then runs `uv venv --clear --python 3.13` + `uv pip install kokoro-onnx==0.6.1`, or a `python3.10`–`3.13` venv without uv.
+
+**Deviations from the triage decisions, for the user to accept or reverse:**
+
+1. The key is `[tts] kind`, not `[tts] provider`, to match the existing `[stt] kind`.
+2. The Provider is picked at each Session, not once at lucyd's start (like STT). That lets setup's Voice preview speak through Kokoro before lucyd restarts, and installing Kokoro or Piper needs no restart. At start lucyd still warms up only the configured engine, so Piper isn't started when Kokoro is picked. A preview through the other Provider leaves both servers running until lucyd restarts.
+3. The no-uv fallback uses `python3.10`–`3.13`, not plain `python3`, since kokoro-onnx 0.6.1 needs Python below 3.14 (Arch ships 3.14).
+4. Adding a third engine touches more than "one new module plus a config value": a `TtsKind` variant in both lucy-config and lucy-ipc, a `[section]`, an `Engines` field, `main.rs`, and its voices and settings keys in setup. Session and playback code stay untouched.
+
+**Checked:** `scripts/check.sh` passes. Live tests passed on this machine: `live_kokoro_downloads_its_model_speaks_switches_voice_and_survives_a_crash` (real download and hash check, 24 kHz, voice switch, unknown voice refused, restart after a kill) and `live_piper_downloads_the_voice_speaks_and_survives_a_crash` (the Piper refactor). The speaker tests weren't run, since they play out loud.
+
+**Hand tests for the user** (after merging and redeploying; see the redeploy memory):
+
+- [ ] `LUCY_KOKORO_VENV=... cargo test -p lucyd --lib live_kokoro_speaks -- --ignored`, and the Piper twin: you hear two sentences, and they pass, so the echo reference is fed
+- [ ] `lucy setup` → Voice → Kokoro: it asks before installing, installs, fetches the model during the preview, says the sample line, and saves `[tts] kind = "kokoro"`
+- [ ] Next Session (or after `lucy service restart`): Lucy speaks in Kokoro
+- [ ] Barge-in: talk over Kokoro mid-reply and she stops
+- [ ] Setup → Voice → Piper → cori: the next Session is back in Piper
 

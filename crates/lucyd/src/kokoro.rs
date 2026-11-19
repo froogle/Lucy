@@ -1,7 +1,6 @@
-//! The Kokoro TTS Provider (ADR 0013). Kokoro-82M is Apache 2.0, but
-//! `kokoro-onnx` speaks through espeak-ng, which is GPL, so it runs out of
-//! process (ADR 0003): Lucy's own small server, embedded here, runs in the
-//! venv `lucy setup` makes, as a [`LocalServer`](crate::local_server::LocalServer).
+//! The Kokoro TTS Provider, out of process (ADR 0003, ADR 0013). Lucy's own
+//! small server, embedded here, runs in the venv `lucy setup` makes, as a
+//! [`LocalServer`](crate::local_server::LocalServer).
 //!
 //! Finding Kokoro means finding that venv, then downloading the model and
 //! voices, checked against pinned hashes, on first use.

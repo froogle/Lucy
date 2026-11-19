@@ -426,14 +426,19 @@ pub struct RevokeApproval {
 pub struct VoicePreview {
     /// The sentence to say. Not empty.
     pub text: String,
-    /// The TTS Provider to say it through. Unset means the configured one.
+    /// The voice to say it in. Unset means the configured one. lucyd
+    /// fetches it first if it must.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<TtsKind>,
-    /// A voice of that Provider to say it in, such as `en_GB-cori-medium`
-    /// in Piper or `bf_emma` in Kokoro. Unset means the one configured for
-    /// that Provider. lucyd fetches it first if it must.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice: Option<String>,
+    pub voice: Option<Voice>,
+}
+
+/// A voice of one TTS Provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Voice {
+    pub kind: TtsKind,
+    /// The voice's name in that Provider, such as `en_GB-cori-medium` in
+    /// Piper or `bf_emma` in Kokoro.
+    pub name: String,
 }
 
 /// A TTS Provider, as `[tts] kind` names it.

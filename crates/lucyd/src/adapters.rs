@@ -267,8 +267,8 @@ pub trait SessionModel: Send {
 
 /// The TTS Providers together with playback.
 pub trait Tts: Send + Sync {
-    /// Opens playback on `speaker` in `voice`, through `voice`'s Provider,
-    /// for a new Session or a Voice preview.
+    /// Opens playback on `speaker` in `voice`, for a Session or Voice preview.
+    /// `voice` names the TTS Provider that says each sentence.
     /// `speaker` is `"default"` or a pinned node name. A voice that isn't
     /// there yet is fetched first. Each sentence sends one `Played` or
     /// `Failed` on `events`, in order, and `Level` about 30 times a second

@@ -139,7 +139,8 @@ fn install<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<(), Stop> {
 fn install_kokoro<B: Backend>(ui: &mut Ui<B>, context: &Context) -> Result<bool, Stop> {
     let env = context.env;
     if !ui.yes(
-        "Install Kokoro now? It downloads about 360 MB, into Lucy's own folder.",
+        "Install Kokoro now? It downloads about 360 MB into Lucy's own folder: \
+         about 160 MB of Python packages now, and its 200 MB model the first time she speaks in it.",
         false,
     )? {
         ui.say("Lucy keeps speaking as she does now.")?;
@@ -196,7 +197,7 @@ fn voice<B: Backend>(ui: &mut Ui<B>, context: &Context, kind: TtsKind) -> Result
         TtsKind::Kokoro => (
             KOKORO_VOICES,
             Key::KokoroVoice,
-            "Fetching Kokoro's model if need be (about 200 MB, once), then Lucy speaks in it...",
+            "Fetching Kokoro's model if need be (the 200 MB part, once), then Lucy speaks in it...",
         ),
     };
     let labels: Vec<String> = voices

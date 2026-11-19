@@ -472,17 +472,12 @@ pub struct Voice {
 impl Config {
     /// The voice Lucy speaks in: the chosen TTS Provider's own voice.
     pub fn voice(&self) -> Voice {
-        self.voice_of(self.tts.kind)
-    }
-
-    /// The voice configured for the TTS Provider `kind`.
-    pub fn voice_of(&self, kind: TtsKind) -> Voice {
-        let name = match kind {
+        let name = match self.tts.kind {
             TtsKind::Piper => &self.piper.voice,
             TtsKind::Kokoro => &self.kokoro.voice,
         };
         Voice {
-            kind,
+            kind: self.tts.kind,
             name: name.clone(),
         }
     }

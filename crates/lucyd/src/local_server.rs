@@ -60,7 +60,7 @@ struct Shared<S: Server> {
     state: Mutex<State>,
     changed: Condvar,
     stopping: AtomicBool,
-    found: Mutex<Option<Started<S::Found>>>,
+    started: Mutex<Option<Started<S::Found>>>,
 }
 
 struct Started<F> {
@@ -78,6 +78,7 @@ enum State {
 }
 
 impl<S: Server> LocalServer<S> {
+    /// Supervises `server`, which starts at the first `Engine::start`.
     pub fn new(server: S) -> LocalServer<S> {
         LocalServer {
             shared: Arc::new(Shared {
@@ -85,7 +86,7 @@ impl<S: Server> LocalServer<S> {
                 state: Mutex::new(State::Idle),
                 changed: Condvar::new(),
                 stopping: AtomicBool::new(false),
-                found: Mutex::new(None),
+                started: Mutex::new(None),
             }),
         }
     }
@@ -147,8 +148,7 @@ impl<S: Server> Shared<S> {
         };
         drop(state);
         let mut request = serde_json::json!({ "text": text });
-        let other_voice = self.other_voice(voice);
-        if let Some(found) = other_voice {
+        if let Some(found) = self.switching_to(voice) {
             self.server.fetch(&found, voice)?;
             request["voice"] = voice.into();
         }
@@ -162,8 +162,8 @@ impl<S: Server> Shared<S> {
         decode_wav(name, &wav)
     }
 
-    fn other_voice(&self, voice: &str) -> Option<Arc<S::Found>> {
-        let started = self.found.locked();
+    fn switching_to(&self, voice: &str) -> Option<Arc<S::Found>> {
+        let started = self.started.locked();
         let started = started.as_ref()?;
         (started.voice != voice).then(|| started.found.clone())
     }
@@ -178,7 +178,7 @@ fn supervise<S: Server>(shared: &Shared<S>, voice: &str) {
             return;
         }
     };
-    *shared.found.locked() = Some(Started {
+    *shared.started.locked() = Some(Started {
         found: found.clone(),
         voice: voice.to_owned(),
     });

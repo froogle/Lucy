@@ -516,6 +516,25 @@ mod tests {
     }
 
     #[test]
+    fn a_24_khz_voice_like_kokoros_is_downsampled_to_a_16_khz_reference() {
+        let mut downsampler = Downsampler::new(24_000);
+        let mut reference = Vec::new();
+
+        let uneven_pieces = 333;
+        for piece in sine(440.0, 24_000, 2.0).chunks(uneven_pieces) {
+            downsampler.push(piece, |out| reference.extend_from_slice(out));
+        }
+
+        assert!(
+            (30_000..=32_000).contains(&reference.len()),
+            "two seconds in, less what is still buffered (under one chunk): {}",
+            reference.len()
+        );
+        let hz = frequency(&reference, 16_000);
+        assert!((435.0..=445.0).contains(&hz), "{hz} Hz");
+    }
+
+    #[test]
     fn a_16_khz_voice_is_its_own_reference() {
         let mut downsampler = Downsampler::new(16_000);
         let mut reference = Vec::new();

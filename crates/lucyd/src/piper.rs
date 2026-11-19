@@ -22,8 +22,8 @@ pub struct Piper {
 }
 
 impl Piper {
-    /// Piper with its voices in `voices_dir`, run by the first Python found
-    /// that can import it.
+    /// Piper keeping its voices in `voices_dir`.
+    /// It runs on the first Python found that can import it.
     pub fn new(voices_dir: PathBuf) -> Piper {
         Piper {
             voices_dir,

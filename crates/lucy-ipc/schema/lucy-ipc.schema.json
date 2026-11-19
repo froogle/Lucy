@@ -681,30 +681,40 @@
       ],
       "type": "string"
     },
+    "Voice": {
+      "description": "A voice of one TTS Provider.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/TtsKind"
+        },
+        "name": {
+          "description": "The voice's name in that Provider, such as `en_GB-cori-medium` in\nPiper or `bf_emma` in Kokoro.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
     "VoicePreview": {
       "description": "Params of `test.voice_preview`: Lucy speaks `text` outside any Session.\nShe uses her configured voice on the configured speaker, between the Start\nand Closing sounds. It replies once playback has finished. Refused while a\nSession is open or another Voice preview plays; a Session that opens\ncuts it short.",
       "properties": {
-        "kind": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TtsKind"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "description": "The TTS Provider to say it through. Unset means the configured one."
-        },
         "text": {
           "description": "The sentence to say. Not empty.",
           "type": "string"
         },
         "voice": {
-          "description": "A voice of that Provider to say it in, such as `en_GB-cori-medium`\nin Piper or `bf_emma` in Kokoro. Unset means the one configured for\nthat Provider. lucyd fetches it first if it must.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Voice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The voice to say it in. Unset means the configured one. lucyd\nfetches it first if it must."
         }
       },
       "required": [

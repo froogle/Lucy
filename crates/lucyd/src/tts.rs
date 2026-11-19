@@ -35,6 +35,7 @@ pub struct Engines {
 }
 
 impl Engines {
+    /// Each TTS Provider's engine, none of them started yet.
     pub fn new(piper: Arc<dyn Engine>, kokoro: Arc<dyn Engine>) -> Engines {
         let (reference, reference_out) =
             rtrb::RingBuffer::new(playback::REFERENCE_RATE as usize * REFERENCE_SECS);
