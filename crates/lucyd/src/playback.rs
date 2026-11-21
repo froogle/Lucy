@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -144,10 +144,17 @@ struct Failure {
 
 struct Output {
     _stream: cpal::Stream,
+    closing: Arc<AtomicBool>,
     sample_rate: u32,
     pcm: rtrb::Producer<f32>,
     played: rtrb::Consumer<f32>,
     downsampler: Downsampler,
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        self.closing.store(true, Ordering::Release);
+    }
 }
 
 struct Player {
@@ -373,6 +380,8 @@ fn open_output(
     let (pcm, mut source) = rtrb::RingBuffer::new(ring);
     let (mut played_tx, played) = rtrb::RingBuffer::new(ring);
     let mut drained_epoch = 0;
+    let closing = Arc::new(AtomicBool::new(false));
+    let closed_by_lucy = closing.clone();
     let stream = device
         .build_output_stream(
             config,
@@ -413,6 +422,9 @@ fn open_output(
                 }
             },
             move |e| {
+                if closed_by_lucy.load(Ordering::Acquire) {
+                    return;
+                }
                 eprintln!("lucyd: playback error: {e}");
                 if audio::cpal::is_device_lost(&e) {
                     let _ = events.send(SpeakerEvent::DeviceLost);
@@ -424,6 +436,7 @@ fn open_output(
     stream.play().map_err(|e| e.to_string())?;
     Ok(Output {
         _stream: stream,
+        closing,
         sample_rate,
         pcm,
         played,
