@@ -8,7 +8,7 @@ Spec: none; raised by the user on 2026-11-18 because cori sounds robotic.
 
 **Seams:** extends the `Tts` adapter (`crates/lucyd/src/adapters.rs`) with a second implementation; adds a TTS Provider choice to the config (`crates/lucy-config`) and the `Key::Voice` setting.
 
-**Status:** ready-for-human
+**Status:** resolved
 
 **Notes:**
 
