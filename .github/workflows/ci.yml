@@ -12,6 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The native libraries the -sys crates build against (README step 1).
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          pkg-config clang libclang-dev cmake
+          libpipewire-0.3-dev libspa-0.2-dev libasound2-dev libpulse-dev
+          libvulkan-dev glslc libwayland-dev
       # Installs the toolchain and components rust-toolchain.toml names.
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
