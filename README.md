@@ -11,6 +11,34 @@ Lucy runs on your own machine and uses what you already have:
 
 > **Status: v0.1, early.** Lucy is developed and tested on [Omarchy](https://omarchy.org) (Arch Linux with Hyprland). The core works on other Linux desktops with PipeWire, but the window-management Plugin, the on-screen Indicator and the bar panel need Omarchy or a wlroots-style Wayland compositor.
 
+## How it works
+
+```mermaid
+flowchart LR
+    you(["You: “Hey Lucy, …”"]) --> hearing
+
+    subgraph lucyd["lucyd, on your machine"]
+        hearing["Hearing<br/>echo canceller → Wake word → whisper.cpp"] --> runner["Session runner"]
+        runner --> speaking["Speaking<br/>Piper or Kokoro"]
+        mcp["Lucy's MCP server"]
+        mcp --> builtin["Built-in tools<br/>apps, pages, files"]
+        mcp -- "spoken Confirmation<br/>for risky calls" --> plugins["Plugins<br/>sandboxed with Landlock<br/>desktop, news, …"]
+        mcp --> authoring["Authoring<br/>Lucy writes a new Rust Plugin"]
+        mcp --> handoff["Hand-off<br/>bigger jobs to your own Claude"]
+        authoring -- "your spoken Approval" --> plugins
+    end
+
+    runner -- "what you said" --> thinking["Thinking<br/>your claude or codex CLI"]
+    thinking -- "reply" --> runner
+    thinking -- "tool calls" --> mcp
+    speaking --> answer(["Lucy answers out loud"])
+```
+
+1. Lucy listens all the time on your machine, and nothing leaves it until she hears the Wake word. Then whisper.cpp turns what you say into text.
+2. The text goes to the `claude` or `codex` CLI you're already logged in to. Its reply is spoken sentence by sentence, so Lucy starts talking before it has finished.
+3. To act, the model calls tools on Lucy's own MCP server: Built-in tools for apps, pages and files, and Plugins for everything else. Lucy asks you out loud before anything risky, and only a clear yes counts.
+4. When no Plugin can do what you ask, Lucy can write one in Rust. Before she uses it, you approve it by voice.
+
 ## What you need
 
 - **Linux** with a kernel that has [Landlock](https://docs.kernel.org/userspace-api/landlock.html) turned on (Arch's and most current distros' kernels do). Plugins won't run without it.
