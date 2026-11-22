@@ -2,6 +2,8 @@
 
 [![Watch the video about Lucy](https://img.youtube.com/vi/fcCv_0X4S8k/maxresdefault.jpg)](https://youtu.be/fcCv_0X4S8k)
 
+*Click the image above to watch a video all about Lucy.*
+
 Lucy is a voice assistant for the Linux desktop. Say "Hey Lucy" and talk to her: she answers out loud, opens apps and pages, finds your files, manages your windows, reads you the news, and passes bigger jobs to your own Claude. When she can't do something yet, she can write a new Plugin for it, and she asks you before using it.
 
 Lucy runs on your own machine and uses what you already have:
