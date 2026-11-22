@@ -13,7 +13,7 @@ Change it so that:
 
 To find out first: whether clicking away just hides the panel while the question keeps waiting, or cancels it. If it only hides, the fix may only need a way back to it and a longer timeout.
 
-**Status:** needs-triage
+**Status:** moved to GitHub [#8](https://github.com/froogle/Lucy/issues/8)
 
 Spec: none; raised by the user on 2026-11-21.
 

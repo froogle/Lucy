@@ -8,7 +8,7 @@ Spec: none; found while writing up ticket 51 (2026-11-18).
 
 **Seams:** none.
 
-**Status:** needs-triage
+**Status:** moved to GitHub [#3](https://github.com/froogle/Lucy/issues/3)
 
 **Notes:**
 

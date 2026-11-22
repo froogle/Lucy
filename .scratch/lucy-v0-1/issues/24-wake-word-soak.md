@@ -1,7 +1,7 @@
 # Does the wake-word engine hold up over hours of normal desktop audio?
 
 Type: task
-Status: open
+Status: moved to GitHub [#2](https://github.com/froogle/Lucy/issues/2)
 Blocked by: 16, 27
 
 ## Question

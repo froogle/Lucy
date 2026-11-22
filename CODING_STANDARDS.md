@@ -12,7 +12,7 @@ A comment that restates the code, narrates its steps or labels a section is a de
 - `// SAFETY:` before each `unsafe` block, naming the invariants it relies on;
 - an assumption the code can't avoid, written as the `expect("...")` message, not as a comment.
 
-No commented-out code and no TODOs; open work is a ticket in `.scratch/`.
+No commented-out code and no TODOs; open work is a GitHub issue.
 
 ## Rustdoc documents entry points only
 

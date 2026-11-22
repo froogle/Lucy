@@ -14,7 +14,7 @@ Assumed, to confirm at triage:
 - "The same tool" means the same tool name (for example, the editing tool for the list), not any permission request at all and not the exact same input.
 - "Session" means Lucy's Session, not the Hand-off. A Hand-off that outlives its Session (v0.2 ticket 05) or is continued later (v0.2 ticket 12) asks again.
 
-**Status:** needs-triage
+**Status:** moved to GitHub [#6](https://github.com/froogle/Lucy/issues/6)
 
 Spec: none; raised by the user on 2026-11-21. Amend ADR 0007, the v0.2 spec's Hand-off section, and the `GLOSSARY.md` entry for Confirmation, which says most Confirmations cover one action.
 

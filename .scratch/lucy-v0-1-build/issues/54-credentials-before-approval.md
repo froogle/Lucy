@@ -17,7 +17,7 @@ Spec: none yet; raised by the user on 2026-11-18 after the Linear Plugin build. 
 
 **Seams:** extends Authoring's finish (`Build::approve`). Uses `Host::request_approval_when_quiet`, the `secret` Input dialog (ticket 43), `CredentialStore` (ticket 21) and `Launcher::open_url` as they are. May extend the Manifest (see Notes).
 
-**Status:** needs-triage
+**Status:** moved to GitHub [#4](https://github.com/froogle/Lucy/issues/4)
 
 **Notes:**
 

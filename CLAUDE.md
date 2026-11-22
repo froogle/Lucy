@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues on froogle/Lucy, through `gh`; `.scratch/` is the archive from before. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

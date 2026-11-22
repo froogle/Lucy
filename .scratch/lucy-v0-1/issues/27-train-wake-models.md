@@ -1,7 +1,7 @@
 # Train and commit the "Hey Lucy" and "Lucy" wake-word models
 
 Type: task
-Status: open
+Status: moved to GitHub [#1](https://github.com/froogle/Lucy/issues/1)
 Blocked by: 16
 
 ## Question

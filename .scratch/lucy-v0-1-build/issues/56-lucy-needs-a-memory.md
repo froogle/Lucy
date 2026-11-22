@@ -11,7 +11,7 @@ To define later:
 - How the user sees, corrects or forgets what she remembers
 - Where it's stored, and whether it needs a `GLOSSARY.md` term and an ADR
 
-**Status:** needs-triage
+**Status:** moved to GitHub [#5](https://github.com/froogle/Lucy/issues/5)
 
 Spec: none; raised by the user on 2026-11-20.
 

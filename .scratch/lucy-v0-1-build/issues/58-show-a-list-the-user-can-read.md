@@ -27,7 +27,7 @@ To define at triage:
 - Where it draws: in the `lucy` client with ratatui, like the Input dialog, and how big.
 - A `GLOSSARY.md` term for it, and whether it needs an ADR.
 
-**Status:** needs-triage
+**Status:** moved to GitHub [#7](https://github.com/froogle/Lucy/issues/7)
 
 Spec: none; raised by the user on 2026-11-21.
 
