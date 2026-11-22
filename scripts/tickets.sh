@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One line per archived .scratch ticket: file, status, blockers. Live tickets are GitHub issues. Reads both header styles
+# One line per ticket in the local .scratch archive: file, status, blockers. Live tickets are GitHub issues. Reads both header styles
 # (`**Status:** x` in build tickets, `Status: x` in wayfinder tickets).
 # Usage: scripts/tickets.sh [issues-dir ...]  (default: every .scratch/*/issues)
 set -euo pipefail

@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live in GitHub Issues on froogle/Lucy, through `gh`; `.scratch/` is the archive from before. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues on froogle/Lucy, through `gh`; `.scratch/` is a local-only archive from before. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

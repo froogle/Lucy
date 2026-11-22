@@ -2,7 +2,7 @@
 
 Issues and specs for this repo live in GitHub Issues on [froogle/Lucy](https://github.com/froogle/Lucy/issues). Use the `gh` CLI for every operation.
 
-`.scratch/` is the archive of the tickets, specs, research and prototypes from before the move (2026-11-22). ADRs and docs still link to it. Don't add tickets there; open work that was still open there has moved to GitHub, and each moved file's `Status:` line names its issue.
+`.scratch/` is a local-only, gitignored archive of the tickets, specs, research and prototypes from before the move (2026-11-22); it isn't in the repo. ADRs and docs that cite `.scratch/` paths refer to that archive. Don't add tickets there. Every ticket still open there moved to GitHub, and each moved file's `Status:` line names its issue.
 
 ## Conventions
 

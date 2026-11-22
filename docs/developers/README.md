@@ -80,7 +80,6 @@ The key ideas:
 | `tools/aec-bench/` | A bench that replays recordings through the echo canceller and Barge-in gate, for tuning. |
 | `docs/adr/` | Architecture decision records. |
 | `docs/agents/` | Notes for AI coding agents working in this repo, and the deepest notes on each area (see below). |
-| `.scratch/` | The archive of specs, tickets, research and prototypes from before the move to [GitHub Issues](https://github.com/froogle/Lucy/issues) ([issue tracker](../agents/issue-tracker.md)). |
 
 ## Building
 

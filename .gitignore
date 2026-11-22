@@ -1,15 +1,8 @@
 # Rust build output
 target/
 
-# Prototype artifacts: downloaded models, voices, venvs, logs, recordings
-.scratch/**/prototypes/**/models/
-.scratch/**/prototypes/**/voices/
-.scratch/**/prototypes/**/.piper-venv/
-.scratch/**/prototypes/**/*.log
-.scratch/**/prototypes/**/*.wav
-
-# Prototypes are throwaway, often nested repos
-.scratch/**/prototypes/
+# Local-only archive of old tickets, specs, research and prototypes
+.scratch/
 
 # The AEC bench's recordings and traces stay on the machine that made them
 tools/aec-bench/runs/
