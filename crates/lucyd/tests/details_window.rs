@@ -641,6 +641,19 @@ fn any_other_permission_shows_the_tool_and_its_input_as_json() {
 }
 
 #[test]
+fn an_edit_permission_without_the_old_text_shows_the_tool_and_its_input_as_json() {
+    let items = permission_items(
+        "Edit",
+        json!({"file_path": "/repo/src/lib.rs", "new_string": "let a = 3;"}),
+    );
+
+    assert_eq!(
+        items,
+        ["`Edit`\n\n```json\n{\n  \"file_path\": \"/repo/src/lib.rs\",\n  \"new_string\": \"let a = 3;\"\n}\n```"]
+    );
+}
+
+#[test]
 fn a_permission_kept_for_the_next_session_shows_the_same_window_when_asked() {
     let lucyd = Harness::start();
     let mut holder = lucyd.input("a widget");

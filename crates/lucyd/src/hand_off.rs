@@ -887,21 +887,21 @@ impl Job {
 
 fn permission_items(tool_name: &str, input: &serde_json::Value) -> Vec<String> {
     let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
-    let at = |path: &str, block: String| format!("`{path}`\n\n{block}");
+    let headed = |heading: &str, block: String| format!("`{heading}`\n\n{block}");
     let item = match tool_name {
         "Bash" => field("command").map(|command| fenced("sh", command)),
         "Edit" => field("file_path")
             .zip(field("old_string"))
             .map(|(path, old)| {
                 let new = field("new_string").unwrap_or_default();
-                at(path, fenced("diff", &change(old, new)))
+                headed(path, fenced("diff", &change(old, new)))
             }),
         "Write" => field("file_path")
             .zip(field("content"))
-            .map(|(path, content)| at(path, fenced("", content))),
+            .map(|(path, content)| headed(path, fenced("", content))),
         _ => None,
     };
-    let item = item.unwrap_or_else(|| at(tool_name, fenced("json", &format!("{input:#}"))));
+    let item = item.unwrap_or_else(|| headed(tool_name, fenced("json", &format!("{input:#}"))));
     vec![item]
 }
 
