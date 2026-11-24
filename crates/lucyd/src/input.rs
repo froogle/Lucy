@@ -286,9 +286,20 @@ pub async fn ask(
     commands: &mpsc::UnboundedSender<Command>,
     question: &str,
     kind: FieldKind,
+    items: Vec<String>,
 ) -> TypedAnswer {
-    let what = what(&kind);
-    ask_for(commands, what, question, ANSWER, kind).await
+    let field = Field {
+        name: ANSWER.to_owned(),
+        description: None,
+        kind,
+    };
+    match fill(commands, question, vec![field], items).await {
+        Filled::Values(mut values) => {
+            TypedAnswer::Answer(values.remove(ANSWER).unwrap_or_default())
+        }
+        Filled::Cancelled => TypedAnswer::Cancelled,
+        Filled::TimedOut => TypedAnswer::TimedOut,
+    }
 }
 
 pub async fn ask_for(

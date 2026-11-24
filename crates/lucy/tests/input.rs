@@ -39,6 +39,24 @@ fn the_page_shows_the_question_and_sends_back_what_is_typed() {
 }
 
 #[test]
+fn the_page_shows_the_items_lucyd_sends_above_the_box() {
+    let home = Home::with_lucyd();
+    let items = vec!["**Ann** sent *Rent for December*".to_owned()];
+    let asked = home.ask_typed_about("Why trash it?", FieldKind::Text, items);
+
+    let esc_mid_entry = Script::new().typed("spam").press(KeyCode::Esc);
+    let tui = home.tui(Open::Input, esc_mid_entry);
+
+    let rows: Vec<&str> = tui.screen.lines().collect();
+    let item = rows
+        .iter()
+        .position(|row| row.contains("Ann sent Rent for December"));
+    let field = rows.iter().position(|row| row.contains("spam"));
+    assert!(item.is_some() && item < field, "{}", tui.screen);
+    assert_eq!(asked.recv().unwrap(), TypedAnswer::Cancelled);
+}
+
+#[test]
 fn esc_closes_the_box_unanswered() {
     let home = Home::with_lucyd();
     let asked = home.ask_typed("Which page shall I open?", FieldKind::Url);
