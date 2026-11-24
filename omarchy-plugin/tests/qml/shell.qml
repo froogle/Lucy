@@ -1,6 +1,7 @@
 import Quickshell
 import QtQuick
 import QtTest
+import qs.Commons as Commons
 
 // Drives the real Panel.qml offscreen, against the fake lucy, systemctl and
 // omarchy-launch-tui that tests/run.sh puts on PATH. Each step runs after
@@ -76,6 +77,25 @@ ShellRoot {
       lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.open", params: { id: id, message: message, fields: fields } }))
     }
 
+    function details(id, fields, items) {
+      lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.open",
+        params: { id: id, message: "Trash these emails?", fields: fields, items: items } }))
+    }
+
+    readonly property var mail: [
+      "## Ann Example\n*Rent for December*, received **Mon 23 Nov**\n\n> Could you confirm the new amount before Friday?",
+      "## Billing\nYour order shipped:\n\n- 2 × `USB-C cable`\n- 1 × desk lamp\n\n<b>Raw</b> HTML, ![a parcel](https://shop.example/p.png) and [tracking](https://shop.example/t/9)",
+      "### Newsletter\n```\ncurl -s https://news.example/unsubscribe\n```"
+    ]
+
+    function visibleNamed(name) {
+      return findAll(barPanel, name, []).filter(function (item) { return item.visible })
+    }
+
+    function topOf(item) {
+      return item.mapToItem(barPanel, 0, 0).y
+    }
+
     function shown(text) {
       return texts(barPanel, []).some(function (t) { return t.visible && t.text === text })
     }
@@ -93,6 +113,7 @@ ShellRoot {
     }
 
     readonly property var lucy: find(barPanel, "service")
+    readonly property string capture: Quickshell.env("LUCY_PANEL_CAPTURE") || ""
     readonly property color dimmed: Qt.darker(barPanel.barForeground, 1.55)
 
     property var steps: [
@@ -283,6 +304,52 @@ ShellRoot {
         check("then it goes", lucy.dialog, null)
       },
       function () {
+        console.log("the Details window: items above the Input dialog's boxes")
+        details("details-1", [{ name: "why", kind: "text" }], mail)
+        var items = visibleNamed("detailsItem")
+        check("a question with items opens the panel", barPanel.opened, true)
+        check("each item shows", items.length, 3)
+        check("as Markdown", items.filter(function (t) { return t.textFormat === Text.MarkdownText }).length, 3)
+        check("with a rule between each", visibleNamed("detailsRule").length, 2)
+        check("raw HTML is escaped, so it shows as text", items[1].text.indexOf("\\<b>Raw\\</b>") >= 0, true)
+        check("an image is its alt text, never fetched", items[1].text.indexOf("p.png"), -1)
+        check("a link shows its URL in brackets", items[1].text.indexOf("tracking \\[https://shop.example/t/9\\]") >= 0, true)
+        check("code is left as it came", items[2].text.indexOf("curl -s https://news.example/unsubscribe") >= 0, true)
+      },
+      function () {
+        var items = visibleNamed("detailsItem")
+        var box = find(barPanel, "inputField")
+        check("the items sit above the box", topOf(items[2]) < topOf(box), true)
+        check("the box still has the keys", box.activeFocus, true)
+        if (capture !== "") stage.grabToImage(function (result) { result.saveToFile(capture) })
+      },
+      function () {
+        find(barPanel, "inputField").text = "old mail"
+        find(barPanel, "inputSend").clicked()
+        check("the answer still goes", lucy.dialog, null)
+        check("and the items with it", visibleNamed("detailsItem").length, 0)
+
+        console.log("the Details window: alone, beside a spoken question")
+        details("details-2", [], mail)
+        check("a list alone opens the panel", barPanel.opened, true)
+        check("its items show", visibleNamed("detailsItem").length, 3)
+        check("with no boxes", visibleNamed("inputField").length, 0)
+        check("and no Send", find(barPanel, "inputSend").visible, false)
+        check("Close, not Cancel", find(barPanel, "inputCancel").text, "Close")
+      },
+      function () {
+        keys.keyClick(Qt.Key_Escape, Qt.NoModifier, -1)
+        check("Esc closes it", lucy.dialog, null)
+        check("and the panel", barPanel.opened, false)
+        details("details-3", [], mail)
+        find(barPanel, "inputCancel").clicked()
+        check("Close closes it", lucy.dialog, null)
+        details("details-4", [], mail)
+        lucy.inputEvent(JSON.stringify({ jsonrpc: "2.0", method: "input.close", params: { id: "details-4" } }))
+        check("lucyd's close closes it", lucy.dialog, null)
+        check("and the panel", barPanel.opened, false)
+      },
+      function () {
         console.log(failures === 0 ? "ALL OK" : failures + " FAILED")
       }
     ]
@@ -302,8 +369,14 @@ ShellRoot {
     implicitWidth: 400
     implicitHeight: 700
 
-    BarPanel {
-      id: barPanel
+    Rectangle {
+      id: stage
+      anchors.fill: parent
+      color: Commons.Color.background
+
+      BarPanel {
+        id: barPanel
+      }
     }
   }
 }
