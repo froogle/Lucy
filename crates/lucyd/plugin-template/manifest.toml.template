@@ -13,6 +13,10 @@ handles = "an example request"
 examples = ["an example of what the user might say"]   # at most 3
 confirm = false
 # confirm_prompt = "Shall I do {thing}?"
+# A read-only tool, with no [[tools]] entry of its own, that Lucy calls with
+# the same arguments before asking, to show the user what they're saying yes
+# to. It returns structuredContent {"items": ["<markdown>", ...]}.
+# describe = "describe_example"
 
 [access]
 read = []          # paths it reads, such as "~/Pictures"

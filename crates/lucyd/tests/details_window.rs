@@ -175,6 +175,24 @@ fn closing_the_window_early_answers_nothing_and_the_question_still_waits() {
 }
 
 #[test]
+fn the_holder_letting_go_of_a_list_only_window_answers_nothing() {
+    let lucyd = with_notes("describe_write");
+    let mut holder = lucyd.input("lucy input");
+    let mut events = session(&lucyd);
+    let (file, call) = asked(&lucyd, &mut events, "hello");
+    lucyd.next_details(&mut holder);
+
+    drop(holder);
+    lucyd.barrier();
+
+    assert_eq!(lucyd.client().status().unwrap().state, State::Confirming);
+    lucyd.say("yes");
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+}
+
+#[test]
 fn the_model_is_never_offered_the_describe_tool_and_a_call_to_it_is_refused() {
     let lucyd = with_notes("describe_write");
     let _events = session(&lucyd);
