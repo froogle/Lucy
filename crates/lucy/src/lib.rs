@@ -9,6 +9,7 @@ mod credentials;
 mod devices;
 pub mod input;
 mod kokoro;
+mod markdown;
 pub mod menu;
 pub mod panel;
 mod piper;

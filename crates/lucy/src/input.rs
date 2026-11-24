@@ -11,7 +11,7 @@ use ratatui::backend::Backend;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::ui::{Stop, Ui};
+use crate::ui::{Details, Stop, Ui};
 use crate::Env;
 
 pub(crate) fn page<B: Backend>(ui: &mut Ui<B>, env: &Env) -> Result<(), Stop> {
@@ -31,11 +31,13 @@ pub(crate) fn page<B: Backend>(ui: &mut Ui<B>, env: &Env) -> Result<(), Stop> {
     let (closes, closed) = mpsc::channel();
     let watch = Watch::start(client, open.id.clone(), closes);
     ui.close_on(closed);
-    let typed = fields(ui, &open.fields);
+    let shown = show(ui, &open);
     let mut client = watch.stop();
-    let values = match typed {
-        Ok(values) => values,
+    let values = match shown {
+        Ok(Shown::Typed(values)) => values,
+        Ok(Shown::Read) => return Ok(()),
         Err(Stop::Closed) => return ui.say("Lucy closed the box."),
+        Err(stop) if open.fields.is_empty() => return Err(stop),
         Err(stop) => {
             let _ = client.cancel_input(&open.id);
             return Err(stop);
@@ -45,6 +47,21 @@ pub(crate) fn page<B: Backend>(ui: &mut Ui<B>, env: &Env) -> Result<(), Stop> {
         Ok(()) => Ok(()),
         Err(e) => ui.say(format!("Lucy didn't take the answer: {e}")),
     }
+}
+
+enum Shown {
+    Read,
+    Typed(BTreeMap<String, String>),
+}
+
+fn show<B: Backend>(ui: &mut Ui<B>, open: &InputOpen) -> Result<Shown, Stop> {
+    if open.fields.is_empty() {
+        return ui.details(open.items.clone()).map(|()| Shown::Read);
+    }
+    ui.screen.details = (!open.items.is_empty()).then(|| Details::new(open.items.clone()));
+    let typed = fields(ui, &open.fields);
+    ui.screen.details = None;
+    typed.map(Shown::Typed)
 }
 
 struct Watch {
@@ -223,5 +240,91 @@ fn value<B: Backend>(ui: &mut Ui<B>, field: &Field) -> Result<String, Stop> {
         } else {
             return Ok(typed.to_owned());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::Script;
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyCode;
+    use ratatui::Terminal;
+
+    fn open(fields: Vec<Field>) -> InputOpen {
+        InputOpen {
+            id: "1".to_owned(),
+            message: "Trash these emails?".to_owned(),
+            fields,
+            items: vec![
+                "**Ann** — Rent for December".to_owned(),
+                "**Bob** — Lunch on Friday?".to_owned(),
+            ],
+        }
+    }
+
+    fn reason() -> Field {
+        Field {
+            name: "reason".to_owned(),
+            description: Some("Why?".to_owned()),
+            kind: FieldKind::Text,
+        }
+    }
+
+    fn shown_with(keys: Script, open: &InputOpen) -> (Result<Shown, Stop>, String) {
+        let mut keys = keys;
+        let mut ui = Ui::new(
+            Terminal::new(TestBackend::new(50, 16)).unwrap(),
+            &mut keys,
+            "Lucy",
+        );
+        ui.say(open.message.clone()).unwrap();
+        let shown = show(&mut ui, open);
+        let screen = ui.terminal().backend().to_string();
+        drop(ui);
+        assert!(keys.is_done(), "keys left over:\n{screen}");
+        (shown, screen)
+    }
+
+    #[test]
+    fn a_list_only_page_shows_the_items_and_esc_or_q_answers_nothing() {
+        let (esc, screen) = shown_with(Script::new().press(KeyCode::Esc), &open(vec![]));
+        let (q, _) = shown_with(Script::new().typed("q"), &open(vec![]));
+
+        assert!(screen.contains("Ann — Rent for December"), "{screen}");
+        assert!(screen.contains("Bob — Lunch on Friday?"), "{screen}");
+        assert!(matches!(esc, Ok(Shown::Read)));
+        assert!(matches!(q, Ok(Shown::Read)));
+    }
+
+    #[test]
+    fn items_show_above_the_fields_while_q_j_and_k_are_typed() {
+        let open = open(vec![reason()]);
+        let keys = Script::new().typed("quick").press(KeyCode::Esc);
+
+        let (stopped, screen) = shown_with(keys, &open);
+        let rows: Vec<&str> = screen.lines().collect();
+        let item = rows.iter().position(|row| row.contains("Bob")).unwrap();
+        let field = rows.iter().position(|row| row.contains("Why?")).unwrap();
+
+        assert!(item < field, "{screen}");
+        assert!(screen.contains("quick"), "{screen}");
+        assert!(matches!(stopped, Err(Stop::Back)));
+    }
+
+    #[test]
+    fn the_fields_answer_with_items_above_them() {
+        let keys = Script::new()
+            .press(KeyCode::PageDown)
+            .press(KeyCode::Down)
+            .typed("junk")
+            .enter();
+
+        let (shown, _) = shown_with(keys, &open(vec![reason()]));
+
+        let Ok(Shown::Typed(values)) = shown else {
+            panic!("no answer")
+        };
+        assert_eq!(values["reason"], "junk");
     }
 }
