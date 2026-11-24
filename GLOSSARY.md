@@ -53,7 +53,7 @@ The user's yes or no that lets a new or changed Plugin be used. Every Plugin nee
 _Avoid_: Confirmation (that is the spoken yes before a risky action), permission, consent
 
 **Confirmation**:
-The user's spoken yes before a risky action, asked and heard by Lucy herself rather than by the thinking model. Most cover one action; the yes to the screen covers every screen action until lucyd restarts. Anything other than a clear yes means no.
+The user's spoken yes before a risky action, asked and heard by Lucy herself rather than by the thinking model. Most cover one action. A yes to a Hand-off using one of the user's own integrations covers that integration's tool for the rest of the Session, across Hand-offs; the yes to the screen covers every screen action until lucyd restarts. Anything other than a clear yes means no.
 _Avoid_: Approval (that is the yes for a whole Plugin), permission
 
 **Input dialog**:
