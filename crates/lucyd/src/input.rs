@@ -127,6 +127,7 @@ impl Dialogs {
             id: id.to_string(),
             message: dialog.message,
             fields: dialog.fields,
+            items: Vec::new(),
         };
         let (reply, typed) = oneshot::channel();
         inner.send(Event::InputOpen(request.clone()));

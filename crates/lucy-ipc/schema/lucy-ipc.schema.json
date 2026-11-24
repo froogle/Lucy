@@ -232,17 +232,25 @@
       "type": "object"
     },
     "InputOpen": {
-      "description": "Params of the `input.open` event, sent to the `input` holder only: show\nthe Input dialog.",
+      "description": "Params of the `input.open` event, sent to the `input` holder only.\n\nIt shows the Input dialog, the Details window, or both in one window. With `fields` and no `items` it is the Input dialog; with `items` and no\n`fields` it is a Details window beside a spoken question, which the user\nonly reads; with both, the items show above the fields.",
       "properties": {
         "fields": {
+          "description": "The Input dialog's boxes; empty for a Details window alone.",
           "items": {
             "$ref": "#/$defs/Field"
           },
           "type": "array"
         },
         "id": {
-          "description": "Names this dialog in `input.answer`, `input.cancel` and `input.close`.",
+          "description": "Names this window in `input.answer`, `input.cancel` and `input.close`.",
           "type": "string"
+        },
+        "items": {
+          "description": "The Details window's items, each CommonMark, in order. Private: the\nuser's data, sent nowhere but here.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "message": {
           "description": "The question, written by the tool or Plugin that asks it.",
@@ -251,8 +259,7 @@
       },
       "required": [
         "id",
-        "message",
-        "fields"
+        "message"
       ],
       "type": "object"
     },

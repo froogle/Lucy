@@ -229,15 +229,24 @@ pub enum Topic {
     Plugins,
 }
 
-/// Params of the `input.open` event, sent to the `input` holder only: show
-/// the Input dialog.
+/// Params of the `input.open` event, sent to the `input` holder only.
+///
+/// It shows the Input dialog, the Details window, or both in one window. With `fields` and no `items` it is the Input dialog; with `items` and no
+/// `fields` it is a Details window beside a spoken question, which the user
+/// only reads; with both, the items show above the fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InputOpen {
-    /// Names this dialog in `input.answer`, `input.cancel` and `input.close`.
+    /// Names this window in `input.answer`, `input.cancel` and `input.close`.
     pub id: String,
     /// The question, written by the tool or Plugin that asks it.
     pub message: String,
+    /// The Input dialog's boxes; empty for a Details window alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<Field>,
+    /// The Details window's items, each CommonMark, in order. Private: the
+    /// user's data, sent nowhere but here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
 }
 
 /// One box in the Input dialog.
