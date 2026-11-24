@@ -1166,6 +1166,20 @@ mod tests {
     }
 
     #[test]
+    fn details_wrap_wide_characters_by_the_cells_they_take() {
+        let words = [
+            "一一", "二二", "三三", "四四", "五五", "六六", "七七", "八八",
+        ];
+        let screen = details(&[&words.join(" ")]);
+
+        let shown = rendered(&screen, 20, 12);
+
+        for word in words {
+            assert!(shown.contains(word), "{word} missing:\n{shown}");
+        }
+    }
+
+    #[test]
     fn details_draw_a_link_with_its_url_in_brackets() {
         let screen = details(&["See [the invoice](https://example.com/inv/7)"]);
 

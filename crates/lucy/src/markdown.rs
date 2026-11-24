@@ -1,6 +1,7 @@
 use pulldown_cmark::{Event, HeadingLevel, LinkType, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub(crate) fn lines(items: &[String], width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width.max(1));
@@ -253,7 +254,7 @@ impl Writer {
 }
 
 fn width_of(spans: &[Span]) -> usize {
-    spans.iter().map(|span| span.content.chars().count()).sum()
+    spans.iter().map(|span| span.content.width()).sum()
 }
 
 fn wrap(
@@ -271,11 +272,11 @@ fn wrap(
     let mut start = 0;
     loop {
         let room = width.saturating_sub(width_of(&prefix)).max(1);
-        if cells.len() - start <= room {
+        let end = fitting(&cells[start..], room).map_or(cells.len(), |fit| start + fit);
+        if end == cells.len() {
             rows.push(row(prefix, &cells[start..]));
             return rows;
         }
-        let end = start + room;
         match (start + 1..=end).rev().find(|&i| cells[i].0 == ' ') {
             Some(space) => {
                 rows.push(row(prefix, &cells[start..space]));
@@ -288,6 +289,17 @@ fn wrap(
         }
         prefix = hang.clone();
     }
+}
+
+fn fitting(cells: &[(char, Style)], room: usize) -> Option<usize> {
+    let mut used = 0;
+    for (i, (c, _)) in cells.iter().enumerate() {
+        used += c.width().unwrap_or_default();
+        if used > room {
+            return Some(i.max(1));
+        }
+    }
+    None
 }
 
 fn row(prefix: Vec<Span<'static>>, cells: &[(char, Style)]) -> Line<'static> {
