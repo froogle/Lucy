@@ -275,7 +275,17 @@ pub async fn ask_typed_at(
     let Ok(kind) = serde_json::from_value::<FieldKind>(field) else {
         return error("A choice needs its choices.");
     };
-    match ask_field(commands, what(&kind), question, ANSWER, kind, when).await {
+    match ask_field(
+        commands,
+        what(&kind),
+        question,
+        ANSWER,
+        kind,
+        Vec::new(),
+        when,
+    )
+    .await
+    {
         TypedAnswer::Answer(answer) => CallToolResult::structured(json!({"answer": answer})),
         TypedAnswer::Cancelled => CallToolResult::structured(json!({"result": "cancelled"})),
         TypedAnswer::TimedOut => CallToolResult::structured(json!({"result": "timed_out"})),
@@ -288,18 +298,8 @@ pub async fn ask(
     kind: FieldKind,
     items: Vec<String>,
 ) -> TypedAnswer {
-    let field = Field {
-        name: ANSWER.to_owned(),
-        description: None,
-        kind,
-    };
-    match fill(commands, question, vec![field], items).await {
-        Filled::Values(mut values) => {
-            TypedAnswer::Answer(values.remove(ANSWER).unwrap_or_default())
-        }
-        Filled::Cancelled => TypedAnswer::Cancelled,
-        Filled::TimedOut => TypedAnswer::TimedOut,
-    }
+    let what = what(&kind);
+    ask_field(commands, what, question, ANSWER, kind, items, When::Now).await
 }
 
 pub async fn ask_for(
@@ -309,7 +309,7 @@ pub async fn ask_for(
     name: &str,
     kind: FieldKind,
 ) -> TypedAnswer {
-    ask_field(commands, what, question, name, kind, When::Now).await
+    ask_field(commands, what, question, name, kind, Vec::new(), When::Now).await
 }
 
 async fn ask_field(
@@ -318,6 +318,7 @@ async fn ask_field(
     question: &str,
     name: &str,
     kind: FieldKind,
+    items: Vec<String>,
     when: When,
 ) -> TypedAnswer {
     let field = Field {
@@ -325,7 +326,7 @@ async fn ask_field(
         description: None,
         kind,
     };
-    match fill_saying(commands, what, question, vec![field], Vec::new(), when).await {
+    match fill_saying(commands, what, question, vec![field], items, when).await {
         Filled::Values(mut values) => TypedAnswer::Answer(values.remove(name).unwrap_or_default()),
         Filled::Cancelled => TypedAnswer::Cancelled,
         Filled::TimedOut => TypedAnswer::TimedOut,
