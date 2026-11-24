@@ -21,7 +21,7 @@ use crate::input;
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::{self, Environment};
-use crate::runner::{self, Command, When};
+use crate::runner::{self, Command, Remembered, When};
 use crate::session::{
     self, Answer, Expects, Question, BUILD_STOPPED, HAND_OFF_STOPPED, QUEUED_DROPPED,
 };
@@ -691,11 +691,24 @@ impl Job {
         let tool_name = string(arguments, "tool_name");
         let empty = serde_json::Value::Object(JsonObject::new());
         let input = arguments.get("input").unwrap_or(&empty);
+        let details = format!("{tool_name}\n{input:#}");
+        let remembered = tool_name.starts_with("mcp__").then(|| Remembered {
+            tool: tool_name.clone(),
+            allowed: Notification {
+                summary: "Claude is using a tool you allowed".into(),
+                body: details.clone(),
+                action: None,
+                kind: NotificationKind::Details,
+            },
+        });
+        let okay = match remembered {
+            Some(_) => "Okay? I won't ask again for that this Session.",
+            None => "Okay?",
+        };
         let question = Question {
-            prompt: format!("Claude wants to {}. Okay?", description(&tool_name, input)),
+            prompt: format!("Claude wants to {}. {okay}", description(&tool_name, input)),
             expects: Expects::Yes,
         };
-        let details = format!("{tool_name}\n{input:#}");
         let kept = When::QuietOrNextSession(Notification {
             summary: "Claude is waiting for your permission".into(),
             body: format!("{details}\n\nLucy will ask at your next Session."),
@@ -713,7 +726,7 @@ impl Job {
         };
         let commands = hand_offs.commands.clone();
         drop(hand_offs);
-        match runner::ask_at(&commands, question, Some(shown), kept).await {
+        match runner::ask_remembering(&commands, question, Some(shown), kept, remembered).await {
             Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
             Some(_) => json!({"behavior": "deny", "message": REFUSED}),
             None => json!({"behavior": "deny", "message": UNASKED}),

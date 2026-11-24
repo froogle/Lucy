@@ -2,7 +2,7 @@ mod preview;
 mod setup;
 mod start;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -50,6 +50,12 @@ pub struct Ask {
     pub shown: Option<Notification>,
     pub reply: oneshot::Sender<Answer>,
     pub when: When,
+    pub remembered: Option<Remembered>,
+}
+
+pub struct Remembered {
+    pub tool: String,
+    pub allowed: Notification,
 }
 
 pub enum When {
@@ -87,12 +93,23 @@ pub fn ask_at(
     shown: Option<Notification>,
     when: When,
 ) -> impl std::future::Future<Output = Option<Answer>> {
+    ask_remembering(commands, question, shown, when, None)
+}
+
+pub fn ask_remembering(
+    commands: &mpsc::UnboundedSender<Command>,
+    question: Question,
+    shown: Option<Notification>,
+    when: When,
+    remembered: Option<Remembered>,
+) -> impl std::future::Future<Output = Option<Answer>> {
     let (reply, answer) = oneshot::channel();
     let _ = commands.send(Command::Ask(Ask {
         question,
         shown,
         reply,
         when,
+        remembered,
     }));
     async move { answer.await.ok() }
 }
@@ -339,6 +356,7 @@ impl Runner {
         silence.set_running(session.silence_timer_runs());
         let mut questions: VecDeque<Ask> = VecDeque::new();
         let mut answer_to = None;
+        let mut allowed = HashSet::new();
         let answer_timeout = Duration::from_secs_f64(confirmation.timeout_secs);
         let mut answer_timer = SilenceTimer::new(answer_timeout, clock.clone());
         let mut dialog: Option<OpenDialog> = None;
@@ -372,6 +390,14 @@ impl Runner {
                 match next {
                     Parked::Ask(abandoned) if abandoned.reply.is_closed() => continue,
                     Parked::Ask(ask) => {
+                        let tool = match ask.remembered {
+                            Some(remembered) if allowed.contains(&remembered.tool) => {
+                                self.notify(remembered.allowed);
+                                let _ = ask.reply.send(Answer::Yes);
+                                continue;
+                            }
+                            remembered => remembered.map(|remembered| remembered.tool),
+                        };
                         if let Some(shown) = ask.shown {
                             self.notify(shown);
                         }
@@ -382,7 +408,7 @@ impl Runner {
                             }
                             _ => answer_timeout,
                         };
-                        answer_to = Some(ask.reply);
+                        answer_to = Some((ask.reply, tool));
                         answer_timer.reset_to(timeout);
                         Input::Ask(ask.question)
                     }
@@ -606,7 +632,10 @@ impl Runner {
                         return;
                     }
                     Output::Answered(answer) => {
-                        if let Some(reply) = answer_to.take() {
+                        if let Some((reply, tool)) = answer_to.take() {
+                            if let (Answer::Yes, Some(tool)) = (&answer, tool) {
+                                allowed.insert(tool);
+                            }
                             let _ = reply.send(answer);
                         }
                     }
