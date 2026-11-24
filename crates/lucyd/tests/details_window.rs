@@ -412,13 +412,47 @@ fn with_asker() -> Harness {
 }
 
 fn model_calls(lucyd: &Harness, events: &mut Client, tool: &str) -> Call {
+    model_calls_with(
+        lucyd,
+        events,
+        tool,
+        json!({"question": "Reply to this one?"}),
+    )
+}
+
+fn model_calls_with(
+    lucyd: &Harness,
+    events: &mut Client,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> Call {
     lucyd.say("deal with my email");
     lucyd.thinking.next_turn();
     assert_eq!(next_state(events).state, State::Thinking);
     let thinking = lucyd.thinking.clone();
     let tool = format!("asker__{tool}");
-    let arguments = json!({"question": "Reply to this one?"});
     std::thread::spawn(move || thinking.call_tool_with(&tool, arguments))
+}
+
+#[test]
+fn mid_call_items_holding_anything_but_text_are_dropped_and_the_question_is_asked_plainly() {
+    let lucyd = with_asker();
+    let mut holder = lucyd.input("a widget");
+    let mut events = session(&lucyd);
+    let arguments = json!({"question": "Reply to this one?", "items": "mixed"});
+    let call = model_calls_with(&lucyd, &mut events, "ask_about", arguments);
+
+    assert_eq!(lucyd.tts.next_sentence(), "Reply to this one?");
+    lucyd.tts.finish_playing();
+    lucyd.say("Say I'll be there.");
+
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(text(&result), "heard: Say I'll be there.");
+    let opened = holder.next_event_within(std::time::Duration::from_millis(100));
+    assert!(
+        !matches!(opened, Ok(Some(Event::InputOpen(_)))),
+        "{opened:?}"
+    );
 }
 
 #[test]

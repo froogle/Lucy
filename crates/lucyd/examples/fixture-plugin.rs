@@ -28,7 +28,7 @@
 //!   the Details window's items `ITEMS` in the elicitation's `_meta`
 //!   (`lucy/items`): aloud, as one plain field `answer`, returning `heard:
 //!   <answer>`; or typed, as one `uri` field `url`, returning `answered:` and
-//!   the response, as JSON.
+//!   the response, as JSON. With `items: "mixed"`, the items hold a number.
 //! - `wait {path}`: writes `<path>.waiting`, then returns `done` once `path`
 //!   exists. If the call is cancelled first, it writes `<path>.cancelled`.
 //! - `look`: returns an `image/png` image, base64 of a PNG signature then
@@ -66,9 +66,8 @@ fn tool(name: &str) -> Tool {
     let string = json!({"type": "string"});
     let properties = match name {
         "echo" | "save_state" => json!({"text": string}),
-        "ask" | "ask_url" | "ask_two" | "ask_about" | "type_about" => {
-            json!({"question": string})
-        }
+        "ask_about" | "type_about" => json!({"question": string, "items": string}),
+        "ask" | "ask_url" | "ask_two" => json!({"question": string}),
         "ask_secret" => json!({"name": string}),
         "read_file" | "wait" => json!({"path": string}),
         "write_file" | "describe_write" | "describe_badly" => {
@@ -220,10 +219,14 @@ async fn describe_badly(
 }
 
 fn items_meta(request: &CallToolRequestParams) -> Option<Value> {
+    let items = match &*arg(request, "items") {
+        "mixed" => json!([ITEMS[0], 7]),
+        _ => json!(ITEMS),
+    };
     request
         .name
         .ends_with("_about")
-        .then(|| json!({"lucy/items": ITEMS}))
+        .then(|| json!({ "lucy/items": items }))
 }
 
 fn ask(request: &CallToolRequestParams) -> InputRequiredResult {

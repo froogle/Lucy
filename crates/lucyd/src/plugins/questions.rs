@@ -77,13 +77,16 @@ pub(super) fn read(
 }
 
 pub(super) fn items(meta: Option<&RequestMetaObject>) -> Vec<String> {
-    let listed = meta
-        .and_then(|meta| meta.get(ITEMS))
-        .and_then(Value::as_array);
+    meta.and_then(|meta| meta.get(ITEMS))
+        .and_then(items_in)
+        .unwrap_or_default()
+}
+
+pub(super) fn items_in(listed: &Value) -> Option<Vec<String>> {
     listed
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.as_str().map(str::to_owned))
+        .as_array()?
+        .iter()
+        .map(|item| item.as_str().map(str::to_owned))
         .collect()
 }
 

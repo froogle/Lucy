@@ -1200,15 +1200,7 @@ fn described_items(result: &CallToolResult) -> Option<Vec<String>> {
     if result.is_error == Some(true) {
         return None;
     }
-    let items = result
-        .structured_content
-        .as_ref()?
-        .get("items")?
-        .as_array()?;
-    items
-        .iter()
-        .map(|item| item.as_str().map(str::to_owned))
-        .collect()
+    questions::items_in(result.structured_content.as_ref()?.get("items")?)
 }
 
 fn fill(template: &str, arguments: &JsonObject) -> String {
