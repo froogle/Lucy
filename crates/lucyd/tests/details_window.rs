@@ -70,8 +70,15 @@ fn next_close(holder: &mut Client) -> String {
     }
 }
 
+fn log_if_asked() {
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = lucyd::start_log();
+    }
+}
+
 #[test]
 fn a_confirmation_with_a_describe_tool_shows_its_items_instead_of_the_notification() {
+    log_if_asked();
     let lucyd = with_notes("describe_write");
     let _indicator = lucyd.indicator("lucy-indicator");
     let mut holder = lucyd.input("a widget");
@@ -97,6 +104,10 @@ fn a_confirmation_with_a_describe_tool_shows_its_items_instead_of_the_notificati
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
     assert_eq!(next_close(&mut holder), open.id);
     lucyd.notifier.assert_no_notification();
+    assert!(!text(&result).contains("It will say"), "{}", text(&result));
+    lucyd.thinking.assert_no_turn();
+    events.end_session().unwrap();
+    lucyd.assert_nothing_private_on_bus();
 }
 
 fn asked(lucyd: &Harness, events: &mut Client, text: &str) -> (PathBuf, Call) {
@@ -120,6 +131,50 @@ fn a_no_declines_and_closes_the_window() {
     let result = call.join().unwrap().unwrap();
     assert!(text(&result).starts_with("declined"), "{}", text(&result));
     assert!(!file.exists());
+    assert_eq!(next_close(&mut holder), open.id);
+}
+
+#[test]
+fn a_cancel_phrase_declines_and_closes_the_window() {
+    let lucyd = with_notes("describe_write");
+    let mut holder = lucyd.input("a widget");
+    let mut events = session(&lucyd);
+    let (file, call) = asked(&lucyd, &mut events, "hello");
+    let open = lucyd.next_details(&mut holder);
+
+    lucyd.say("never mind");
+
+    let result = call.join().unwrap().unwrap();
+    assert!(text(&result).starts_with("declined"), "{}", text(&result));
+    assert!(!file.exists());
+    assert_eq!(next_close(&mut holder), open.id);
+}
+
+#[test]
+fn a_barge_in_while_lucy_asks_leaves_the_question_and_its_window_open() {
+    let lucyd = with_notes("describe_write");
+    let mut holder = lucyd.input("a widget");
+    let mut events = session(&lucyd);
+    let (file, call) = model_writes(&lucyd, &mut events, "hello");
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    let open = lucyd.next_details(&mut holder);
+    assert_eq!(lucyd.tts.next_sentence(), PROMPT);
+
+    lucyd.wake();
+    lucyd.barrier();
+
+    assert_eq!(lucyd.client().status().unwrap().state, State::Confirming);
+    assert_eq!(lucyd.thinking.interrupts(), 0);
+    let early = holder.next_event_within(std::time::Duration::from_millis(100));
+    assert!(
+        !matches!(early, Ok(Some(Event::InputClose(_)))),
+        "{early:?}"
+    );
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert!(file.exists());
     assert_eq!(next_close(&mut holder), open.id);
 }
 
@@ -493,9 +548,7 @@ fn mid_call_items_holding_anything_but_text_are_dropped_and_the_question_is_aske
 
 #[test]
 fn a_spoken_mid_call_question_shows_its_items_on_their_own() {
-    if std::env::var_os("RUST_LOG").is_some() {
-        let _ = env_logger::try_init();
-    }
+    log_if_asked();
     let lucyd = with_asker();
     let mut holder = lucyd.input("a widget");
     let mut events = session(&lucyd);
@@ -568,10 +621,14 @@ fn a_cancel_phrase_closes_a_typed_question_with_items() {
 
 const ITEMS_TEST: &str = "a_spoken_mid_call_question_shows_its_items_on_their_own";
 
+const DESCRIBED_TEST: &str =
+    "a_confirmation_with_a_describe_tool_shows_its_items_instead_of_the_notification";
+
 #[test]
 fn items_never_reach_lucyds_log_or_a_plugins_stderr() {
     let run = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([ITEMS_TEST, "--exact", "--nocapture"])
+        .args([ITEMS_TEST, DESCRIBED_TEST, PERMISSION_TEST])
+        .args(["--exact", "--nocapture", "--test-threads=1"])
         .env("RUST_LOG", "trace")
         .output()
         .unwrap();
@@ -579,8 +636,10 @@ fn items_never_reach_lucyds_log_or_a_plugins_stderr() {
     let log =
         String::from_utf8_lossy(&run.stderr).into_owned() + &String::from_utf8_lossy(&run.stdout);
     assert!(run.status.success(), "{log}");
-    assert!(log.contains("1 passed"), "{log}");
+    assert!(log.contains("3 passed"), "{log}");
     assert!(!log.contains("Lunch on Friday"), "{log}");
+    assert!(!log.contains("It will say"), "{log}");
+    assert!(!log.contains("```sh"), "{log}");
 }
 
 fn handed_off(lucyd: &Harness) -> Client {
@@ -628,6 +687,32 @@ fn permission_items(tool_name: &str, input: serde_json::Value) -> Vec<String> {
         "{shown:?}"
     );
     open.items
+}
+
+const PERMISSION_TEST: &str = "a_permissions_items_reach_only_the_input_holder";
+
+#[test]
+fn a_permissions_items_reach_only_the_input_holder() {
+    log_if_asked();
+    let lucyd = Harness::start();
+    let mut holder = lucyd.input("a widget");
+    let mut events = handed_off(&lucyd);
+    let command = "rm -rf ./build-cache";
+    let request = json!({"tool_name": "Bash", "input": {"command": command}});
+
+    let call = claude_asks(&lucyd, request);
+
+    let open = lucyd.next_details(&mut holder);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    let result = call.join().unwrap().unwrap();
+    assert!(!text(&result).contains("```"), "{}", text(&result));
+    assert_eq!(next_close(&mut holder), open.id);
+    lucyd.thinking.assert_no_turn();
+    events.end_session().unwrap();
+    lucyd.assert_nothing_private_on_bus();
+    lucyd.assert_not_on_bus(&[command]);
 }
 
 #[test]
