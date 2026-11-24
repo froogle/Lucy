@@ -60,6 +60,10 @@ _Avoid_: Approval (that is the yes for a whole Plugin), permission
 A box Lucy puts on screen so the user can type an answer she shouldn't hear or can't easily catch, such as a password, an API key or a long URL. A secret typed there goes only to the tool or Plugin that asked, never to the model.
 _Avoid_: prompt (when meaning an Input dialog), popup, form
 
+**Details window**:
+A window Lucy puts on screen beside a question, so the user can read what they are being asked about, such as the emails a Plugin wants to trash. The user only reads it; the answer is still spoken or typed. It closes when the question ends.
+_Avoid_: popup, preview (when meaning a Details window), list view, notification (when meaning a Details window)
+
 **Built-in tool**:
 An action Lucy provides herself rather than through a Plugin, such as opening a link or launching an app. Built-in tools need no Approval, so there are only a few of them.
 _Avoid_: Core plugin, native tool
