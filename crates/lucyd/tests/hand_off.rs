@@ -134,8 +134,9 @@ fn assert_denied(decision: &serde_json::Value) {
 }
 
 #[test]
-fn a_permission_request_is_asked_with_claudes_description_and_the_full_input_notified() {
+fn a_permission_request_is_asked_with_claudes_description_and_the_full_input_shown() {
     let lucyd = Harness::start();
+    let mut holder = lucyd.input("a widget");
     let mut events = handed_off(&lucyd, &lucyd.scratch());
     lucyd.thinking.hand_off.next_turn();
 
@@ -146,13 +147,10 @@ fn a_permission_request_is_asked_with_claudes_description_and_the_full_input_not
         lucyd.tts.next_sentence(),
         "Claude wants to run lucyd's tests. Okay?"
     );
-    let shown = lucyd
-        .notifier
-        .next_notification_of(NotificationKind::Details);
+    let details = lucyd.next_details(&mut holder);
     assert!(
-        shown.body.contains("Bash") && shown.body.contains("cargo test -p lucyd"),
-        "{}",
-        shown.body
+        details.items.concat().contains("cargo test -p lucyd"),
+        "{details:?}"
     );
     lucyd.tts.finish_playing();
     lucyd.say("Yes.");

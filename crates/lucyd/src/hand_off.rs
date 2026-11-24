@@ -21,7 +21,7 @@ use crate::input;
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::{self, Environment};
-use crate::runner::{self, Command, When};
+use crate::runner::{self, Beside, Command, When};
 use crate::session::{
     self, Answer, Expects, Question, BUILD_STOPPED, HAND_OFF_STOPPED, QUEUED_DROPPED,
 };
@@ -713,7 +713,11 @@ impl Job {
         };
         let commands = hand_offs.commands.clone();
         drop(hand_offs);
-        match runner::ask_at(&commands, question, Some(shown), kept).await {
+        let beside = Beside {
+            shown: Some(shown),
+            items: permission_items(&tool_name, input),
+        };
+        match runner::ask_beside(&commands, question, beside, kept).await {
             Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
             Some(_) => json!({"behavior": "deny", "message": REFUSED}),
             None => json!({"behavior": "deny", "message": UNASKED}),
@@ -879,6 +883,42 @@ impl Job {
             hand_offs.finished(self);
         }
     }
+}
+
+fn permission_items(tool_name: &str, input: &serde_json::Value) -> Vec<String> {
+    let field = |name: &str| input.get(name).and_then(serde_json::Value::as_str);
+    let at = |path: &str, block: String| format!("`{path}`\n\n{block}");
+    let item = match tool_name {
+        "Bash" => field("command").map(|command| fenced("sh", command)),
+        "Edit" => field("file_path")
+            .zip(field("old_string"))
+            .map(|(path, old)| {
+                let new = field("new_string").unwrap_or_default();
+                at(path, fenced("diff", &change(old, new)))
+            }),
+        "Write" => field("file_path")
+            .zip(field("content"))
+            .map(|(path, content)| at(path, fenced("", content))),
+        _ => None,
+    };
+    let item = item.unwrap_or_else(|| at(tool_name, fenced("json", &format!("{input:#}"))));
+    vec![item]
+}
+
+fn change(old: &str, new: &str) -> String {
+    let removed = old.lines().map(|line| format!("-{line}"));
+    let added = new.lines().map(|line| format!("+{line}"));
+    removed.chain(added).collect::<Vec<_>>().join("\n")
+}
+
+fn fenced(language: &str, code: &str) -> String {
+    let longest_run = code
+        .split(|c| c != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or_default();
+    let fence = "`".repeat(longest_run.max(2) + 1);
+    format!("{fence}{language}\n{code}\n{fence}")
 }
 
 fn question_kept(summary: &str) -> When {

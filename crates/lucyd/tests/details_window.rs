@@ -494,3 +494,122 @@ fn items_never_reach_lucyds_log_or_a_plugins_stderr() {
     assert!(log.contains("1 passed"), "{log}");
     assert!(!log.contains("Lunch on Friday"), "{log}");
 }
+
+fn handed_off(lucyd: &Harness) -> Client {
+    let mut events = session(lucyd);
+    lucyd.say("tell Claude to tidy the repo");
+    lucyd.thinking.next_turn();
+    while next_state(&mut events).state != State::Thinking {}
+    let folder = lucyd.scratch();
+    let arguments = json!({"request": "tidy the repo", "folder": folder.to_str().unwrap()});
+    let result = lucyd
+        .thinking
+        .call_tool_with("hand_to_claude", arguments)
+        .unwrap();
+    assert_ne!(result.is_error, Some(true), "{}", text(&result));
+    lucyd.thinking.turn_end();
+    while next_state(&mut events).state != State::Listening {}
+    lucyd.thinking.hand_off.next_turn();
+    events
+}
+
+fn claude_asks(lucyd: &Harness, request: serde_json::Value) -> Call {
+    let hand_off = lucyd.thinking.hand_off.clone();
+    std::thread::spawn(move || hand_off.call_tool_with("permission", request))
+}
+
+fn permission_items(tool_name: &str, input: serde_json::Value) -> Vec<String> {
+    let lucyd = Harness::start();
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let mut holder = lucyd.input("a widget");
+    let _events = handed_off(&lucyd);
+
+    let call = claude_asks(&lucyd, json!({"tool_name": tool_name, "input": input}));
+
+    let open = lucyd.next_details(&mut holder);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    call.join().unwrap().unwrap();
+    assert_eq!(next_close(&mut holder), open.id);
+    let shown = lucyd.notifier.shown();
+    assert!(
+        !shown
+            .iter()
+            .any(|shown| shown.summary == "Claude needs your yes"),
+        "{shown:?}"
+    );
+    open.items
+}
+
+#[test]
+fn a_bash_permission_shows_the_command_in_a_code_block() {
+    let items = permission_items(
+        "Bash",
+        json!({"command": "cargo test -p lucyd", "description": "Run lucyd's tests."}),
+    );
+
+    assert_eq!(items, ["```sh\ncargo test -p lucyd\n```"]);
+}
+
+#[test]
+fn an_edit_permission_shows_the_path_and_the_change() {
+    let items = permission_items(
+        "Edit",
+        json!({"file_path": "/repo/src/lib.rs", "old_string": "let a = 1;\nlet b = 2;", "new_string": "let a = 3;"}),
+    );
+
+    assert_eq!(
+        items,
+        ["`/repo/src/lib.rs`\n\n```diff\n-let a = 1;\n-let b = 2;\n+let a = 3;\n```"]
+    );
+}
+
+#[test]
+fn a_write_permission_shows_the_path_and_the_content_fenced_past_its_own_fences() {
+    let items = permission_items(
+        "Write",
+        json!({"file_path": "/repo/README.md", "content": "# Repo\n\n```\ncargo build\n```"}),
+    );
+
+    assert_eq!(
+        items,
+        ["`/repo/README.md`\n\n````\n# Repo\n\n```\ncargo build\n```\n````"]
+    );
+}
+
+#[test]
+fn any_other_permission_shows_the_tool_and_its_input_as_json() {
+    let items = permission_items("mcp__linear__create_issue", json!({"title": "Fix it"}));
+
+    assert_eq!(
+        items,
+        ["`mcp__linear__create_issue`\n\n```json\n{\n  \"title\": \"Fix it\"\n}\n```"]
+    );
+}
+
+#[test]
+fn a_permission_kept_for_the_next_session_shows_the_same_window_when_asked() {
+    let lucyd = Harness::start();
+    let mut holder = lucyd.input("a widget");
+    let mut events = handed_off(&lucyd);
+    events.end_session().unwrap();
+    while next_state(&mut events).state != State::Idle {}
+
+    let call = claude_asks(
+        &lucyd,
+        json!({"tool_name": "Bash", "input": {"command": "git clean -fdx"}}),
+    );
+    lucyd
+        .notifier
+        .next_notification_of(lucyd::adapters::NotificationKind::HandOff);
+    events.start_session().unwrap();
+
+    let open = lucyd.next_details(&mut holder);
+    assert_eq!(open.items, ["```sh\ngit clean -fdx\n```"]);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("no");
+    call.join().unwrap().unwrap();
+    assert_eq!(next_close(&mut holder), open.id);
+}
