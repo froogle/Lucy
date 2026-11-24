@@ -84,6 +84,10 @@ _Avoid_: forward, relay (when meaning a Hand-off)
 The personality and manner of speaking of one user's Lucy, including what she calls them. Each user shapes their own, by editing it or by telling her.
 _Avoid_: Character, personality profile, system prompt
 
+**Memory**:
+The facts a user has asked their Lucy to keep for later Sessions, separate from her Persona. She keeps only what she's told to.
+_Avoid_: Notes, knowledge base, history
+
 **Source**:
 A news site the news briefing reads through its official feed. Lucy summarises only Sources whose terms allow it; for the rest she offers to open the site's page.
 _Avoid_: Outlet, feed (the feed is how a Source is read), publisher

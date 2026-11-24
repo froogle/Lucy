@@ -4,6 +4,8 @@
 
 Plugin tools still go through the runtime-owned Confirmation (ADR 0005), and a Plugin still needs its Approval (ADR 0004).
 
+_Amended 2026-11-24 (#5)._ The Memory tools, `remember` and `forget`, need no Confirmation either, for the same reason as the Persona (ADR 0014).
+
 ## Considered Options
 
 - A Confirmation for every Built-in tool: asking "Okay?" before opening a page or saying the battery level makes Lucy slow to use for nothing.
