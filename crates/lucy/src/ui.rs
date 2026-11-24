@@ -466,9 +466,8 @@ impl Prompt {
     }
 }
 
-/// A Details window's items, each CommonMark, and how far they are scrolled.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Details {
+pub(crate) struct Details {
     items: Vec<String>,
     scroll: u16,
     end: Cell<u16>,
@@ -476,7 +475,7 @@ pub struct Details {
 }
 
 impl Details {
-    pub fn new(items: Vec<String>) -> Details {
+    pub(crate) fn new(items: Vec<String>) -> Details {
         Details {
             items,
             scroll: 0,
@@ -514,7 +513,7 @@ pub struct Screen {
     pub lines: Vec<String>,
     pub prompt: Option<Prompt>,
     pub meter: Option<f64>,
-    pub details: Option<Details>,
+    pub(crate) details: Option<Details>,
     shown: Vec<String>,
 }
 
