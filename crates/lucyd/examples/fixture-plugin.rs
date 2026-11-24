@@ -16,6 +16,19 @@
 //!   form: one `uri` field `url`; a string `name` and an integer `count`; or
 //!   Lucy's `secret` field on the credential `name`. Each returns `answered:`
 //!   and the response it got, as JSON.
+//! - `describe_write {path, text}`: describes a `write_file` call for the
+//!   Details window: `structuredContent` `{"items": ["## <path>", "It will
+//!   say *<text>*."]}`.
+//! - `describe_badly {path, text}`: a describe tool that goes wrong as `text`
+//!   says: `fail` answers with an error result, `empty` with no items,
+//!   `malformed` with items that aren't a list, and `stall` writes
+//!   `<path>.describing` and never answers; if that call is cancelled, it
+//!   writes `<path>.cancelled`.
+//! - `ask_about {question}` and `type_about {question}` ask `question` with
+//!   the Details window's items `ITEMS` in the elicitation's `_meta`
+//!   (`lucy/items`): aloud, as one plain field `answer`, returning `heard:
+//!   <answer>`; or typed, as one `uri` field `url`, returning `answered:` and
+//!   the response, as JSON.
 //! - `wait {path}`: writes `<path>.waiting`, then returns `done` once `path`
 //!   exists. If the call is cancelled first, it writes `<path>.cancelled`.
 //! - `look`: returns an `image/png` image, base64 of a PNG signature then
@@ -34,6 +47,8 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{json, Value};
 
+const ITEMS: [&str; 2] = ["**From:** Ada", "*Subject:* Lunch on Friday"];
+
 const SCREEN: &str = "iVBORw0KGgpMdWN5U2NyZWVuU2VjcmV0";
 
 struct Fixture {
@@ -51,10 +66,14 @@ fn tool(name: &str) -> Tool {
     let string = json!({"type": "string"});
     let properties = match name {
         "echo" | "save_state" => json!({"text": string}),
-        "ask" | "ask_url" | "ask_two" => json!({"question": string}),
+        "ask" | "ask_url" | "ask_two" | "ask_about" | "type_about" => {
+            json!({"question": string})
+        }
         "ask_secret" => json!({"name": string}),
         "read_file" | "wait" => json!({"path": string}),
-        "write_file" => json!({"path": string, "text": string}),
+        "write_file" | "describe_write" | "describe_badly" => {
+            json!({"path": string, "text": string})
+        }
         _ => json!({}),
     };
     Tool::new(name.to_owned(), name.to_owned(), schema(properties))
@@ -120,6 +139,22 @@ impl ServerHandler for Fixture {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             }
+            "describe_write" => {
+                let items = [
+                    format!("## {}", arg(&request, "path")),
+                    format!("It will say *{}*.", arg(&request, "text")),
+                ];
+                return Ok(CallToolResult::structured(json!({ "items": items })).into());
+            }
+            "describe_badly" => return Ok(describe_badly(&request, &context).await.into()),
+            "ask" | "ask_about" => match &request.input_responses {
+                None => return Ok(ask(&request).into()),
+                Some(responses) => Ok(responses
+                    .get("answer")
+                    .and_then(|response| response["content"]["answer"].as_str())
+                    .map(|answer| format!("heard: {answer}"))
+                    .unwrap_or_else(|| "no answer".into())),
+            },
             "echo" => Ok(arg(&request, "text")),
             "read_file" => std::fs::read_to_string(arg(&request, "path")),
             "write_file" => {
@@ -150,15 +185,7 @@ impl ServerHandler for Fixture {
                 ]);
                 return Ok(looked.into());
             }
-            "ask" => match &request.input_responses {
-                None => return Ok(ask(&arg(&request, "question")).into()),
-                Some(responses) => Ok(responses
-                    .get("answer")
-                    .and_then(|response| response["content"]["answer"].as_str())
-                    .map(|answer| format!("heard: {answer}"))
-                    .unwrap_or_else(|| "no answer".into())),
-            },
-            "ask_url" | "ask_two" | "ask_secret" => match &request.input_responses {
+            "ask_url" | "ask_two" | "ask_secret" | "type_about" => match &request.input_responses {
                 None => return Ok(ask_form(&request).into()),
                 Some(responses) => Ok(format!("answered: {}", responses["answer"])),
             },
@@ -174,21 +201,46 @@ impl ServerHandler for Fixture {
     }
 }
 
-fn ask(question: &str) -> InputRequiredResult {
+async fn describe_badly(
+    request: &CallToolRequestParams,
+    context: &RequestContext<RoleServer>,
+) -> CallToolResult {
+    match &*arg(request, "text") {
+        "fail" => CallToolResult::error(vec![ContentBlock::text("can't describe it")]),
+        "empty" => CallToolResult::structured(json!({"items": []})),
+        "malformed" => CallToolResult::structured(json!({"items": "not a list"})),
+        _ => {
+            let path = arg(request, "path");
+            let _ = std::fs::write(format!("{path}.describing"), "");
+            context.ct.cancelled().await;
+            let _ = std::fs::write(format!("{path}.cancelled"), "");
+            CallToolResult::error(vec![ContentBlock::text("cancelled")])
+        }
+    }
+}
+
+fn items_meta(request: &CallToolRequestParams) -> Option<Value> {
+    request
+        .name
+        .ends_with("_about")
+        .then(|| json!({"lucy/items": ITEMS}))
+}
+
+fn ask(request: &CallToolRequestParams) -> InputRequiredResult {
     elicit(
-        question.to_owned(),
+        arg(request, "question"),
         json!({"answer": {"type": "string"}}),
-        None,
+        items_meta(request),
     )
 }
 
 fn ask_form(request: &CallToolRequestParams) -> InputRequiredResult {
     let question = arg(request, "question");
     match &*request.name {
-        "ask_url" => elicit(
+        "ask_url" | "type_about" => elicit(
             question,
             json!({"url": {"type": "string", "format": "uri"}}),
-            None,
+            items_meta(request),
         ),
         "ask_two" => elicit(
             question,

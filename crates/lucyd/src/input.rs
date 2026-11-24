@@ -15,6 +15,7 @@ use crate::sync::Locked;
 pub struct Dialog {
     pub message: String,
     pub fields: Vec<Field>,
+    pub items: Vec<String>,
 }
 
 /// How a question put in the Input dialog was answered.
@@ -127,7 +128,7 @@ impl Dialogs {
             id: id.to_string(),
             message: dialog.message,
             fields: dialog.fields,
-            items: Vec::new(),
+            items: dialog.items,
         };
         let (reply, typed) = oneshot::channel();
         inner.send(Event::InputOpen(request.clone()));
@@ -169,7 +170,7 @@ impl InputClaim {
         let mut inner = self.dialogs.inner.locked();
         let id = DialogId::parse(id).ok_or(Refusal::NoDialog)?;
         let open = inner.open.as_ref().filter(|open| open.id == id);
-        let Some(open) = open else {
+        let Some(open) = open.filter(|open| !open.request.fields.is_empty()) else {
             return Err(Refusal::NoDialog);
         };
         let names = open.request.fields.iter().map(|field| &field.name);
@@ -313,7 +314,7 @@ async fn ask_field(
         description: None,
         kind,
     };
-    match fill_saying(commands, what, question, vec![field], when).await {
+    match fill_saying(commands, what, question, vec![field], Vec::new(), when).await {
         Filled::Values(mut values) => TypedAnswer::Answer(values.remove(name).unwrap_or_default()),
         Filled::Cancelled => TypedAnswer::Cancelled,
         Filled::TimedOut => TypedAnswer::TimedOut,
@@ -331,12 +332,13 @@ pub async fn fill(
     commands: &mpsc::UnboundedSender<Command>,
     message: &str,
     fields: Vec<Field>,
+    items: Vec<String>,
 ) -> Filled {
     let what = match &*fields {
         [field] => what(&field.kind),
         _ => "your answers",
     };
-    fill_saying(commands, what, message, fields, When::Now).await
+    fill_saying(commands, what, message, fields, items, When::Now).await
 }
 
 async fn fill_saying(
@@ -344,6 +346,7 @@ async fn fill_saying(
     what: &str,
     message: &str,
     fields: Vec<Field>,
+    items: Vec<String>,
     when: When,
 ) -> Filled {
     let question = Question {
@@ -351,6 +354,7 @@ async fn fill_saying(
         expects: Expects::Typed(Dialog {
             message: message.to_owned(),
             fields,
+            items,
         }),
     };
     match runner::ask_at(commands, question, None, when).await {

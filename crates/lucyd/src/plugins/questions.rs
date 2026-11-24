@@ -10,6 +10,8 @@ use crate::input::Filled;
 
 const SECRET: &str = "lucy/secret";
 
+const ITEMS: &str = "lucy/items";
+
 const RESULT: &str = "lucy/result";
 
 const PROVIDED: &str = "provided";
@@ -72,6 +74,17 @@ pub(super) fn read(
             Some(Question::Typed(Fields { fields }))
         }
     }
+}
+
+pub(super) fn items(meta: Option<&RequestMetaObject>) -> Vec<String> {
+    let listed = meta
+        .and_then(|meta| meta.get(ITEMS))
+        .and_then(Value::as_array);
+    listed
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str().map(str::to_owned))
+        .collect()
 }
 
 fn secrets(meta: Option<&RequestMetaObject>) -> Option<Vec<String>> {
