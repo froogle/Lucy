@@ -36,6 +36,8 @@ const CAPTURE_WAIT: Duration = Duration::from_secs(5);
 
 const FOLDER_DEPTH: usize = 3;
 
+const INTEGRATION_PREFIX: &str = "mcp__";
+
 const UNASKED: &str = "The user's Claude settings don't allow this, and Lucy couldn't ask them \
                        about it, so it's denied. Carry on without it, and say in your final \
                        message what you'd need.";
@@ -692,21 +694,26 @@ impl Job {
         let empty = serde_json::Value::Object(JsonObject::new());
         let input = arguments.get("input").unwrap_or(&empty);
         let details = format!("{tool_name}\n{input:#}");
-        let remembered = tool_name.starts_with("mcp__").then(|| Remembered {
-            tool: tool_name.clone(),
-            allowed: Notification {
-                summary: "Claude is using a tool you allowed".into(),
-                body: details.clone(),
-                action: None,
-                kind: NotificationKind::Details,
-            },
-        });
-        let okay = match remembered {
+        let remembered = tool_name
+            .starts_with(INTEGRATION_PREFIX)
+            .then(|| Remembered {
+                tool: tool_name.clone(),
+                allowed: Notification {
+                    summary: "Claude is using a tool you allowed".into(),
+                    body: details.clone(),
+                    action: None,
+                    kind: NotificationKind::Details,
+                },
+            });
+        let ending = match remembered {
             Some(_) => "Okay? I won't ask again for that this Session.",
             None => "Okay?",
         };
         let question = Question {
-            prompt: format!("Claude wants to {}. {okay}", description(&tool_name, input)),
+            prompt: format!(
+                "Claude wants to {}. {ending}",
+                description(&tool_name, input)
+            ),
             expects: Expects::Yes,
         };
         let kept = When::QuietOrNextSession(Notification {
@@ -910,7 +917,9 @@ fn description(tool_name: &str, input: &serde_json::Value) -> String {
         .map(|said| said.trim().trim_end_matches('.').trim())
         .filter(|said| !said.is_empty());
     let Some(said) = said else {
-        let tool = tool_name.strip_prefix("mcp__").unwrap_or(tool_name);
+        let tool = tool_name
+            .strip_prefix(INTEGRATION_PREFIX)
+            .unwrap_or(tool_name);
         return format!(
             "use {}",
             tool.replace('_', " ")
