@@ -284,6 +284,42 @@ fn a_describe_tool_slower_than_five_seconds_falls_back_to_the_notification() {
 }
 
 #[test]
+fn a_describe_cut_off_while_its_plugin_starts_leaves_the_yes_to_start_it_afresh() {
+    let lucyd = Harness::start();
+    let hold = lucyd.scratch().join("hold");
+    let manifest = mail_manifest("describe_write").replace(
+        "[\"./fixture-plugin\", ",
+        &format!(
+            "[\"./fixture-plugin\", \"--hold-start={}\", ",
+            hold.display()
+        ),
+    );
+    lucyd.install_plugin("notes", &manifest);
+    lucyd.approve("notes");
+    let _indicator = lucyd.indicator("lucy-indicator");
+    let mut events = session(&lucyd);
+    std::fs::write(&hold, "").unwrap();
+    let (file, call) = model_writes(&lucyd, &mut events, "hello");
+    let starting = hold.with_extension("starting");
+    harness::wait_until("the Plugin to start", || starting.exists().then_some(()));
+
+    lucyd.clock.advance(std::time::Duration::from_secs(5));
+
+    assert_eq!(next_state(&mut events).state, State::Confirming);
+    assert_eq!(
+        lucyd.notifier.next_notification().summary,
+        "Lucy needs your yes"
+    );
+    std::fs::remove_file(&hold).unwrap();
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    let result = call.join().unwrap().unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "hello");
+}
+
+#[test]
 fn a_barge_in_while_describing_cancels_the_describe_tool_and_the_call() {
     let lucyd = with_notes("describe_badly");
     let mut events = session(&lucyd);

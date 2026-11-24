@@ -35,6 +35,9 @@
 //!   `LucyScreenSecret`, and the text `a fake screen`.
 //! - `click`, `key`, `type` and `scroll`: return their name, `: ` and the
 //!   arguments they got, as JSON.
+//!
+//! An argument `--hold-start=<path>` is no tool: while `path` exists, the
+//! Plugin writes `<path>.starting` and waits before it starts serving.
 
 use std::sync::Arc;
 
@@ -48,6 +51,8 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{json, Value};
 
 const ITEMS: [&str; 2] = ["**From:** Ada", "*Subject:* Lunch on Friday"];
+
+const HOLD_START: &str = "--hold-start=";
 
 const SCREEN: &str = "iVBORw0KGgpMdWN5U2NyZWVuU2VjcmV0";
 
@@ -282,9 +287,19 @@ fn elicit(message: String, properties: Value, meta: Option<Value>) -> InputRequi
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
-    let fixture = Fixture {
-        tools: std::env::args().skip(1).collect(),
-    };
+    let (holds, tools): (Vec<String>, Vec<String>) = std::env::args()
+        .skip(1)
+        .partition(|arg| arg.starts_with(HOLD_START));
+    for hold in holds {
+        let hold = &hold[HOLD_START.len()..];
+        if std::path::Path::new(hold).exists() {
+            let _ = std::fs::write(format!("{hold}.starting"), "");
+        }
+        while std::path::Path::new(hold).exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+    let fixture = Fixture { tools };
     let service = fixture
         .serve(rmcp::transport::stdio())
         .await
