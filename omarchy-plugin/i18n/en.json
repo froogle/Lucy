@@ -31,5 +31,6 @@
   "input.pick": "Pick one of the choices, or Cancel.",
   "input.notNumber": "%1 isn't a number.",
   "input.send": "Send",
-  "input.cancel": "Cancel"
+  "input.cancel": "Cancel",
+  "input.close": "Close"
 }

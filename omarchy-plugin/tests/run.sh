@@ -4,6 +4,8 @@
 # (every one through lucy, none through systemctl) and what its Input dialog
 # sent to `lucy input --json`.
 # Needs quickshell and Omarchy's shell modules; OMARCHY_SHELL points at them.
+# With LUCY_PANEL_CAPTURE set to a .png path, it saves the Details window
+# above the Input dialog there, to check by eye.
 set -euo pipefail
 plugin="$(cd "$(dirname "$0")/.." && pwd)"
 shell="${OMARCHY_SHELL:-/usr/share/omarchy/shell}"
@@ -87,12 +89,13 @@ if grep '^systemctl' "$calls" >&2; then
     status=1
 fi
 # What the Input dialog sent: each reply once, in order; nothing for a
-# dialog lucyd closed.
+# dialog lucyd closed, nor for a Details window alone the user closed.
 cat > "$dir/replies.want" <<'EOF'
 {"method":"input.answer","params":{"id":"secret-1","values":{"LINEAR_API_KEY":"sk-test-not-a-real-key"}}}
 {"method":"input.cancel","params":{"id":"cancel-1"}}
 {"method":"input.cancel","params":{"id":"esc-1"}}
 {"method":"input.answer","params":{"id":"kinds-1","values":{"name":"Tibbles","age":"12","colour":"ginger"}}}
+{"method":"input.answer","params":{"id":"details-1","values":{"why":"old mail"}}}
 EOF
 if diff "$dir/replies.want" "$dir/replies.log" >&2; then
     echo "sent: each answer and cancel once"
