@@ -223,6 +223,7 @@ fn forget_removes_every_matching_fact_and_leaves_the_rest_without_approval() {
     let text = text(&result);
     assert!(text.contains("Anna is the user's sister."), "{text}");
     assert!(text.contains("Tell the user what you forgot"), "{text}");
+    assert!(text.contains("gone from your Memory now"), "{text}");
 }
 
 #[test]
@@ -243,5 +244,66 @@ fn forget_with_no_match_is_an_error_listing_the_memory() {
     assert_eq!(
         std::fs::read_to_string(lucyd.memory_path()).unwrap(),
         memory
+    );
+}
+
+#[test]
+fn a_fact_spread_over_lines_is_remembered_as_one_bullet() {
+    let lucyd = Harness::start();
+    in_a_session(&lucyd);
+
+    let result = lucyd
+        .thinking
+        .call_tool_with(
+            "remember",
+            serde_json::json!({"fact": "  Dentist on Friday,\n  \r\n at  ten.\n"}),
+        )
+        .unwrap();
+
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(
+        std::fs::read_to_string(lucyd.memory_path()).unwrap(),
+        format!("- {}: Dentist on Friday, at  ten.\n", today())
+    );
+}
+
+#[test]
+fn a_fact_spread_over_lines_is_forgotten_with_the_same_text() {
+    let lucyd = Harness::start();
+    in_a_session(&lucyd);
+    let fact = "Dentist on Friday,\n at ten.";
+    lucyd
+        .thinking
+        .call_tool_with("remember", serde_json::json!({"fact": fact}))
+        .unwrap();
+
+    let result = lucyd
+        .thinking
+        .call_tool_with("forget", serde_json::json!({"fact": fact}))
+        .unwrap();
+
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(std::fs::read_to_string(lucyd.memory_path()).unwrap(), "");
+}
+
+#[test]
+fn a_hand_written_fact_with_spaces_after_its_date_can_be_forgotten() {
+    let lucyd = Harness::start();
+    std::fs::write(
+        lucyd.memory_path(),
+        "- 2026-11-01: Coffee, black.\n- 2026-11-02:   Spaces kept\n",
+    )
+    .unwrap();
+    in_a_session(&lucyd);
+
+    let result = lucyd
+        .thinking
+        .call_tool_with("forget", serde_json::json!({"fact": "Spaces kept"}))
+        .unwrap();
+
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(
+        std::fs::read_to_string(lucyd.memory_path()).unwrap(),
+        "- 2026-11-01: Coffee, black.\n"
     );
 }

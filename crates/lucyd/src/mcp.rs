@@ -20,7 +20,7 @@ use crate::desktop::Desktop;
 use crate::files::Search;
 use crate::hand_off::{self, HandOffs, Job};
 use crate::input;
-use crate::memory::{Forgot, Memory};
+use crate::memory::{Fact, Forgot, Memory, Unchanged};
 use crate::model_text::MEMORY;
 use crate::persona::Persona;
 use crate::plugins::{self, SessionTools};
@@ -227,14 +227,12 @@ impl Tools {
     }
 
     fn remember(&self, arguments: &JsonObject) -> CallToolResult {
-        let fact = string(arguments, "fact");
-        let fact = fact.trim();
-        if fact.is_empty() {
+        let Some(fact) = Fact::new(&string(arguments, "fact")) else {
             return error(format!(
                 "{MEMORY} fact must be what the user asked you to remember."
             ));
-        }
-        match self.memory.remember(fact) {
+        };
+        match self.memory.remember(&fact) {
             Ok(bullet) => text(format!(
                 "{MEMORY} Saved to your Memory:\n\n{bullet}\nTell the user what you saved, in \
                  one short sentence."
@@ -249,17 +247,16 @@ impl Tools {
     }
 
     fn forget(&self, arguments: &JsonObject) -> CallToolResult {
-        let fact = string(arguments, "fact");
-        let fact = fact.trim();
-        if fact.is_empty() {
+        let Some(fact) = Fact::new(&string(arguments, "fact")) else {
             return error(format!(
                 "{MEMORY} fact must be the fact's text from your Memory."
             ));
-        }
-        match self.memory.forget(fact) {
+        };
+        match self.memory.forget(&fact) {
             Ok(Forgot::Removed) => text(format!(
-                "{MEMORY} Forgot \"{fact}\". It's gone from your Memory from the next Session. \
-                 Tell the user what you forgot, in one short sentence."
+                "{MEMORY} Forgot \"{fact}\". It's gone from your Memory now and won't be in your \
+                 instructions from the next Session. Tell the user what you forgot, in one short \
+                 sentence."
             )),
             Ok(Forgot::NoMatch { memory }) if memory.trim().is_empty() => error(format!(
                 "{MEMORY} Your Memory is empty. Tell the user you had nothing like that."
@@ -269,8 +266,12 @@ impl Tools {
                  holds:\n\n{memory}\n\nCall forget again with one fact's exact text, without \
                  its date, or tell the user you had nothing like that."
             )),
-            Err(e) => {
-                eprintln!("lucyd: can't save {}: {e}", self.memory.path().display());
+            Err(failure) => {
+                let (verb, e) = match failure {
+                    Unchanged::Load(e) => ("load", e),
+                    Unchanged::Save(e) => ("save", e),
+                };
+                eprintln!("lucyd: can't {verb} {}: {e}", self.memory.path().display());
                 error(format!(
                     "{MEMORY} Memory couldn't be changed. Tell the user you couldn't forget it."
                 ))
