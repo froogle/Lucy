@@ -21,6 +21,8 @@ use ratatui::{Frame, Terminal};
 
 const WATCH_EVERY: Duration = Duration::from_millis(50);
 
+const TRANSCRIPT_DIVISOR: u16 = 3;
+
 /// Why a question went unanswered.
 #[derive(Debug)]
 pub enum Stop {
@@ -586,7 +588,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         .collect();
     let free = body.height - bottom;
     let height = match screen.details {
-        Some(_) => (rows.len() as u16).min(free / 3),
+        Some(_) => (rows.len() as u16).min(free / TRANSCRIPT_DIVISOR),
         None => (rows.len() as u16).min(free),
     };
     let (transcript, below) = match (&screen.prompt, &screen.details) {

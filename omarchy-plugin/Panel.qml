@@ -456,6 +456,9 @@ Panel {
     readonly property var items: root.asking && root.dialog.items ? root.dialog.items : []
     readonly property bool listOnly: fields.length === 0
     readonly property int firstTyped: fields.findIndex(function (field) { return field.kind !== "choice" })
+    readonly property real scrollStep: Style.space(40)
+    readonly property real aloneHeight: Style.space(480)
+    readonly property real besideFieldsHeight: Style.space(300)
     Keys.onEscapePressed: box.listOnly ? lucy.dismiss() : lucy.cancelInput()
     Keys.onPressed: function (event) {
       if (!box.listOnly) return
@@ -463,7 +466,7 @@ Panel {
         : event.key === Qt.Key_Up || event.key === Qt.Key_K ? -1 : 0
       if (by === 0) return
       var end = Math.max(0, detailsView.contentHeight - detailsView.height)
-      detailsView.contentY = Math.min(end, Math.max(0, detailsView.contentY + by * Style.space(40)))
+      detailsView.contentY = Math.min(end, Math.max(0, detailsView.contentY + by * box.scrollStep))
       event.accepted = true
     }
 
@@ -503,7 +506,7 @@ Panel {
         id: detailsView
         visible: box.items.length > 0
         width: parent.width
-        height: Math.min(contentHeight, Style.space(box.listOnly ? 480 : 300))
+        height: Math.min(contentHeight, box.listOnly ? box.aloneHeight : box.besideFieldsHeight)
         contentWidth: width
         contentHeight: detailsColumn.implicitHeight
         clip: true
