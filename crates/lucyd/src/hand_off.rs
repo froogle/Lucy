@@ -21,7 +21,7 @@ use crate::input;
 use crate::mcp::{error, string, text, tool, Caller, Relays, Token};
 use crate::model_text::HAND_OFF;
 use crate::plugins::{self, Environment};
-use crate::runner::{self, Beside, Command, When};
+use crate::runner::{self, Beside, Command, Remembered, When};
 use crate::session::{
     self, Answer, Expects, Question, BUILD_STOPPED, HAND_OFF_STOPPED, QUEUED_DROPPED,
 };
@@ -35,6 +35,8 @@ const BRIEF: &str = "The user asked for this by voice, through Lucy, their voice
 const CAPTURE_WAIT: Duration = Duration::from_secs(5);
 
 const FOLDER_DEPTH: usize = 3;
+
+const INTEGRATION_PREFIX: &str = "mcp__";
 
 const UNASKED: &str = "The user's Claude settings don't allow this, and Lucy couldn't ask them \
                        about it, so it's denied. Carry on without it, and say in your final \
@@ -691,11 +693,29 @@ impl Job {
         let tool_name = string(arguments, "tool_name");
         let empty = serde_json::Value::Object(JsonObject::new());
         let input = arguments.get("input").unwrap_or(&empty);
+        let details = format!("{tool_name}\n{input:#}");
+        let remembered = tool_name
+            .starts_with(INTEGRATION_PREFIX)
+            .then(|| Remembered {
+                tool: tool_name.clone(),
+                allowed: Notification {
+                    summary: "Claude is using a tool you allowed".into(),
+                    body: details.clone(),
+                    action: None,
+                    kind: NotificationKind::Details,
+                },
+            });
+        let ending = match remembered {
+            Some(_) => "Okay? I won't ask again for that this Session.",
+            None => "Okay?",
+        };
         let question = Question {
-            prompt: format!("Claude wants to {}. Okay?", description(&tool_name, input)),
+            prompt: format!(
+                "Claude wants to {}. {ending}",
+                description(&tool_name, input)
+            ),
             expects: Expects::Yes,
         };
-        let details = format!("{tool_name}\n{input:#}");
         let kept = When::QuietOrNextSession(Notification {
             summary: "Claude is waiting for your permission".into(),
             body: format!("{details}\n\nLucy will ask at your next Session."),
@@ -717,7 +737,7 @@ impl Job {
             shown: Some(shown),
             items: permission_items(&tool_name, input),
         };
-        match runner::ask_beside(&commands, question, beside, kept).await {
+        match runner::ask_remembering(&commands, question, beside, kept, remembered).await {
             Some(Answer::Yes) => json!({"behavior": "allow", "updatedInput": input}),
             Some(_) => json!({"behavior": "deny", "message": REFUSED}),
             None => json!({"behavior": "deny", "message": UNASKED}),
@@ -937,7 +957,9 @@ fn description(tool_name: &str, input: &serde_json::Value) -> String {
         .map(|said| said.trim().trim_end_matches('.').trim())
         .filter(|said| !said.is_empty());
     let Some(said) = said else {
-        let tool = tool_name.strip_prefix("mcp__").unwrap_or(tool_name);
+        let tool = tool_name
+            .strip_prefix(INTEGRATION_PREFIX)
+            .unwrap_or(tool_name);
         return format!(
             "use {}",
             tool.replace('_', " ")

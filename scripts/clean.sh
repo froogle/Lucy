@@ -5,14 +5,31 @@ set -euo pipefail
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 
-if [ "$(git worktree list | wc -l)" -gt 1 ]; then
-    echo "clean: other worktrees exist, so an agent may still be building:" >&2
-    git worktree list >&2
+target="${CARGO_TARGET_DIR:-$root/target}"
+
+# Another worktree builds into this target/ if it is that worktree's own, or
+# if it is the main checkout's and the worktree has none of its own (it
+# builds there through CARGO_TARGET_DIR). An agent there may still be building.
+here="$(realpath -m "$target")"
+main=""
+sharing=()
+while read -r key path; do
+    [ "$key" = worktree ] || continue
+    main="${main:-$path}"
+    [ "$path" != "$root" ] || continue
+    if [ "$(realpath -m "$path/target")" = "$here" ] ||
+        { [ ! -d "$path/target" ] && [ "$(realpath -m "$main/target")" = "$here" ]; }; then
+        sharing+=("$path")
+    fi
+done < <(git worktree list --porcelain)
+if [ "${#sharing[@]}" -gt 0 ]; then
+    echo "clean: these worktrees build into $target, so an agent may still be building:" >&2
+    printf '  %s\n' "${sharing[@]}" >&2
     exit 1
 fi
 
-target="${CARGO_TARGET_DIR:-$root/target}"
-mapfile -t builds < <(find .scratch -type d -name target -prune)
+builds=()
+[ -d .scratch ] && mapfile -t builds < <(find .scratch -type d -name target -prune)
 size="$({ du -scb "$target" "${builds[@]}" 2>/dev/null || true; } | tail -n 1 | cut -f 1)"
 cargo clean --quiet
 rm -rf "${builds[@]}"

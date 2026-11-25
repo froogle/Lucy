@@ -799,3 +799,33 @@ fn a_permission_kept_for_the_next_session_shows_the_same_window_when_asked() {
     call.join().unwrap().unwrap();
     assert_eq!(next_close(&mut holder), open.id);
 }
+
+#[test]
+fn a_yes_in_the_details_window_to_an_integration_tool_lets_its_next_request_through_without_one() {
+    let lucyd = Harness::start();
+    let mut holder = lucyd.input("a widget");
+    let _events = handed_off(&lucyd);
+    let add = |item: &str| json!({"tool_name": "mcp__x__edit", "input": {"item": item}, "tool_use_id": format!("toolu_{item}")});
+    let first = claude_asks(&lucyd, add("the turkey"));
+    let open = lucyd.next_details(&mut holder);
+    lucyd.tts.next_sentence();
+    lucyd.tts.finish_playing();
+    lucyd.say("yes");
+    first.join().unwrap().unwrap();
+    assert_eq!(next_close(&mut holder), open.id);
+    let spoken = lucyd.tts.sentences();
+
+    let second = claude_asks(&lucyd, add("the cranberry sauce"));
+
+    assert!(text(&second.join().unwrap().unwrap()).contains("allow"));
+    let allowed = lucyd
+        .notifier
+        .next_notification_of(lucyd::adapters::NotificationKind::Details);
+    assert_eq!(allowed.summary, "Claude is using a tool you allowed");
+    let opened = holder.next_event_within(std::time::Duration::from_millis(100));
+    assert!(
+        !matches!(opened, Ok(Some(Event::InputOpen(_)))),
+        "{opened:?}"
+    );
+    assert_eq!(lucyd.tts.sentences(), spoken, "nothing was asked aloud");
+}

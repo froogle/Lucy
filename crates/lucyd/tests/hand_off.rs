@@ -176,7 +176,7 @@ fn a_request_with_no_description_names_the_tool() {
 
     assert_eq!(
         lucyd.tts.next_sentence(),
-        "Claude wants to use linear create issue. Okay?"
+        "Claude wants to use linear create issue. Okay? I won't ask again for that this Session."
     );
     lucyd.tts.finish_playing();
     lucyd.say("no");

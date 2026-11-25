@@ -18,6 +18,7 @@ pub mod launcher;
 mod limits;
 pub mod local_server;
 mod mcp;
+mod memory;
 pub mod model_text;
 mod notifications;
 pub mod notify_send;
@@ -109,6 +110,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         plugin_env,
     } = options;
     let persona = persona::Persona::new(persona_path);
+    let memory = memory::Memory::beside(&persona);
     let mcp_socket_path = lucy_ipc::mcp_socket_path(&socket_path);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -173,6 +175,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
             plugin_host.clone(),
             runner::SessionFiles {
                 persona: persona.clone(),
+                memory: memory.clone(),
                 config_path,
             },
             runner::Delegates {
@@ -186,6 +189,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         mcp_listener,
         relays,
         persona,
+        memory,
         sessions.clone(),
         authoring,
         hand_offs,

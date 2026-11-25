@@ -1,9 +1,7 @@
 use crate::adapters::RateLimit;
 
 pub fn spoken(limit: &RateLimit, provider: &str) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |now| now.as_secs());
+    let now = now();
     let reset = limit
         .resets_at
         .and_then(|at| Some((local(at)?, local(now)?)));
@@ -56,17 +54,24 @@ fn phrase(window: Option<&str>, provider: &str, reset: Option<(Local, Local)>) -
     said
 }
 
+pub fn today() -> Option<String> {
+    let tm = local_time(now())?;
+    Some(format!(
+        "{:04}-{:02}-{:02}",
+        tm.tm_year + 1900,
+        tm.tm_mon + 1,
+        tm.tm_mday
+    ))
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |now| now.as_secs())
+}
+
 fn local(secs: u64) -> Option<Local> {
-    let time = libc::time_t::try_from(secs).ok()?;
-    // SAFETY: `tm` is plain data that localtime_r fills in; both pointers are
-    // valid for the call.
-    let tm = unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&time, &mut tm).is_null() {
-            return None;
-        }
-        tm
-    };
+    let tm = local_time(secs)?;
     Some(Local {
         years_since_1900: tm.tm_year,
         day_of_year: tm.tm_yday,
@@ -74,6 +79,19 @@ fn local(secs: u64) -> Option<Local> {
         hour: tm.tm_hour,
         minute: tm.tm_min,
     })
+}
+
+fn local_time(secs: u64) -> Option<libc::tm> {
+    let time = libc::time_t::try_from(secs).ok()?;
+    // SAFETY: `tm` is plain data that localtime_r fills in; both pointers are
+    // valid for the call.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&time, &mut tm).is_null() {
+            return None;
+        }
+        Some(tm)
+    }
 }
 
 #[cfg(test)]
