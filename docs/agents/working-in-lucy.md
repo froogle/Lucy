@@ -16,7 +16,7 @@ Read the files under `working-in-lucy/` that your change touches:
 
 `scripts/check.sh` runs every gate: fmt, clippy, tests, the client-deps check, the glossary-term check, the lint-allow check, the test-sleep check, the comment check, the rustdoc-summary check and `cargo deny`. The pre-commit hook runs it once you've run `git config core.hooksPath .githooks`; a commit that only touches markdown, `docs/` or `.scratch/` runs just the glossary check. Commit with the hook on; `--no-verify` leaves the gates to CI.
 
-`target/` only grows (108 GB by slice 6). When a ticket is done and merged, with no agents running, run `scripts/clean.sh`: it clears the `target/` this checkout builds into (`CARGO_TARGET_DIR`, else its own) and the prototypes' own `target/` folders, prunes stale worktrees and says how much it freed. It refuses while another worktree builds into that same `target/`; a worktree with a `target/` of its own doesn't count. Run it inside such a worktree, with `CARGO_TARGET_DIR` unset, to clear that one. The next build is cold. Run it after removing a worktree too: its test binaries stay in the shared `target/` and still look for fixtures and the schema under the removed worktree's path.
+`target/` only grows (108 GB by slice 6). When a ticket is done and merged, with no agents running, run `scripts/clean.sh`: it clears the `target/` this checkout builds into (`CARGO_TARGET_DIR`, else its own) and the prototypes' own `target/` folders, prunes stale worktrees and says how much it freed. It refuses while another worktree builds into that same `target/`; a worktree with a `target/` of its own doesn't count. Run it inside such a worktree, with `CARGO_TARGET_DIR` unset, to clear that one. The next build is cold. A worktree's own `target/` goes when the worktree is removed.
 
 `scripts/install.sh` puts this checkout on the machine: it builds the five binaries, stops `lucyd` and `lucy-indicator`, installs them into `~/.cargo/bin`, copies the shipped Plugins into `/usr/share/lucy/plugins/` with sudo when they differ, starts both again and reloads the bar. The systemd units come from `lucy setup`, not from it.
 
@@ -34,13 +34,13 @@ The `tdd` skill asks the user to approve seams first, and a subagent can't ask. 
 
 The last step before reporting: stop every background Bash task you started (TaskStop each one) and confirm none remain. A running one keeps your worktree locked.
 
-Worktrees share the main checkout's `target/` and build with 8 jobs, through `CARGO_TARGET_DIR` and `CARGO_BUILD_JOBS` in the machine's `.claude/settings.local.json`. Keep them as set. "Blocking waiting for file lock on build directory" means another worktree is building; wait for it. On a new machine, create that file with its own checkout's path:
+Each worktree builds into its own `target/`, inside the worktree. Never point `CARGO_TARGET_DIR` at another checkout's `target/`: a shared `target/` links stale crates, examples and binaries built from another branch, and correct code fails its tests. Expect a worktree's first build to be cold.
+
+Builds use 8 jobs, through `CARGO_BUILD_JOBS` in the machine's `.claude/settings.local.json`, so parallel agents don't stall the desktop. On a new machine, create that file:
 
 ```json
-{ "env": { "CARGO_TARGET_DIR": "/path/to/lucy/target", "CARGO_BUILD_JOBS": "8" } }
+{ "env": { "CARGO_BUILD_JOBS": "8" } }
 ```
-
-Without it, each worktree builds everything cold in its own `target/`, and parallel agents can stall the desktop.
 
 ## Merging
 
