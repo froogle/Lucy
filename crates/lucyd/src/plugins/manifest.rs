@@ -35,6 +35,7 @@ pub struct ToolEntry {
     #[serde(default)]
     pub confirm: bool,
     pub confirm_prompt: Option<String>,
+    pub describe: Option<String>,
     pub screen: Option<ScreenUse>,
 }
 
@@ -116,6 +117,9 @@ impl Manifest {
                 return Err(format!("its tool {} has more than 3 examples", tool.name));
             }
         }
+        for tool in &self.tools {
+            self.check_describe(tool)?;
+        }
         for path in self.access.read.iter().chain(&self.access.write) {
             if Path::new(path)
                 .components()
@@ -138,6 +142,31 @@ impl Manifest {
                     "its required command {command:?} must be a bare name, found on PATH"
                 ));
             }
+        }
+        Ok(())
+    }
+
+    pub fn describe_tools(&self) -> impl Iterator<Item = &str> {
+        self.tools
+            .iter()
+            .filter_map(|tool| tool.describe.as_deref())
+    }
+
+    fn check_describe(&self, tool: &ToolEntry) -> Result<(), String> {
+        let Some(describe) = &tool.describe else {
+            return Ok(());
+        };
+        if !tool.confirm {
+            return Err(format!(
+                "its tool {} names a describe tool but doesn't have confirm = true",
+                tool.name
+            ));
+        }
+        if self.tools.iter().any(|listed| &listed.name == describe) {
+            return Err(format!(
+                "its tool {}'s describe tool {describe} must not have a [[tools]] entry",
+                tool.name
+            ));
         }
         Ok(())
     }

@@ -30,11 +30,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, watch};
 
-use crate::adapters::{CredentialStore, Notification, NotificationKind};
+use crate::adapters::{Clock, CredentialStore, Notification, NotificationKind};
 use crate::input::{self, Filled, TypedAnswer};
 use crate::mcp;
 use crate::model_text::CALL_FINISHED;
-use crate::runner::{self, Command, When};
+use crate::runner::{self, Beside, Command, When};
 use crate::session::{Answer, Expects, Question};
 use crate::status::ChangeBus;
 use crate::sync::{Locked, POISONED};
@@ -59,6 +59,8 @@ const SCREEN_DECLINED: &str = "declined: the user didn't let you look at or use 
 const CANCELLED: &str = "cancelled: the user cut in, so the call was stopped.";
 
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+
+const DESCRIBE_WAIT: Duration = Duration::from_secs(5);
 
 /// Where Plugins and Lucy's state live.
 #[derive(Debug, Clone)]
@@ -137,6 +139,7 @@ pub struct Host {
     credentials: Arc<dyn CredentialStore>,
     environment: Environment,
     screen_allowed: tokio::sync::Mutex<bool>,
+    clock: Arc<dyn Clock>,
 }
 
 struct Contents {
@@ -184,6 +187,7 @@ impl Host {
         changes: ChangeBus,
         credentials: Arc<dyn CredentialStore>,
         environment: Environment,
+        clock: Arc<dyn Clock>,
     ) -> Arc<Host> {
         Arc::new(Host {
             paths,
@@ -195,6 +199,7 @@ impl Host {
             credentials,
             environment,
             screen_allowed: tokio::sync::Mutex::new(false),
+            clock,
         })
     }
 
@@ -740,7 +745,8 @@ struct Candidate {
 
 fn matches_manifest(manifest: &Manifest, listed: &[Tool]) -> Result<(), String> {
     let live: HashSet<&str> = listed.iter().map(|tool| &*tool.name).collect();
-    let declared: HashSet<&str> = manifest.tools.iter().map(|t| &*t.name).collect();
+    let listed_tools = manifest.tools.iter().map(|t| &*t.name);
+    let declared: HashSet<&str> = listed_tools.chain(manifest.describe_tools()).collect();
     if live != declared {
         return Err(format!(
             "its Manifest lists the tools {} but it offers {}",
@@ -925,8 +931,18 @@ impl SessionTools {
             }
             self.screen_uses.send_modify(|uses| *uses += 1);
         }
-        if entry.confirm && !self.confirmed(plugin_name, entry, arguments.as_ref()).await {
-            return Some(mcp::text(DECLINED));
+        if entry.confirm {
+            let mut describing = self.barge_ins.subscribe();
+            let items = tokio::select! {
+                items = self.describe(&plugin, entry, arguments.as_ref(), read_before_confirming.as_ref()) => items,
+                _ = describing.changed() => return Some(mcp::error(CANCELLED)),
+            };
+            if !self
+                .confirmed(plugin_name, entry, arguments.as_ref(), items)
+                .await
+            {
+                return Some(mcp::text(DECLINED));
+            }
         }
         let mut entered = match read_before_confirming {
             Some(read) => match self.host.ask_missing(&plugin, read).await {
@@ -1014,6 +1030,49 @@ impl SessionTools {
         })
     }
 
+    async fn describe(
+        &self,
+        plugin: &Usable,
+        entry: &ToolEntry,
+        arguments: Option<&JsonObject>,
+        read: Option<&Credentials>,
+    ) -> Vec<String> {
+        let Some(describe) = &entry.describe else {
+            return Vec::new();
+        };
+        let described = async {
+            let peer = self.describing_peer(plugin, read).await?;
+            let mut request = CallToolRequestParams::new(describe.clone());
+            if let Some(arguments) = arguments {
+                request = request.with_arguments(arguments.clone());
+            }
+            match peer.call_tool_once(request).await {
+                Ok(CallToolResponse::Complete(result)) => described_items(&result),
+                _ => None,
+            }
+        };
+        let mut wait = self.host.clock.timer();
+        wait.set(Some(self.host.clock.now() + DESCRIBE_WAIT));
+        tokio::select! {
+            items = described => items.unwrap_or_default(),
+            () = wait.fired() => Vec::new(),
+        }
+    }
+
+    async fn describing_peer(
+        &self,
+        plugin: &Usable,
+        read: Option<&Credentials>,
+    ) -> Option<Peer<RoleClient>> {
+        let mut running = self.running.lock().await;
+        if !running.contains_key(&plugin.name) {
+            let read = read.filter(|read| read.missing.is_empty())?;
+            let client = self.host.start(plugin, &read.entered).await.ok()?;
+            running.insert(plugin.name.clone(), client);
+        }
+        Some(running[&plugin.name].peer().clone())
+    }
+
     async fn answers(
         &self,
         plugin: &Usable,
@@ -1053,6 +1112,7 @@ impl SessionTools {
         };
         let meta = meta.or(in_params);
         let credentials = &plugin.manifest.access.credentials;
+        let items = questions::items(meta.as_ref());
         match questions::read(requested_schema, meta.as_ref(), credentials) {
             None => Ok(declined),
             Some(questions::Question::Spoken { field }) => {
@@ -1060,8 +1120,10 @@ impl SessionTools {
                     prompt: message,
                     expects: Expects::Words,
                 };
+                let beside = Beside { shown: None, items };
                 Ok(
-                    match runner::ask(&self.host.commands, question, None).await {
+                    match runner::ask_beside(&self.host.commands, question, beside, When::Now).await
+                    {
                         Some(Answer::Said(said)) => ElicitResult::new(ElicitationAction::Accept)
                             .with_content(serde_json::json!({ field: said })),
                         _ => declined,
@@ -1070,7 +1132,7 @@ impl SessionTools {
             }
             Some(questions::Question::Typed(asked)) => {
                 let (fields, replies) = asked.split();
-                let filled = input::fill(&self.host.commands, &message, fields).await;
+                let filled = input::fill(&self.host.commands, &message, fields, items).await;
                 if let Filled::Values(values) = &filled {
                     for (name, value) in replies.secrets(values) {
                         self.host.keep(&plugin.name, name, value).await?;
@@ -1086,6 +1148,7 @@ impl SessionTools {
         plugin: &str,
         tool: &ToolEntry,
         arguments: Option<&JsonObject>,
+        items: Vec<String>,
     ) -> bool {
         let empty = JsonObject::new();
         let arguments = arguments.unwrap_or(&empty);
@@ -1107,7 +1170,12 @@ impl SessionTools {
             prompt,
             expects: Expects::Yes,
         };
-        runner::ask(&self.host.commands, question, Some(shown)).await == Some(Answer::Yes)
+        let beside = Beside {
+            shown: Some(shown),
+            items,
+        };
+        runner::ask_beside(&self.host.commands, question, beside, When::Now).await
+            == Some(Answer::Yes)
     }
 
     pub async fn stop(&self) {
@@ -1126,6 +1194,13 @@ impl SessionTools {
             .cloned()
             .collect()
     }
+}
+
+fn described_items(result: &CallToolResult) -> Option<Vec<String>> {
+    if result.is_error == Some(true) {
+        return None;
+    }
+    questions::items_in(result.structured_content.as_ref()?.get("items")?)
 }
 
 fn fill(template: &str, arguments: &JsonObject) -> String {

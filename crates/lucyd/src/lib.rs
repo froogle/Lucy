@@ -150,6 +150,7 @@ pub fn spawn(options: Options) -> io::Result<Daemon> {
         buses.plugins.clone(),
         adapters.credentials.clone(),
         plugin_env,
+        adapters.clock.clone(),
     );
     let thinking = adapters.thinking.clone();
     thinking.sweep();
@@ -253,12 +254,30 @@ impl Daemon {
     /// If the `Daemon`'s runtime has gone, which it can't while the `Daemon`
     /// lives.
     pub fn ask_typed(&self, question: &str, kind: FieldKind) -> oneshot::Receiver<TypedAnswer> {
+        self.ask_typed_about(question, kind, Vec::new())
+    }
+
+    /// Asks `question` in the Input dialog with Details window `items` above it.
+    ///
+    /// It asks as [`Daemon::ask_typed`] does, and the `input` holder shows
+    /// the items, each CommonMark, above the field.
+    ///
+    /// # Panics
+    ///
+    /// If the `Daemon`'s runtime has gone, which it can't while the `Daemon`
+    /// lives.
+    pub fn ask_typed_about(
+        &self,
+        question: &str,
+        kind: FieldKind,
+        items: Vec<String>,
+    ) -> oneshot::Receiver<TypedAnswer> {
         let (reply, answer) = oneshot::channel();
         let sessions = self.sessions.clone();
         let question = question.to_owned();
         let runtime = self.runtime.as_ref().expect("runtime lives until drop");
         runtime.spawn(async move {
-            let _ = reply.send(input::ask(&sessions, &question, kind).await);
+            let _ = reply.send(input::ask(&sessions, &question, kind, items).await);
         });
         answer
     }

@@ -28,6 +28,18 @@ pub fn summary(manifest: &Manifest) -> String {
     } else {
         format!("It asks you before it will {}.", or(&asks))
     });
+    let described: Vec<&str> = manifest
+        .tools
+        .iter()
+        .filter(|t| t.describe.is_some())
+        .map(|t| &*t.handles)
+        .collect();
+    if !described.is_empty() {
+        said.push(format!(
+            "Before it asks you to {}, Lucy has it describe the details on screen.",
+            or(&described)
+        ));
+    }
     said.push("Do you approve it?".to_owned());
     said.join(" ")
 }
@@ -49,6 +61,12 @@ pub fn changes(old: &Manifest, new: &Manifest) -> String {
                 }
                 if tool.confirm && !before.confirm {
                     said.push(format!("It now asks you before it will {}.", tool.handles));
+                }
+                if tool.describe.is_some() && before.describe.is_none() {
+                    said.push(format!(
+                        "Before it asks you to {}, Lucy now has it describe the details on screen.",
+                        tool.handles
+                    ));
                 }
                 if !tool.confirm && before.confirm {
                     said.push(format!(

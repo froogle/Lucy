@@ -47,15 +47,21 @@ pub enum Command {
 
 pub struct Ask {
     pub question: Question,
-    pub shown: Option<Notification>,
+    pub beside: Beside,
     pub reply: oneshot::Sender<Answer>,
     pub when: When,
-    pub remembered: Option<Remembered>,
+    pub remembered: Option<Box<Remembered>>,
 }
 
 pub struct Remembered {
     pub tool: String,
     pub allowed: Notification,
+}
+
+#[derive(Default)]
+pub struct Beside {
+    pub shown: Option<Notification>,
+    pub items: Vec<String>,
 }
 
 pub enum When {
@@ -93,23 +99,36 @@ pub fn ask_at(
     shown: Option<Notification>,
     when: When,
 ) -> impl std::future::Future<Output = Option<Answer>> {
-    ask_remembering(commands, question, shown, when, None)
+    let beside = Beside {
+        shown,
+        items: Vec::new(),
+    };
+    ask_beside(commands, question, beside, when)
+}
+
+pub fn ask_beside(
+    commands: &mpsc::UnboundedSender<Command>,
+    question: Question,
+    beside: Beside,
+    when: When,
+) -> impl std::future::Future<Output = Option<Answer>> {
+    ask_remembering(commands, question, beside, when, None)
 }
 
 pub fn ask_remembering(
     commands: &mpsc::UnboundedSender<Command>,
     question: Question,
-    shown: Option<Notification>,
+    beside: Beside,
     when: When,
     remembered: Option<Remembered>,
 ) -> impl std::future::Future<Output = Option<Answer>> {
     let (reply, answer) = oneshot::channel();
     let _ = commands.send(Command::Ask(Ask {
         question,
-        shown,
+        beside,
         reply,
         when,
-        remembered,
+        remembered: remembered.map(Box::new),
     }));
     async move { answer.await.ok() }
 }
@@ -360,6 +379,8 @@ impl Runner {
         let answer_timeout = Duration::from_secs_f64(confirmation.timeout_secs);
         let mut answer_timer = SilenceTimer::new(answer_timeout, clock.clone());
         let mut dialog: Option<OpenDialog> = None;
+        let mut details: Option<OpenDialog> = None;
+        let mut fallback: Option<Notification> = None;
         let mut due: Option<Dialog> = None;
         let mut claim_wait: Option<Box<dyn Timer>> = None;
         let mut unshown: Option<String> = None;
@@ -398,9 +419,6 @@ impl Runner {
                             }
                             remembered => remembered.map(|remembered| remembered.tool),
                         };
-                        if let Some(shown) = ask.shown {
-                            self.notify(shown);
-                        }
                         let timeout = match &ask.question.expects {
                             Expects::Typed(typed) => {
                                 due = Some(typed.clone());
@@ -408,6 +426,29 @@ impl Runner {
                             }
                             _ => answer_timeout,
                         };
+                        let Beside { shown, items } = ask.beside;
+                        let spoken = !matches!(ask.question.expects, Expects::Typed(_));
+                        if spoken && !items.is_empty() {
+                            let page = Dialog {
+                                message: ask.question.prompt.clone(),
+                                fields: Vec::new(),
+                                items,
+                            };
+                            match self.open_window(page) {
+                                Ok(showing) => {
+                                    details = Some(showing.dialog);
+                                    claim_wait = showing.claim_wait;
+                                    fallback = shown;
+                                }
+                                Err(_) => {
+                                    if let Some(shown) = shown {
+                                        self.notify(shown);
+                                    }
+                                }
+                            }
+                        } else if let Some(shown) = shown {
+                            self.notify(shown);
+                        }
                         answer_to = Some((ask.reply, tool));
                         answer_timer.reset_to(timeout);
                         Input::Ask(ask.question)
@@ -440,11 +481,18 @@ impl Runner {
                 },
                 () = self.buses.dialogs.claimed(), if claim_wait.is_some() => {
                     claim_wait = None;
+                    fallback = None;
                     continue;
                 }
                 () = or_pending(claim_wait.as_ref().map(|wait| wait.fired())) => {
-                    dialog = None;
                     claim_wait = None;
+                    if details.take().is_some() {
+                        if let Some(shown) = fallback.take() {
+                            self.notify(shown);
+                        }
+                        continue;
+                    }
+                    dialog = None;
                     Input::Unshown(NO_TERMINAL.to_owned())
                 }
                 command = self.commands.recv() => match command {
@@ -654,13 +702,16 @@ impl Runner {
                     }
                 }
             }
+            if answer_to.is_none() {
+                details = None;
+                fallback = None;
+            }
             if session.state() != State::Typing {
                 dialog = None;
                 due = None;
-                claim_wait = None;
             } else if session.box_line_said() {
                 if let Some(typed) = due.take() {
-                    match self.open_dialog(typed) {
+                    match self.open_window(typed) {
                         Ok(showing) => {
                             dialog = Some(showing.dialog);
                             claim_wait = showing.claim_wait;
@@ -668,6 +719,9 @@ impl Runner {
                         Err(why) => unshown = Some(why),
                     }
                 }
+            }
+            if dialog.is_none() && details.is_none() {
+                claim_wait = None;
             }
             silence.set_running(session.silence_timer_runs());
             answer_timer.set_running(session.answer_timer_runs());
@@ -678,8 +732,8 @@ impl Runner {
         }
     }
 
-    fn open_dialog(&self, typed: Dialog) -> Result<Showing, String> {
-        let dialog = match self.buses.dialogs.open(typed) {
+    fn open_window(&self, window: Dialog) -> Result<Showing, String> {
+        let dialog = match self.buses.dialogs.open(window) {
             Opened::Held(dialog) => {
                 return Ok(Showing {
                     dialog,

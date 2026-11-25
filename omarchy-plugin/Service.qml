@@ -174,8 +174,9 @@ Item {
     onTriggered: follow.running = true
   }
 
-  // The Input dialog lucyd has open on the bar, as `input.open` gave it, or
-  // null. What is typed stays in the panel's boxes until it is sent.
+  // The Input dialog or Details window lucyd has open on the bar, as
+  // `input.open` gave it, or null. What is typed stays in the panel's boxes
+  // until it is sent.
   property var dialog: null
 
   function inputEvent(line) {
@@ -192,6 +193,12 @@ Item {
 
   function cancelInput() {
     if (dialog) _reply("input.cancel", { id: dialog.id })
+  }
+
+  // Closes a Details window shown alone, beside a spoken question. Nothing
+  // goes to lucyd, since the answer is spoken.
+  function dismiss() {
+    dialog = null
   }
 
   function _reply(method, params) {

@@ -149,6 +149,7 @@ fn assert_allowed_unasked(lucyd: &Harness, request: Value) {
 #[test]
 fn a_yes_to_an_integration_tool_lets_its_next_request_through_unasked_and_notified() {
     let lucyd = Harness::start();
+    lucyd.launcher.no_terminal();
     let _events = session_with_a_hand_off(&lucyd);
 
     let turkey = add(EDIT, "the turkey");

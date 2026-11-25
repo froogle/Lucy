@@ -16,6 +16,8 @@ ratatui.workspace = true
 rustix = { version = "1", features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false }
+unicode-width = "0.2"
 
 [dev-dependencies]
 lucyd.workspace = true

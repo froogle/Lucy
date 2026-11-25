@@ -46,6 +46,7 @@ pub struct Harness {
     applications: [PathBuf; 2],
     bus: Arc<Mutex<Vec<String>>>,
     typed: Mutex<Vec<String>>,
+    details: Mutex<Vec<String>>,
     home_paths: Mutex<Vec<String>>,
     config_path: PathBuf,
     plugin_paths: lucyd::plugins::Paths,
@@ -257,6 +258,7 @@ impl Harness {
             applications,
             bus: Arc::default(),
             typed: Mutex::default(),
+            details: Mutex::default(),
             home_paths: Mutex::default(),
             config_path,
             plugin_paths,
@@ -443,6 +445,15 @@ impl Harness {
             .expect("the answer is taken");
     }
 
+    pub fn next_details(&self, holder: &mut Client) -> lucy_ipc::InputOpen {
+        loop {
+            if let lucy_ipc::Event::InputOpen(open) = holder.next_event().expect("an input.open") {
+                self.details.lock().unwrap().extend(open.items.clone());
+                return open;
+            }
+        }
+    }
+
     pub fn state_client(&self) -> Client {
         let mut client = self.client();
         client.subscribe(&[Topic::State]).unwrap();
@@ -546,6 +557,7 @@ impl Harness {
             self.tts.sentences(),
             self.credentials.values(),
             self.typed.lock().unwrap().clone(),
+            self.details.lock().unwrap().clone(),
             self.home_paths.lock().unwrap().clone(),
         ]
         .concat()

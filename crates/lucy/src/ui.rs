@@ -5,6 +5,7 @@
 //! source, so a section reads as a series of questions. Tests drive it with
 //! a [`Script`] and ratatui's `TestBackend`.
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
 use std::sync::mpsc;
@@ -19,6 +20,8 @@ use ratatui::widgets::{Block, Gauge, List, ListItem, ListState, Paragraph};
 use ratatui::{Frame, Terminal};
 
 const WATCH_EVERY: Duration = Duration::from_millis(50);
+
+const TRANSCRIPT_DIVISOR: u16 = 3;
 
 /// Why a question went unanswered.
 #[derive(Debug)]
@@ -465,8 +468,46 @@ impl Prompt {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Details {
+    items: Vec<String>,
+    scroll: u16,
+    end: Cell<u16>,
+    view: Cell<u16>,
+}
+
+impl Details {
+    pub(crate) fn new(items: Vec<String>) -> Details {
+        Details {
+            items,
+            scroll: 0,
+            end: Cell::new(0),
+            view: Cell::new(1),
+        }
+    }
+
+    fn scrolls(&mut self, key: KeyEvent, prompt: Option<&Prompt>) -> bool {
+        let arrows = prompt.is_none_or(Prompt::is_typed);
+        let letters = prompt.is_none();
+        let page = self.view.get().max(1);
+        let by: i32 = match key.code {
+            KeyCode::Up if arrows => -1,
+            KeyCode::Down if arrows => 1,
+            KeyCode::Char('k') if letters => -1,
+            KeyCode::Char('j') if letters => 1,
+            KeyCode::PageUp => -i32::from(page),
+            KeyCode::PageDown => i32::from(page),
+            _ => return false,
+        };
+        let moved = (i32::from(self.scroll) + by).clamp(0, i32::from(self.end.get()));
+        self.scroll = u16::try_from(moved).expect("clamped to a u16");
+        true
+    }
+}
+
 /// The screen: lucyd's status, a transcript, and a question, list or meter.
-/// The transcript is what was said and answered.
+/// The transcript is what was said and answered. A Details window shows
+/// above the question, or alone.
 #[derive(Debug, Default)]
 pub struct Screen {
     pub title: String,
@@ -474,6 +515,7 @@ pub struct Screen {
     pub lines: Vec<String>,
     pub prompt: Option<Prompt>,
     pub meter: Option<f64>,
+    pub(crate) details: Option<Details>,
     shown: Vec<String>,
 }
 
@@ -497,6 +539,11 @@ impl Screen {
     }
 
     pub fn key(&mut self, key: KeyEvent) -> Option<Answer> {
+        if let Some(details) = &mut self.details {
+            if details.scrolls(key, self.prompt.as_ref()) {
+                return None;
+            }
+        }
         let prompt = self.prompt.as_mut()?;
         let answer = prompt.key(key)?;
         let line = prompt.answered(&answer);
@@ -539,9 +586,23 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         .flat_map(|line| wrap(line, body.width.max(1) as usize))
         .map(Line::raw)
         .collect();
-    let height = (rows.len() as u16).min(body.height - bottom);
-    let (transcript, below) = match screen.prompt {
-        Some(Prompt::Rows(_)) => {
+    let free = body.height - bottom;
+    let height = match screen.details {
+        Some(_) => (rows.len() as u16).min(free / TRANSCRIPT_DIVISOR),
+        None => (rows.len() as u16).min(free),
+    };
+    let (transcript, below) = match (&screen.prompt, &screen.details) {
+        (_, Some(details)) => {
+            let [what_led_to_it, window, question] = Layout::vertical([
+                Constraint::Length(height),
+                Constraint::Fill(1),
+                Constraint::Length(bottom),
+            ])
+            .areas(body);
+            draw_details(frame, details, window);
+            (what_led_to_it, question)
+        }
+        (Some(Prompt::Rows(_)), None) => {
             let [list, what_happened_after] = stacked(body, bottom, height);
             (what_happened_after, list)
         }
@@ -553,7 +614,11 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
     let newest = &rows[rows.len() - height as usize..];
     frame.render_widget(Paragraph::new(newest.to_vec()), transcript);
     let keys = match &screen.prompt {
+        Some(prompt) if screen.details.is_some() => {
+            format!("{}   PgUp/PgDn scrolls", draw_prompt(frame, prompt, below))
+        }
         Some(prompt) => draw_prompt(frame, prompt, below),
+        None if screen.details.is_some() => "Up/Down or j/k scrolls".to_owned(),
         None => match screen.meter {
             Some(level) => {
                 frame.render_widget(
@@ -569,6 +634,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         },
     };
     let quit = match &screen.prompt {
+        None if screen.details.is_some() => "Esc or q closes",
         Some(prompt) if !prompt.is_typed() => "Esc goes back   q quits",
         Some(_) => "Esc goes back   Ctrl-C quits",
         None => "Ctrl-C quits",
@@ -577,6 +643,21 @@ pub fn draw(frame: &mut Frame, screen: &Screen) {
         Paragraph::new(format!("{keys}   {quit}")).style(Style::new().add_modifier(Modifier::DIM)),
         hint,
     );
+}
+
+fn draw_details(frame: &mut Frame, details: &Details, area: Rect) {
+    let block = Block::bordered();
+    let inner = block.inner(area);
+    let lines = crate::markdown::lines(&details.items, inner.width);
+    let end = (lines.len() as u16).saturating_sub(inner.height);
+    details.end.set(end);
+    details.view.set(inner.height);
+    let scroll = details.scroll.min(end);
+    let block = match scroll < end {
+        true => block.title_bottom(Line::from("more below").right_aligned()),
+        false => block,
+    };
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)).block(block), area);
 }
 
 fn stacked(area: Rect, top: u16, next: u16) -> [Rect; 2] {
@@ -756,6 +837,35 @@ impl<'k, B: Backend> Ui<'k, B> {
             if let Some(answer) = self.screen.key(key) {
                 self.draw()?;
                 return Ok(answer);
+            }
+        }
+    }
+
+    /// Shows a Details window alone, scrolling, until Esc or `q` closes it.
+    ///
+    /// # Errors
+    ///
+    /// [`Stop::Closed`] when what [`Ui::close_on`] watches closes it first,
+    /// [`Stop::Quit`] on Ctrl-C.
+    pub fn details(&mut self, items: Vec<String>) -> Result<(), Stop> {
+        self.screen.details = Some(Details::new(items));
+        let read = self.read();
+        self.screen.details = None;
+        read
+    }
+
+    fn read(&mut self) -> Result<(), Stop> {
+        loop {
+            self.draw()?;
+            let Some(key) = self.next_key()? else {
+                continue;
+            };
+            match key.code {
+                _ if is_ctrl_c(&key) => return Err(Stop::Quit),
+                KeyCode::Esc | KeyCode::Char('q') => return Ok(()),
+                _ => {
+                    self.screen.key(key);
+                }
             }
         }
     }
@@ -954,6 +1064,226 @@ mod tests {
         assert!((17..=20).contains(&filled), "{shown}");
     }
 
+    fn row_of(rows: &[&str], text: &str) -> usize {
+        rows.iter()
+            .position(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("no {text:?} in:\n{}", rows.join("\n")))
+    }
+
+    fn is_rule(row: &str) -> bool {
+        row.matches('─').count() >= 10 && !row.chars().any(char::is_alphanumeric)
+    }
+
+    fn details(items: &[&str]) -> Screen {
+        let mut screen = Screen::new("Lucy");
+        screen.say("Trash these emails?");
+        screen.details = Some(Details::new(
+            items.iter().map(|item| item.to_string()).collect(),
+        ));
+        screen
+    }
+
+    #[test]
+    fn details_show_each_item_with_a_rule_between() {
+        let screen = details(&["First email", "Second email"]);
+
+        let shown = rendered(&screen, 40, 12);
+
+        assert!(shown.contains("Trash these emails?"), "{shown}");
+        let rows: Vec<&str> = shown.lines().collect();
+        let first = row_of(&rows, "First email");
+        let second = row_of(&rows, "Second email");
+        let between = &rows[first + 1..second];
+        assert!(between.iter().any(|row| is_rule(row)), "{shown}");
+    }
+
+    fn style_at(screen: &Screen, text: &str) -> Style {
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal.draw(|frame| draw(frame, screen)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let width = buffer.area.width as usize;
+        let shown = terminal.backend().to_string();
+        let rows: Vec<&str> = shown.lines().collect();
+        let row = row_of(&rows, text);
+        let column = rows[row][..rows[row].find(text).unwrap()].chars().count();
+        let cell = &buffer.content[row * width + column];
+        cell.style()
+    }
+
+    fn has(style: Style, modifier: Modifier) -> bool {
+        style.add_modifier.contains(modifier)
+    }
+
+    #[test]
+    fn details_draw_headings_and_emphasis_styled() {
+        let screen = details(&["# Inbox\n\nFrom *Ann* about **rent**"]);
+
+        assert!(has(style_at(&screen, "Inbox"), Modifier::BOLD));
+        assert!(has(style_at(&screen, "Ann"), Modifier::ITALIC));
+        assert!(has(style_at(&screen, "rent"), Modifier::BOLD));
+        assert!(!has(style_at(&screen, "From"), Modifier::BOLD));
+    }
+
+    #[test]
+    fn details_draw_code_apart_from_prose() {
+        let screen = details(&["Run `grep` now\n\n```sh\nrm -rf build\n  echo done\n```"]);
+
+        let prose = style_at(&screen, "Run");
+        assert_ne!(style_at(&screen, "grep"), prose);
+        assert_ne!(style_at(&screen, "rm -rf build"), prose);
+        let shown = rendered(&screen, 60, 20);
+        let rows: Vec<&str> = shown.lines().collect();
+        let rm = rows[row_of(&rows, "rm -rf")].find("rm").unwrap();
+        let echo = rows[row_of(&rows, "echo done")].find("echo").unwrap();
+        assert_eq!(echo, rm + 2, "{shown}");
+    }
+
+    #[test]
+    fn details_draw_lists_with_bullets_and_numbers() {
+        let screen = details(&["- milk\n- eggs\n  1. brown\n  2. white"]);
+
+        let shown = rendered(&screen, 40, 12);
+
+        assert!(shown.contains("• milk"), "{shown}");
+        assert!(shown.contains("• eggs"), "{shown}");
+        assert!(shown.contains("  1. brown"), "{shown}");
+        assert!(shown.contains("  2. white"), "{shown}");
+    }
+
+    #[test]
+    fn details_draw_a_quote_with_a_bar_on_every_row() {
+        let screen = details(&["> Can we move the meeting to Thursday afternoon instead?"]);
+
+        let shown = rendered(&screen, 30, 12);
+        let rows: Vec<&str> = shown.lines().collect();
+
+        let first = row_of(&rows, "Can we");
+        let next = rows[first + 1];
+        assert!(rows[first].contains("│ Can we"), "{shown}");
+        assert!(
+            next.contains("│ ") && next.chars().any(char::is_alphabetic),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn details_wrap_wide_characters_by_the_cells_they_take() {
+        let words = [
+            "一一", "二二", "三三", "四四", "五五", "六六", "七七", "八八",
+        ];
+        let screen = details(&[&words.join(" ")]);
+
+        let shown = rendered(&screen, 20, 12);
+
+        for word in words {
+            assert!(shown.contains(word), "{word} missing:\n{shown}");
+        }
+    }
+
+    #[test]
+    fn details_draw_a_link_with_its_url_in_brackets() {
+        let screen = details(&["See [the invoice](https://example.com/inv/7)"]);
+
+        let shown = rendered(&screen, 60, 12);
+
+        assert!(
+            shown.contains("See the invoice [https://example.com/inv/7]"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn details_draw_a_bare_link_once() {
+        let screen = details(&["From <ann@example.com>, see <https://example.com/a>"]);
+
+        let shown = rendered(&screen, 60, 12);
+
+        assert!(
+            shown.contains("From ann@example.com, see https://example.com/a "),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn details_draw_an_image_as_its_alt_text_and_html_as_text() {
+        let screen = details(&[
+            "![a red car](https://example.com/car.png)",
+            "<b>bold?</b> no\n\n<div onclick=\"x()\">hi</div>",
+        ]);
+
+        let shown = rendered(&screen, 60, 12);
+
+        assert!(shown.contains("a red car"), "{shown}");
+        assert!(!shown.contains("car.png"), "{shown}");
+        assert!(shown.contains("<b>bold?</b> no"), "{shown}");
+        assert!(shown.contains("<div onclick=\"x()\">hi</div>"), "{shown}");
+    }
+
+    fn emails(n: usize) -> Vec<String> {
+        (1..=n).map(|i| format!("**Email {i}** from Ann")).collect()
+    }
+
+    fn read(keys: Script, items: Vec<String>) -> (Result<(), Stop>, String) {
+        let mut keys = keys;
+        let mut ui = Ui::new(
+            Terminal::new(TestBackend::new(40, 12)).unwrap(),
+            &mut keys,
+            "Lucy",
+        );
+        let result = ui.details(items);
+        let shown = ui.terminal().backend().to_string();
+        drop(ui);
+        assert!(keys.is_done(), "keys left over");
+        (result, shown)
+    }
+
+    #[test]
+    fn a_long_list_scrolls_with_the_arrows_and_j_and_k() {
+        let keys = Script::new()
+            .down(5)
+            .typed("jj")
+            .press(KeyCode::Up)
+            .typed("k");
+
+        let (_, shown) = read(keys.press(KeyCode::Esc), emails(30));
+
+        assert!(shown.contains("Email 4 "), "{shown}");
+        assert!(!shown.contains("Email 3 "), "{shown}");
+        assert!(shown.contains("more below"), "{shown}");
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_last_item() {
+        let (_, at_the_end) = read(Script::new().down(200).press(KeyCode::Esc), emails(30));
+        let back_one = Script::new().down(200).press(KeyCode::Up);
+        let (_, one_up) = read(back_one.press(KeyCode::Esc), emails(30));
+
+        assert!(at_the_end.contains("Email 30 "), "{at_the_end}");
+        assert!(!at_the_end.contains("more below"), "{at_the_end}");
+        assert!(one_up.contains("more below"), "{one_up}");
+    }
+
+    #[test]
+    fn esc_or_q_closes_the_details_and_lucy_can_close_them_too() {
+        assert!(matches!(
+            read(Script::new().press(KeyCode::Esc), emails(2)).0,
+            Ok(())
+        ));
+        assert!(matches!(
+            read(Script::new().typed("q"), emails(2)).0,
+            Ok(())
+        ));
+
+        let (closes, closed) = mpsc::channel();
+        let mut keys = Script::new().then(move || closes.send(()).unwrap()).idle();
+        let mut ui = Ui::new(
+            Terminal::new(TestBackend::new(40, 12)).unwrap(),
+            &mut keys,
+            "Lucy",
+        );
+        ui.close_on(closed);
+        assert!(matches!(ui.details(emails(2)), Err(Stop::Closed)));
+    }
     #[test]
     fn ctrl_c_stops_the_questions() {
         let mut keys = Script::new().ctrl_c();

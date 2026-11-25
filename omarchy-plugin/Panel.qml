@@ -41,6 +41,26 @@ Panel {
     return at >= 0 && choice.labels ? choice.labels[at] : String(value)
   }
 
+  // Qt's Markdown would draw raw HTML, fetch images and make links look
+  // clickable, so outside code each is turned into text first.
+  function readable(markdown) {
+    var fenced = false
+    return markdown.split("\n").map(function (line) {
+      if (/^ {0,3}(```|~~~)/.test(line)) {
+        fenced = !fenced
+        return line
+      }
+      if (fenced) return line
+      return line.split(/(`+[^`]*`+)/).map(function (part, i) {
+        if (i % 2 === 1) return part
+        return part
+          .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+          .replace(/\[([^\]]*)\]\(([^)\s]*)[^)]*\)/g, "$1 \\[$2\\]")
+          .replace(/</g, "\\<")
+      }).join("")
+    }).join("\n")
+  }
+
   function moreSettings() {
     lucy.openLucy()
     root.close()
@@ -424,15 +444,31 @@ Panel {
     }
   }
 
-  // The Input dialog lucyd opened on the bar: its question, a box or a row
-  // of choices per field, Send and Cancel. Esc cancels. A secret is masked,
-  // and every box is emptied as the dialog goes.
+  // The Input dialog lucyd opened on the bar: its question, the Details
+  // window's items if it has any, a box or a row of choices per field, Send
+  // and Cancel. Esc cancels. A secret is masked, and every box is emptied as
+  // the dialog goes. With items and no fields it is a Details window alone:
+  // Esc or Close shuts it and sends nothing.
   component InputBox: FocusScope {
     id: box
     implicitHeight: boxColumn.implicitHeight
-    readonly property var fields: root.asking ? root.dialog.fields : []
+    readonly property var fields: root.asking && root.dialog.fields ? root.dialog.fields : []
+    readonly property var items: root.asking && root.dialog.items ? root.dialog.items : []
+    readonly property bool listOnly: fields.length === 0
     readonly property int firstTyped: fields.findIndex(function (field) { return field.kind !== "choice" })
-    Keys.onEscapePressed: lucy.cancelInput()
+    readonly property real scrollStep: Style.space(40)
+    readonly property real aloneHeight: Style.space(480)
+    readonly property real besideFieldsHeight: Style.space(300)
+    Keys.onEscapePressed: box.listOnly ? lucy.dismiss() : lucy.cancelInput()
+    Keys.onPressed: function (event) {
+      if (!box.listOnly) return
+      var by = event.key === Qt.Key_Down || event.key === Qt.Key_J ? 1
+        : event.key === Qt.Key_Up || event.key === Qt.Key_K ? -1 : 0
+      if (by === 0) return
+      var end = Math.max(0, detailsView.contentHeight - detailsView.height)
+      detailsView.contentY = Math.min(end, Math.max(0, detailsView.contentY + by * box.scrollStep))
+      event.accepted = true
+    }
 
     function send() {
       var values = {}
@@ -464,6 +500,56 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
         wrapMode: Text.WordWrap
+      }
+
+      Flickable {
+        id: detailsView
+        visible: box.items.length > 0
+        width: parent.width
+        height: Math.min(contentHeight, box.listOnly ? box.aloneHeight : box.besideFieldsHeight)
+        contentWidth: width
+        contentHeight: detailsColumn.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Column {
+          id: detailsColumn
+          width: detailsView.width
+          spacing: Style.space(8)
+
+          Repeater {
+            model: box.items
+
+            delegate: Column {
+              required property var modelData
+              required property int index
+              width: detailsColumn.width
+              spacing: Style.space(8)
+
+              Rectangle {
+                objectName: "detailsRule"
+                visible: index > 0
+                width: parent.width
+                height: 1
+                color: root.dim
+              }
+
+              Text {
+                objectName: "detailsItem"
+                width: parent.width
+                textFormat: Text.MarkdownText
+                text: root.readable(String(modelData))
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+            }
+          }
+        }
       }
 
       Repeater {
@@ -553,15 +639,16 @@ Panel {
         Button {
           objectName: "inputCancel"
           Layout.fillWidth: true
-          text: strings.t("input.cancel")
+          text: box.listOnly ? strings.t("input.close") : strings.t("input.cancel")
           foreground: root.foreground
           fontFamily: root.fontFamily
           bordered: true
-          onClicked: lucy.cancelInput()
+          onClicked: box.listOnly ? lucy.dismiss() : lucy.cancelInput()
         }
 
         Button {
           objectName: "inputSend"
+          visible: !box.listOnly
           Layout.fillWidth: true
           text: strings.t("input.send")
           foreground: root.foreground
