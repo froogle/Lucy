@@ -54,63 +54,11 @@ flowchart LR
   - [Codex](https://github.com/openai/codex) (`codex`), logged in with a ChatGPT account.
 - A **keyring** that speaks the Secret Service API (GNOME Keyring or KeePassXC), if a Plugin needs a password or API key.
 
-## Build and install from source
+## Install
 
-These steps are for Arch Linux and Omarchy. On other distributions, install the same libraries under their local names.
+There are two ways in: download a release, or build from source. Both end with the same `install.sh`, which puts everything in place, and then `lucy setup`.
 
-### 1. Install the build tools and libraries
-
-```sh
-sudo pacman -S --needed base-devel git rustup cmake clang pkgconf \
-    vulkan-headers vulkan-icd-loader shaderc \
-    alsa-lib pipewire libpulse jq uv
-```
-
-whisper.cpp is built with Vulkan, so Lucy can use your GPU when there is one. `uv` installs the voice later on.
-
-If `rustup` is new to you, run `rustup default stable` once. The repository pins its own Rust version in `rust-toolchain.toml`, and `cargo` fetches that version the first time you build.
-
-### 2. Get the code and build it
-
-```sh
-git clone https://github.com/<owner>/lucy.git
-cd lucy
-cargo build --release --locked \
-    -p lucyd -p lucy -p lucy-indicator -p lucy-news -p lucy-omarchy
-```
-
-The first build takes a while: it compiles whisper.cpp and the audio stack.
-
-This builds five programs:
-
-| Program | What it is |
-|---|---|
-| `lucyd` | The daemon. It listens for the Wake word and runs every Session. |
-| `lucy` | The command you use: settings, setup, status and service control. |
-| `lucy-indicator` | The small on-screen marker shown while Lucy is listening, thinking or speaking. |
-| `lucy-news` | The news Plugin. |
-| `lucy-omarchy` | The Omarchy desktop Plugin: windows, workspaces, themes and the screen. |
-
-### 3. Install the programs
-
-Put the four programs you run in `~/.cargo/bin` (make sure it's on your `PATH`):
-
-```sh
-for b in lucyd lucy lucy-indicator; do
-    install -Dm755 "target/release/$b" "$HOME/.cargo/bin/$b"
-done
-```
-
-The two Plugins that ship with Lucy go in `/usr/share/lucy/plugins`, where only root can change them. That is what lets Lucy trust them without asking for an Approval:
-
-```sh
-for p in news omarchy; do
-    sudo install -Dm755 "target/release/lucy-$p" "/usr/share/lucy/plugins/$p/lucy-$p"
-    sudo install -Dm644 "crates/lucy-$p/manifest.toml" "/usr/share/lucy/plugins/$p/manifest.toml"
-done
-```
-
-### 4. Log in to a thinking CLI
+### 1. Log in to a thinking CLI
 
 Install Claude Code or Codex if you haven't already, then run it once and log in with your subscription account (not an API key):
 
@@ -122,24 +70,54 @@ codex login
 
 Lucy checks this before each Session. If `claude` would bill an API key instead of your subscription, she refuses to use it, so a forgotten `ANTHROPIC_API_KEY` can't run up a bill.
 
-### 5. Download a speech model
+### 2a. Install a release
 
-Lucy hears you through Whisper, and needs one of its models on disk. Pick by your hardware:
+Download the latest `lucy-<version>-x86_64-linux.tar.gz` from the [releases page](https://github.com/froogle/Lucy/releases), then:
 
 ```sh
-mkdir -p ~/.local/share/lucy/models
-cd ~/.local/share/lucy/models
-
-# With a GPU (the default when Vulkan finds one): more accurate
-curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin
-
-# CPU only (the default without a GPU): faster on the CPU
-curl -LO https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
+sudo pacman -S --needed pipewire alsa-lib libpulse vulkan-icd-loader uv
+tar -xzf lucy-*-x86_64-linux.tar.gz
+lucy-*-x86_64-linux/install.sh
 ```
 
-If you're unsure, download both: Lucy picks the right one.
+The libraries are what Lucy runs on; on other distributions, install the same ones under their local names. `uv` is how setup installs her voice.
 
-### 6. Run setup
+### 2b. Or build from source
+
+These steps are for Arch Linux and Omarchy. On other distributions, install the same libraries under their local names.
+
+```sh
+sudo pacman -S --needed base-devel git rustup cmake clang pkgconf \
+    vulkan-headers vulkan-icd-loader shaderc \
+    alsa-lib pipewire libpulse jq uv
+rustup default stable      # if rustup is new to you
+
+git clone https://github.com/froogle/Lucy.git lucy
+cd lucy
+scripts/install.sh
+```
+
+whisper.cpp is built with Vulkan, so Lucy can use your GPU when there is one. The repository pins its own Rust version in `rust-toolchain.toml`, and `cargo` fetches it the first time you build. The first build takes a while: it compiles whisper.cpp and the audio stack.
+
+From a checkout, `install.sh` first runs `scripts/build.sh`, which builds the programs for release and lays them out as the same bundle a release contains.
+
+### What install.sh does
+
+| What | Where |
+|---|---|
+| `lucyd` (the daemon), `lucy` (settings, setup, status, service control) and `lucy-indicator` (the on-screen marker) | `~/.local/bin` |
+| The Omarchy bar panel | `~/.local/share/lucy/omarchy-plugin` |
+| The `lucyd` and `lucy-indicator` systemd user units, not yet turned on | `~/.config/systemd/user` |
+| The two Plugins that ship with Lucy, news and Omarchy desktop (asks for `sudo`, only when they changed) | `/usr/share/lucy/plugins` |
+| The Whisper speech model: `base.en`, plus `small.en` when you have a GPU (skipped when already there) | `~/.local/share/lucy/models` |
+
+The shipped Plugins live where only root can change them; that is what lets Lucy trust them without asking for an Approval. Set `LUCY_PREFIX` to install somewhere other than `~/.local`. Make sure `~/.local/bin` is on your `PATH`; the script warns you if it isn't.
+
+It also checks that the libraries Lucy needs are there, and warns you when neither `claude` nor `codex` is installed.
+
+### 3. Run setup
+
+On a first install, `install.sh` opens `lucy setup` for you. Otherwise, run it:
 
 ```sh
 lucy setup
@@ -147,9 +125,9 @@ lucy setup
 
 Setup walks through each section in turn: the thinking CLI, speech-to-text, Lucy's voice, your microphone and speakers, the Wake word, Plugins and the background service. Press Enter to accept each suggestion. Along the way it installs Piper (or Kokoro) for her voice, lets you hear it, and tests your microphone.
 
-In the last section, **Service**, say yes to starting Lucy at login. That installs and starts the `lucyd` and `lucy-indicator` systemd user services. On Omarchy it also links the bar panel; add `lucy-panel` to your bar to see it.
+In the last section, **Service**, say yes to starting Lucy at login. That turns on and starts the `lucyd` and `lucy-indicator` systemd user services. On Omarchy it also links the bar panel; add `lucy-panel` to your bar to see it.
 
-### 7. Say hello
+### 4. Say hello
 
 Say **"Hey Lucy"**. The first time, she introduces herself and asks what to call you.
 
@@ -157,26 +135,35 @@ The [user guide](docs/user-guide/README.md) explains everything she can do and h
 
 ## Updating
 
-After pulling new code, run the install script from the checkout:
+Run `install.sh` again, from a newer release or from your checkout after pulling:
 
 ```sh
 git pull
 scripts/install.sh
 ```
 
-It rebuilds what changed, stops Lucy, installs the new programs (and the shipped Plugins, with `sudo`, only when they changed), starts her again and reloads the bar. It needs the services from step 6 to exist already.
+It stops Lucy, installs the new programs (and the shipped Plugins, with `sudo`, only when they changed), starts her again and reloads the bar. From a checkout, cargo rebuilds only what changed.
+
+An install from before these scripts lived in `~/.cargo/bin`. `install.sh` moves it to `~/.local/bin`, removes the old programs so they can't shadow the new ones, and points the services at the new place.
 
 ## Uninstalling
 
 ```sh
-systemctl --user disable --now lucyd lucy-indicator
-rm ~/.config/systemd/user/lucyd.service ~/.config/systemd/user/lucy-indicator.service
-rm ~/.cargo/bin/{lucyd,lucy,lucy-indicator}
-sudo rm -r /usr/share/lucy
-rm -f ~/.config/omarchy/plugins/lucy-panel
+scripts/uninstall.sh       # or uninstall.sh from the release folder
 ```
 
-Lucy's settings, Persona, models and Plugins are in `~/.config/lucy`, `~/.local/share/lucy` and `~/.local/state/lucy`. Delete those too to remove everything. Credentials you entered for Plugins stay in your keyring under Lucy's name.
+It stops and removes the services, the programs, the bar panel and its link, and the shipped Plugins. Lucy's settings, Persona, models and Plugins stay in `~/.config/lucy`, `~/.local/share/lucy` and `~/.local/state/lucy`; delete those too to remove everything. Credentials you entered for Plugins stay in your keyring under Lucy's name.
+
+## Making a release
+
+Bump `version` in `Cargo.toml`'s `[workspace.package]`, commit, then tag and push:
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The [Release workflow](.github/workflows/release.yml) builds the bundle with `scripts/build.sh --tarball` and publishes it, with its SHA-256, as a GitHub release. It refuses a tag that doesn't match the version. To make the same tarball locally, run `scripts/build.sh --tarball`; it lands in `target/dist/`.
 
 ## Documentation
 

@@ -1,0 +1,46 @@
+name: Release
+
+# Pushing a tag like v0.1.0 builds Lucy, packs the bundle scripts/build.sh lays
+# out, and publishes it as a GitHub release. The tag must match the workspace
+# version in Cargo.toml.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The same native libraries as CI (README step 2b).
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          pkg-config clang libclang-dev cmake
+          libpipewire-0.3-dev libspa-0.2-dev libasound2-dev libpulse-dev
+          libvulkan-dev glslc libwayland-dev
+      - run: rustup toolchain install
+      - name: Build and pack
+        id: build
+        run: |
+          bundle="$(scripts/build.sh --tarball)"
+          version="$(basename "$bundle" | cut -d- -f2)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME doesn't match the workspace version $version" >&2
+            exit 1
+          fi
+          tarball="$bundle.tar.gz"
+          (cd "$(dirname "$tarball")" && sha256sum "$(basename "$tarball")" > "$(basename "$tarball").sha256")
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          "${{ steps.build.outputs.tarball }}" "${{ steps.build.outputs.tarball }}.sha256"
+          --title "Lucy $GITHUB_REF_NAME" --generate-notes

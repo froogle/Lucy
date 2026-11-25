@@ -57,7 +57,7 @@ The Plugins you've approved. You can revoke an Approval here. You can't grant on
 
 ### Service
 
-Whether Lucy starts when you log in. Say yes and setup installs two systemd user services, `lucyd` (Lucy herself) and `lucy-indicator` (the on-screen marker), and starts them.
+Whether Lucy starts when you log in. Say yes and setup turns on two systemd user services, `lucyd` (Lucy herself) and `lucy-indicator` (the on-screen marker), and starts them.
 
 On Omarchy, it also links Lucy's bar panel into Omarchy's plugins folder. Lucy never edits your bar's layout, so add the `lucy-panel` widget to your bar yourself.
 

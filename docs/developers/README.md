@@ -76,14 +76,14 @@ The key ideas:
 | `crates/lucyd/plugin-template` | The template the Authoring builder starts each Plugin from. Also a good start for yours. |
 | `omarchy-plugin/` | The Omarchy bar panel (QML for Quickshell). Holds no product logic: it reads and writes through `lucy`. |
 | `dist/systemd/` | The systemd user units. |
-| `scripts/` | `check.sh` (every gate), `install.sh` (install this checkout), `clean.sh`, and the individual checks. |
+| `scripts/` | `check.sh` (every gate), `build.sh` (the release bundle), `install.sh` and `uninstall.sh` (shipped in that bundle too), `clean.sh`, and the individual checks. |
 | `tools/aec-bench/` | A bench that replays recordings through the echo canceller and Barge-in gate, for tuning. |
 | `docs/adr/` | Architecture decision records. |
 | `docs/agents/` | Notes for AI coding agents working in this repo, and the deepest notes on each area (see below). |
 
 ## Building
 
-Install the build dependencies listed in the [README](../../README.md#1-install-the-build-tools-and-libraries), then:
+Install the build dependencies listed in the [README](../../README.md#2b-or-build-from-source), then:
 
 ```sh
 cargo build --workspace
@@ -91,7 +91,7 @@ cargo build --workspace
 
 `rust-toolchain.toml` pins the Rust version. The workspace denies `unwrap()` outside tests (`clippy::unwrap_used`).
 
-To run your build as your real Lucy, use `scripts/install.sh`. It needs the systemd units to exist, so run `lucy setup` once first (see the README).
+To run your build as your real Lucy, use `scripts/install.sh`: it builds for release through `scripts/build.sh`, installs, and restarts Lucy if she was running. `scripts/uninstall.sh` takes it all off again. The README's [Install](../../README.md#install) section says what goes where, and [Making a release](../../README.md#making-a-release) how a tagged release is built.
 
 ## Testing
 

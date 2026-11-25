@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The native libraries the -sys crates build against (README step 1).
+      # The native libraries the -sys crates build against (README step 2b).
       - run: >-
           sudo apt-get update && sudo apt-get install -y --no-install-recommends
           pkg-config clang libclang-dev cmake
