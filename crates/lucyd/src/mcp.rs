@@ -20,6 +20,8 @@ use crate::desktop::Desktop;
 use crate::files::Search;
 use crate::hand_off::{self, HandOffs, Job};
 use crate::input;
+use crate::memory::{Fact, Forgot, Memory, Unchanged};
+use crate::model_text::MEMORY;
 use crate::persona::Persona;
 use crate::plugins::{self, SessionTools};
 use crate::runner::Command;
@@ -108,6 +110,7 @@ pub async fn serve(
     listener: UnixListener,
     relays: Relays,
     persona: Persona,
+    memory: Memory,
     commands: mpsc::UnboundedSender<Command>,
     authoring: Arc<Authoring>,
     hand_offs: Arc<HandOffs>,
@@ -119,6 +122,7 @@ pub async fn serve(
                     stream,
                     relays.tokens.clone(),
                     persona.clone(),
+                    memory.clone(),
                     commands.clone(),
                     authoring.clone(),
                     hand_offs.clone(),
@@ -133,6 +137,7 @@ async fn connection(
     mut stream: UnixStream,
     tokens: Tokens,
     persona: Persona,
+    memory: Memory,
     commands: mpsc::UnboundedSender<Command>,
     authoring: Arc<Authoring>,
     hand_offs: Arc<HandOffs>,
@@ -151,6 +156,7 @@ async fn connection(
         token,
         tokens,
         persona,
+        memory,
         commands,
         authoring,
         hand_offs,
@@ -178,6 +184,7 @@ struct Tools {
     token: String,
     tokens: Tokens,
     persona: Persona,
+    memory: Memory,
     commands: mpsc::UnboundedSender<Command>,
     authoring: Arc<Authoring>,
     hand_offs: Arc<HandOffs>,
@@ -218,6 +225,59 @@ impl Tools {
             }
         }
     }
+
+    fn remember(&self, arguments: &JsonObject) -> CallToolResult {
+        let Some(fact) = Fact::new(&string(arguments, "fact")) else {
+            return error(format!(
+                "{MEMORY} fact must be what the user asked you to remember."
+            ));
+        };
+        match self.memory.remember(&fact) {
+            Ok(bullet) => text(format!(
+                "{MEMORY} Saved to your Memory:\n\n{bullet}\nTell the user what you saved, in \
+                 one short sentence."
+            )),
+            Err(e) => {
+                eprintln!("lucyd: can't save {}: {e}", self.memory.path().display());
+                error(format!(
+                    "{MEMORY} Memory couldn't be saved. Tell the user you couldn't remember it."
+                ))
+            }
+        }
+    }
+
+    fn forget(&self, arguments: &JsonObject) -> CallToolResult {
+        let Some(fact) = Fact::new(&string(arguments, "fact")) else {
+            return error(format!(
+                "{MEMORY} fact must be the fact's text from your Memory."
+            ));
+        };
+        match self.memory.forget(&fact) {
+            Ok(Forgot::Removed) => text(format!(
+                "{MEMORY} Forgot \"{fact}\". It's gone from your Memory now and won't be in your \
+                 instructions from the next Session. Tell the user what you forgot, in one short \
+                 sentence."
+            )),
+            Ok(Forgot::NoMatch { memory }) if memory.trim().is_empty() => error(format!(
+                "{MEMORY} Your Memory is empty. Tell the user you had nothing like that."
+            )),
+            Ok(Forgot::NoMatch { memory }) => error(format!(
+                "{MEMORY} No fact in your Memory reads exactly \"{fact}\". Your Memory \
+                 holds:\n\n{memory}\n\nCall forget again with one fact's exact text, without \
+                 its date, or tell the user you had nothing like that."
+            )),
+            Err(failure) => {
+                let (verb, e) = match failure {
+                    Unchanged::Load(e) => ("load", e),
+                    Unchanged::Save(e) => ("save", e),
+                };
+                eprintln!("lucyd: can't {verb} {}: {e}", self.memory.path().display());
+                error(format!(
+                    "{MEMORY} Memory couldn't be changed. Tell the user you couldn't forget it."
+                ))
+            }
+        }
+    }
 }
 
 fn revoked() -> ErrorData {
@@ -243,7 +303,8 @@ fn update_persona_tool() -> Tool {
         "Rewrite your Persona: the instructions you were given about who you are, how you \
          speak and what to call the user. Call it when the user asks you to change your manner \
          (\"be a bit more sarcastic\") or tells you what to call them. It applies fully from \
-         the next Session.",
+         the next Session. Keep it for your manner and what to call the user: facts the user \
+         wants kept go to remember.",
         serde_json::json!({
             "type": "object",
             "properties": {"persona": {
@@ -252,6 +313,40 @@ fn update_persona_tool() -> Tool {
                                 ask to change.",
             }},
             "required": ["persona"],
+        }),
+    )
+}
+
+fn remember_tool() -> Tool {
+    tool(
+        "remember",
+        "Add one fact to your Memory, which you're given whole at the start of every Session. \
+         Call it only when the user asks you to remember something, never on your own \
+         judgment. lucyd dates the fact.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {"fact": {
+                "type": "string",
+                "description": "The fact to keep, as one short sentence about the user.",
+            }},
+            "required": ["fact"],
+        }),
+    )
+}
+
+fn forget_tool() -> Tool {
+    tool(
+        "forget",
+        "Remove a fact from your Memory. Call it when the user asks you to forget something; \
+         to correct a fact, call forget and then remember.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {"fact": {
+                "type": "string",
+                "description": "The fact's text exactly as it appears in your Memory, without \
+                                its date.",
+            }},
+            "required": ["fact"],
         }),
     )
 }
@@ -307,6 +402,8 @@ impl ServerHandler for Tools {
                 vec![
                     end_session_tool(),
                     update_persona_tool(),
+                    remember_tool(),
+                    forget_tool(),
                     plugins::manage_plugin_tool(),
                     plugins::approve_plugin_tool(),
                     authoring::request_plugin_tool(),
@@ -352,6 +449,8 @@ impl ServerHandler for Tools {
         match &*request.name {
             "end_session" => Ok(self.end_session().await.into()),
             "update_persona" => Ok(self.update_persona(&request).into()),
+            "remember" => Ok(self.remember(&arguments).into()),
+            "forget" => Ok(self.forget(&arguments).into()),
             "manage_plugin" => Ok(plugins.manage(&arguments).await.into()),
             "approve_plugin" => Ok(plugins.approve(&arguments).await.into()),
             "request_plugin" => Ok(self.authoring.request(&arguments).into()),

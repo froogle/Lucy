@@ -359,6 +359,10 @@ impl Harness {
         &self.persona_path
     }
 
+    pub fn memory_path(&self) -> PathBuf {
+        self.persona_path.with_file_name("memory.md")
+    }
+
     pub fn relay(&self, args: &[&str]) -> Output {
         Command::new(lucy_binary())
             .arg("mcp-relay")

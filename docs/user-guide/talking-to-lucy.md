@@ -103,3 +103,13 @@ Lucy's **Persona** is her personality and manner, and what she calls you. Shape 
 - "You can be a bit more sarcastic."
 
 She saves it in `~/.config/lucy/persona.md`, a plain text file you can edit yourself. Delete it and she introduces herself afresh next time.
+
+## Her Memory
+
+Lucy's **Memory** is the facts you've asked her to keep, separate from her Persona. She keeps only what you tell her to, and tells you what she saved or forgot:
+
+- "Remember that my sister is called Anna."
+- "Forget that Anna is my sister."
+- "Actually, my dentist is on Friday, not Thursday." She forgets the old fact and remembers the new one.
+
+She reads the whole of it at the start of every Session. It's in `~/.config/lucy/memory.md`, beside her Persona: one fact per line, each with the date she saved it. You can edit it yourself, and your changes apply from the next Session. Delete it and she forgets everything. If your Persona already holds facts from before, you can move them into Memory by hand.

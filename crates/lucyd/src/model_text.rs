@@ -8,6 +8,7 @@ pub const HAND_OFF: &str = "[Lucy's Hand-off]";
 pub const INTERRUPTED: &str = "[You were interrupted";
 pub const CALL_FINISHED: &str = "[A confirmed call finished after the user cut in:";
 pub const NOT_APPROVABLE: &str = "[That Plugin can't be approved:";
+pub const MEMORY: &str = "[Lucy's Memory]";
 
 /// How each piece of text written for the model begins, or the whole of it.
 pub const MARKERS: &[&str] = &[
@@ -16,5 +17,6 @@ pub const MARKERS: &[&str] = &[
     INTERRUPTED,
     CALL_FINISHED,
     NOT_APPROVABLE,
+    MEMORY,
     persona::INTRODUCTION,
 ];

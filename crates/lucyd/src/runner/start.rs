@@ -10,6 +10,7 @@ use crate::audio::Devices;
 use crate::desktop::Desktop;
 use crate::files::{Files, Search};
 use crate::mcp::{Caller, Token};
+use crate::memory::Memory;
 use crate::notifications;
 use crate::persona::{Loaded, Persona};
 use crate::plugins::SessionTools;
@@ -17,6 +18,7 @@ use crate::plugins::SessionTools;
 /// The user's files read at each Session start.
 pub struct SessionFiles {
     pub persona: Persona,
+    pub memory: Memory,
     pub config_path: PathBuf,
 }
 
@@ -71,6 +73,14 @@ impl Runner {
             },
         };
         let mut instructions = persona.text;
+        match self.files.memory.section() {
+            Ok(Some(memory)) => instructions = format!("{instructions}\n\n{memory}"),
+            Ok(None) => {}
+            Err(e) => eprintln!(
+                "lucyd: can't load {}: {e}",
+                self.files.memory.path().display()
+            ),
+        }
         if let Some(report) = plugin_tools.scan_report() {
             instructions = format!("{instructions}\n\n{report}");
         }
