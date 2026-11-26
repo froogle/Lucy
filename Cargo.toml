@@ -30,6 +30,16 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["std", "
 ort-tract = "=0.2.0"
 whisper-rs = { version = "0.16", features = ["vulkan"] }
 
+# Full debug info made each of the ~60 test binaries over 500 MB, and a cold
+# `target/` 37 GB. Line tables for Lucy's own crates keep file:line in panic
+# backtraces; dependencies get none. A cold `target/` is then about 9 GB.
+# For a debugger session, set `debug = true` in both sections locally.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Approvals hash Plugin executables, and unoptimised SHA-256 makes every
 # test Session with a debug-built fixture Plugin take a second longer.
 [profile.dev.package.sha2]

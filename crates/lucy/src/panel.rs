@@ -249,13 +249,14 @@ pub(crate) fn link(env: &Env) -> Result<(), String> {
         return Ok(());
     }
     let shipped = env.bin.join(PLUGIN);
+    let installed = env.bin.join("../share/lucy").join(PLUGIN);
     let checkout = env.bin.join("../..").join(PLUGIN);
-    let panel = [shipped, checkout]
+    let panel = [shipped, installed, checkout]
         .into_iter()
         .find(|dir| dir.join("manifest.json").is_file())
         .ok_or_else(|| {
             format!(
-                "there's no {PLUGIN} beside {} or in the checkout it was built in",
+                "there's no {PLUGIN} beside {}, in ../share/lucy or in the checkout it was built in",
                 env.bin.display()
             )
         })?;

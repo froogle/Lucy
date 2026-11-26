@@ -653,6 +653,21 @@ fn enabling_lucyd_links_the_bar_panel_shipped_beside_lucy() {
 }
 
 #[test]
+fn enabling_an_installed_lucyd_links_the_bar_panel_in_its_share_dir() {
+    let home = Home::with_lucyd();
+    let omarchy = omarchy(&home);
+    let prefix = home.dir.path().join("local");
+    let panel = bar_panel(&prefix.join("share/lucy/omarchy-plugin"));
+    let bin = prefix.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+
+    let tui = enable(&home, &bin, UNKNOWN_TO_SYSTEMD);
+
+    assert_eq!(tui.result, Ok(()), "{}", tui.shown);
+    assert_eq!(linked(&omarchy), std::fs::canonicalize(panel).unwrap());
+}
+
+#[test]
 fn enabling_a_lucyd_built_from_a_checkout_links_the_checkouts_bar_panel() {
     let home = Home::with_lucyd();
     let omarchy = omarchy(&home);
