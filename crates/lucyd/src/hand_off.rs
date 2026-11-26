@@ -747,11 +747,11 @@ impl Job {
     fn answered(&self) {
         let answer = self.state.locked().answer.clone();
         let conversation = self.save_last_conversation();
+        self.finish();
         let resume = self.resume(conversation.as_deref());
         let summary = "Claude has finished";
         match answer.filter(|answer| !answer.trim().is_empty()) {
             Some(answer) => {
-                self.show(summary, format!("{answer}{resume}"));
                 self.tell(
                     format!(
                         "{HAND_OFF} Claude has finished what the user handed it: \"{}\". Its \
@@ -763,12 +763,9 @@ impl Job {
                     summary,
                     "Lucy will tell you about it at your next Session.",
                 );
+                self.show(summary, format!("{answer}{resume}"));
             }
             None => {
-                self.show(
-                    summary,
-                    format!("Claude left no final message, so Lucy can't say what it did.{resume}"),
-                );
                 self.tell(
                     format!(
                         "{HAND_OFF} Claude has finished what the user handed it: \"{}\", but \
@@ -779,17 +776,17 @@ impl Job {
                     summary,
                     "Lucy will tell you more at your next Session.",
                 );
+                self.show(
+                    summary,
+                    format!("Claude left no final message, so Lucy can't say what it did.{resume}"),
+                );
             }
         }
-        self.finish();
     }
 
     fn failed(&self, reason: &str) {
         let conversation = self.save_last_conversation();
-        self.show(
-            "Claude couldn't finish",
-            format!("{reason}{}", self.resume(conversation.as_deref())),
-        );
+        self.finish();
         self.tell(
             format!(
                 "{HAND_OFF} Claude couldn't finish what the user handed it: {reason}\n\nTell \
@@ -798,7 +795,10 @@ impl Job {
             "Claude couldn't finish",
             "Lucy will tell you more at your next Session.",
         );
-        self.finish();
+        self.show(
+            "Claude couldn't finish",
+            format!("{reason}{}", self.resume(conversation.as_deref())),
+        );
     }
 
     fn died(&self, exit: &Exit) {
@@ -812,6 +812,7 @@ impl Job {
 
     fn stopped(&self) {
         let conversation = self.save_last_conversation();
+        self.finish();
         self.show(
             "Lucy stopped Claude",
             format!(
@@ -819,19 +820,12 @@ impl Job {
                 self.resume(conversation.as_deref())
             ),
         );
-        self.finish();
     }
 
     fn out_of_time(&self) {
         let conversation = self.save_last_conversation();
+        self.finish();
         let budget = spoken_duration(self.budget);
-        self.show(
-            "Claude ran out of time",
-            format!(
-                "Claude wasn't done after {budget}, so Lucy stopped it.{}",
-                self.resume(conversation.as_deref())
-            ),
-        );
         self.tell(
             format!(
                 "{HAND_OFF} Claude ran out of time on what the user handed it: \"{}\". It \
@@ -842,7 +836,13 @@ impl Job {
             "Claude ran out of time",
             "Lucy will tell you more at your next Session.",
         );
-        self.finish();
+        self.show(
+            "Claude ran out of time",
+            format!(
+                "Claude wasn't done after {budget}, so Lucy stopped it.{}",
+                self.resume(conversation.as_deref())
+            ),
+        );
     }
 
     fn save_last_conversation(&self) -> Option<String> {
