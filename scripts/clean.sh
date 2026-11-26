@@ -30,6 +30,9 @@ fi
 
 builds=()
 [ -d .scratch ] && mapfile -t builds < <(find .scratch -type d -name target -prune)
+plugin_builds="${XDG_DATA_HOME:-$HOME/.local/share}/lucy/plugins/.build"
+[ -d "$plugin_builds" ] &&
+    mapfile -t -O "${#builds[@]}" builds < <(find "$plugin_builds" -mindepth 2 -maxdepth 2 -type d -name target)
 size="$({ du -scb "$target" "${builds[@]}" 2>/dev/null || true; } | tail -n 1 | cut -f 1)"
 cargo clean --quiet
 rm -rf "${builds[@]}"
